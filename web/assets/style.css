@@ -1,0 +1,399 @@
+/* Interstellar — visual language locked by specs/interstellar-starmap-prototype.html (§6).
+   Values here are carried over from the approved prototype; treat changes as a
+   design decision, not a tidy-up. */
+
+/* Fonts are bundled, never hotlinked: §6 requires the UI to render offline.
+   Noto Sans ships as one variable file covering 400-600. */
+@font-face {
+  font-family: 'Noto Sans';
+  src: url('fonts/NotoSans-variable.woff2') format('woff2-variations');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Playfair Display';
+  src: url('fonts/PlayfairDisplay-600.woff2') format('woff2');
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  --space-0: #060A18; --space-1: #0B1128; --space-2: #101838;
+  --star-white: #EAF2FF; --hot-gold: #FFC96B; --hot-core: #FFE9C4;
+  --line: #26355E; --grid: #141E3F;
+  --ink: #C7D3EE; --ink-dim: #7787AE; --ink-faint: #4A567C;
+  --accent: #8FB8FF; --panel: #0D142ECC;
+  --danger: #FF8B7B;
+
+  --glass: linear-gradient(180deg, rgba(16,26,58,.82) 0%, rgba(9,15,36,.86) 100%);
+  --glass-border: rgba(143,184,255,.28);
+  --ease-overshoot: cubic-bezier(.2,.75,.25,1.05);
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box }
+html, body { height: 100% }
+body {
+  background: var(--space-0); color: var(--ink);
+  font-family: 'Noto Sans', system-ui, -apple-system, sans-serif;
+  overflow: hidden;
+}
+
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px }
+
+/* ---------- header ---------- */
+
+header {
+  position: fixed; inset: 0 0 auto 0; z-index: 20;
+  display: flex; align-items: baseline; gap: 18px;
+  padding: 20px 28px 14px;
+  background: linear-gradient(to bottom, rgba(6,10,24,.92), rgba(6,10,24,0));
+  pointer-events: none;
+}
+header * { pointer-events: auto }
+
+.wordmark {
+  font-family: 'Playfair Display', Georgia, serif; font-weight: 600;
+  font-size: 26px; letter-spacing: .02em; color: var(--star-white);
+  display: flex; align-items: baseline; gap: 10px;
+}
+.wordmark .glyph { color: var(--hot-gold); font-size: 20px }
+.obs-date { font-size: 12px; letter-spacing: .18em; text-transform: uppercase; color: var(--ink-dim) }
+.spacer { flex: 1 }
+
+.view-toggle { display: flex; border: 1px solid var(--line); border-radius: 999px; overflow: hidden }
+.view-toggle button {
+  background: none; border: 0; color: var(--ink-dim); font: inherit;
+  font-size: 12px; letter-spacing: .12em; text-transform: uppercase;
+  padding: 7px 16px; cursor: pointer;
+}
+.view-toggle button.active { background: var(--space-2); color: var(--star-white) }
+.view-toggle button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px }
+
+.icon-btn {
+  width: 34px; height: 34px; border-radius: 50%; border: 1px solid var(--line);
+  background: none; color: var(--ink-dim); cursor: pointer;
+  display: flex; align-items: center; justify-content: center; align-self: center;
+  flex: none; position: relative;
+}
+.icon-btn:hover { color: var(--star-white); border-color: var(--ink-dim) }
+.icon-btn svg { width: 17px; height: 17px }
+.icon-btn.busy svg { animation: spin 1.4s linear infinite }
+@keyframes spin { to { transform: rotate(360deg) } }
+
+/* A dot on the gear when the instance needs attention: §7's setup hint has to be
+   discoverable from the front door, not only once you open Settings. */
+.icon-btn .nudge {
+  position: absolute; top: 1px; right: 1px; width: 7px; height: 7px;
+  border-radius: 50%; background: var(--hot-gold);
+  box-shadow: 0 0 6px rgba(255,201,107,.9);
+}
+
+/* ---------- banner ---------- */
+
+#banner {
+  position: fixed; top: 62px; left: 50%; transform: translateX(-50%);
+  z-index: 35; max-width: min(720px, calc(100vw - 32px));
+  background: var(--glass); backdrop-filter: blur(14px);
+  border: 1px solid rgba(255,201,107,.4); border-radius: 10px;
+  padding: 11px 16px; font-size: 13px; color: var(--hot-core);
+  display: none; align-items: center; gap: 12px; line-height: 1.45;
+}
+#banner.on { display: flex }
+#banner.setup { border-color: var(--glass-border); color: var(--ink) }
+#banner button {
+  background: none; border: 1px solid var(--line); border-radius: 999px;
+  color: inherit; font: inherit; font-size: 12px; padding: 3px 12px;
+  cursor: pointer; flex: none;
+}
+
+/* ---------- sky ---------- */
+
+#sky { position: fixed; inset: 0; display: block; cursor: grab }
+#sky.pointing { cursor: pointer }
+#sky.grabbing { cursor: grabbing }
+
+/* Empty state sits over the canvas so the graticule still shows through. */
+#empty {
+  position: fixed; inset: 0; z-index: 5; display: none;
+  align-items: center; justify-content: center; text-align: center;
+  pointer-events: none; padding: 24px;
+}
+#empty.on { display: flex }
+#empty .inner { max-width: 42ch; pointer-events: auto }
+#empty h2 {
+  font-family: 'Playfair Display', Georgia, serif; font-weight: 600;
+  font-size: 22px; color: var(--star-white); margin-bottom: 10px;
+}
+#empty p { font-size: 13.5px; color: var(--ink-dim); line-height: 1.65 }
+
+.legend {
+  position: fixed; left: 28px; bottom: 22px; z-index: 20;
+  font-size: 11.5px; color: var(--ink-dim); letter-spacing: .04em;
+  display: flex; flex-direction: column; gap: 7px;
+  background: rgba(6,10,24,.55); padding: 12px 14px;
+  border: 1px solid var(--grid); border-radius: 8px; backdrop-filter: blur(4px);
+}
+.legend .row { display: flex; align-items: center; gap: 10px }
+.lg-dot { border-radius: 50%; background: var(--star-white); flex: none }
+.lg-dot.big { width: 11px; height: 11px; box-shadow: 0 0 10px 2px rgba(234,242,255,.7) }
+.lg-dot.small { width: 4px; height: 4px; opacity: .55 }
+.lg-dot.gold { width: 9px; height: 9px; background: var(--hot-gold); box-shadow: 0 0 12px 3px rgba(255,201,107,.65) }
+.lg-dot.faded { width: 6px; height: 6px; opacity: .3 }
+
+.nav {
+  position: fixed; right: 24px; bottom: 22px; z-index: 20;
+  display: flex; flex-direction: column; gap: 6px; align-items: center;
+}
+.nav button {
+  width: 34px; height: 34px; border-radius: 50%; border: 1px solid var(--line);
+  background: rgba(6,10,24,.6); color: var(--ink); font-size: 16px;
+  cursor: pointer; backdrop-filter: blur(4px);
+}
+.nav button:hover { border-color: var(--ink-dim); color: var(--star-white) }
+.nav .hint { font-size: 10px; color: var(--ink-faint); letter-spacing: .06em; margin-top: 4px; text-align: center; line-height: 1.5 }
+
+#tip {
+  position: fixed; z-index: 30; pointer-events: none; max-width: 300px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  padding: 10px 13px; backdrop-filter: blur(6px);
+  opacity: 0; transform: translateY(4px); transition: opacity .12s, transform .12s;
+}
+#tip.on { opacity: 1; transform: none }
+#tip .t-topic { font-size: 10px; letter-spacing: .16em; text-transform: uppercase; color: var(--accent); margin-bottom: 4px }
+#tip .t-title { font-size: 13.5px; line-height: 1.35; color: var(--star-white) }
+#tip .t-meta { font-size: 11px; color: var(--ink-dim); margin-top: 5px }
+
+/* ---------- detail panel ---------- */
+
+#panel {
+  position: fixed; top: 16px; right: 16px; bottom: 16px; z-index: 40;
+  width: min(430px, calc(100vw - 32px));
+  background: linear-gradient(180deg, rgba(16,26,58,.78) 0%, rgba(9,15,36,.82) 100%);
+  backdrop-filter: blur(18px) saturate(1.25); -webkit-backdrop-filter: blur(18px) saturate(1.25);
+  border: 1px solid var(--glass-border); border-radius: 18px;
+  padding: 30px 30px 26px; overflow-y: auto;
+  box-shadow:
+    0 0 0 1px rgba(143,184,255,.08),
+    0 0 34px rgba(143,184,255,.14),
+    0 0 90px rgba(120,160,255,.08),
+    0 26px 70px rgba(0,0,0,.55);
+  opacity: 0; visibility: hidden; pointer-events: none;
+  transform: translateX(22px) scale(.955); transform-origin: right center;
+  transition: opacity .24s ease, transform .3s var(--ease-overshoot), visibility 0s .3s;
+}
+#panel.open {
+  opacity: 1; visibility: visible; pointer-events: auto; transform: none;
+  transition: opacity .24s ease, transform .3s var(--ease-overshoot), visibility 0s 0s;
+}
+/* faint inner top highlight — sells the glass */
+#panel::before {
+  content: ''; position: absolute; inset: 0 0 auto 0; height: 1px;
+  border-radius: 18px 18px 0 0;
+  background: linear-gradient(90deg, transparent, rgba(234,242,255,.35), transparent);
+}
+/* Applies to the detail panel and to every settings sheet — both are glass
+   surfaces with a close affordance in the same place. */
+.p-close {
+  position: absolute; top: 18px; right: 18px; background: none;
+  border: 1px solid var(--line); border-radius: 50%; width: 32px; height: 32px;
+  color: var(--ink-dim); cursor: pointer; font-size: 17px; line-height: 1;
+  display: flex; align-items: center; justify-content: center; z-index: 2;
+}
+.p-close:hover { color: var(--star-white); border-color: var(--ink-dim) }
+
+.p-topic { font-size: 11px; letter-spacing: .18em; text-transform: uppercase; color: var(--accent); margin-bottom: 14px }
+.p-title {
+  font-family: 'Playfair Display', Georgia, serif; font-weight: 600;
+  font-size: 25px; line-height: 1.28; letter-spacing: .005em;
+  color: var(--star-white); margin-bottom: 18px;
+}
+.p-stats { display: flex; gap: 22px; margin-bottom: 20px; padding-bottom: 18px; border-bottom: 1px solid var(--grid) }
+.p-stat .n { font-size: 19px; color: var(--star-white); font-weight: 500 }
+.p-stat .n.gold { color: var(--hot-gold) }
+.p-stat .l { font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-faint); margin-top: 2px }
+.p-reason { font-size: 14px; line-height: 1.65; color: #D6E0F7; margin-bottom: 20px }
+.p-reason em { color: var(--ink-dim); font-style: normal }
+.p-srcs { font-size: 12px; color: var(--ink-dim); line-height: 1.9; margin-bottom: 22px }
+.p-srcs .s-label { font-size: 10px; letter-spacing: .16em; text-transform: uppercase; color: var(--ink-faint); display: block; margin-bottom: 4px }
+.p-link {
+  display: inline-block; font-size: 13px; letter-spacing: .06em;
+  color: var(--space-0); background: var(--star-white); border-radius: 999px;
+  padding: 10px 22px; text-decoration: none; font-weight: 500;
+}
+.p-link:hover { background: var(--hot-core) }
+.p-hotflag {
+  display: inline-flex; align-items: center; gap: 6px; font-size: 11px;
+  letter-spacing: .1em; text-transform: uppercase; color: var(--hot-gold);
+  border: 1px solid rgba(255,201,107,.4); border-radius: 999px;
+  padding: 4px 12px; margin-bottom: 16px;
+}
+/* Members: the articles behind one star. */
+.p-members { margin-bottom: 24px }
+.p-members .s-label { font-size: 10px; letter-spacing: .16em; text-transform: uppercase; color: var(--ink-faint); display: block; margin-bottom: 8px }
+.p-member { display: block; font-size: 13px; line-height: 1.5; color: var(--ink); text-decoration: none; padding: 7px 0; border-bottom: 1px solid var(--grid) }
+.p-member:last-child { border-bottom: 0 }
+.p-member:hover { color: var(--star-white) }
+.p-member .m-src { display: block; font-size: 11px; color: var(--ink-faint); margin-top: 2px }
+
+/* ---------- list view ---------- */
+
+#list { position: fixed; inset: 0; z-index: 15; overflow-y: auto; display: none; padding: 96px 28px 60px; background: var(--space-0) }
+#list.on { display: block }
+.lc { max-width: 860px; margin: 0 auto }
+.l-topic { margin-bottom: 34px }
+.l-topic h2 { font-size: 12px; letter-spacing: .2em; text-transform: uppercase; color: var(--accent); font-weight: 500; margin-bottom: 4px }
+.l-topic .l-sub { font-size: 11px; color: var(--ink-faint); margin-bottom: 14px }
+.l-item { display: flex; align-items: baseline; gap: 14px; padding: 11px 12px; border-radius: 8px; cursor: pointer; width: 100%; text-align: left; background: none; border: 0; font: inherit; color: inherit }
+.l-item:hover { background: var(--space-1) }
+.l-dot { flex: none; border-radius: 50%; background: var(--star-white); align-self: center }
+.l-title { font-size: 14.5px; color: var(--star-white); flex: 1; line-height: 1.4 }
+.l-meta { font-size: 11.5px; color: var(--ink-faint); white-space: nowrap }
+.l-none { font-size: 13px; color: var(--ink-faint); font-style: italic; padding: 6px 12px }
+.l-badge { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-faint); border: 1px solid var(--grid); border-radius: 999px; padding: 2px 8px; margin-left: 8px }
+
+/* ---------- quality floor (§6) ---------- */
+
+@media (prefers-reduced-motion: reduce) {
+  #panel, #tip, #settings { transition: none }
+  .icon-btn.busy svg { animation: none }
+}
+
+@media (max-width: 640px) {
+  header { padding: 16px 16px 10px; gap: 10px; flex-wrap: wrap }
+  .wordmark { font-size: 21px }
+  .obs-date { display: none }
+  .legend { left: 12px; bottom: 12px; font-size: 10.5px }
+  .legend .row:nth-child(n+3) { display: none }
+  .nav { right: 12px; bottom: 12px }
+  #list { padding: 88px 14px 48px }
+  #panel { top: auto; bottom: 0; right: 0; left: 0; width: 100%; max-height: 82vh; border-radius: 18px 18px 0 0; transform: translateY(22px) scale(.98); transform-origin: bottom center }
+  #banner { top: 56px }
+}
+
+/* The legend and zoom controls describe the sky. In list view they are not
+   just redundant, they sit on top of the content. */
+body.list-view .legend,
+body.list-view .nav { display: none }
+
+@media (max-width: 460px) {
+  /* At this width the wordmark, view toggle and two icon buttons stop fitting
+     on one line. Shrink rather than wrap: a wrapped header eats a third of a
+     small screen. */
+  header { padding: 12px 12px 10px; gap: 8px }
+  .wordmark { font-size: 18px; gap: 6px }
+  .wordmark .glyph { font-size: 14px }
+  .view-toggle button { padding: 6px 11px; font-size: 11px; letter-spacing: .08em }
+  .icon-btn { width: 30px; height: 30px }
+  .icon-btn svg { width: 15px; height: 15px }
+  .legend { display: none }
+  #list { padding: 74px 12px 40px }
+  .l-item { padding: 10px 6px; gap: 10px }
+  .l-meta { display: none }
+}
+
+/* ---------- settings: popover + sheet ---------- */
+
+/* Same glass language as the detail panel, per §6. */
+#settings {
+  position: fixed; top: 64px; right: 24px; z-index: 45; width: 300px;
+  background: var(--glass);
+  backdrop-filter: blur(18px) saturate(1.25); -webkit-backdrop-filter: blur(18px) saturate(1.25);
+  border: 1px solid var(--glass-border); border-radius: 14px; padding: 18px 18px 14px;
+  box-shadow: 0 0 34px rgba(143,184,255,.12), 0 20px 50px rgba(0,0,0,.5);
+  opacity: 0; visibility: hidden; pointer-events: none;
+  transform: translateY(-6px) scale(.97); transform-origin: top right;
+  transition: opacity .2s ease, transform .22s var(--ease-overshoot), visibility 0s .22s;
+}
+#settings.open {
+  opacity: 1; visibility: visible; pointer-events: auto; transform: none;
+  transition: opacity .2s ease, transform .22s var(--ease-overshoot), visibility 0s 0s;
+}
+#settings h3 { font-size: 11px; letter-spacing: .16em; text-transform: uppercase; color: var(--accent); font-weight: 500; margin-bottom: 12px }
+.set-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 10px 8px; border-radius: 8px; font-size: 13.5px; color: var(--star-white); cursor: pointer;
+}
+.set-row:hover { background: rgba(143,184,255,.08) }
+.set-row .v { font-size: 12px; color: var(--ink-dim); white-space: nowrap }
+.set-row .v.warn { color: var(--hot-gold) }
+.set-note { font-size: 11px; color: var(--ink-faint); padding: 10px 8px 2px; border-top: 1px solid var(--grid); margin-top: 8px; line-height: 1.5 }
+
+#sheet {
+  position: fixed; top: 16px; right: 16px; bottom: 16px; z-index: 50;
+  width: min(560px, calc(100vw - 32px));
+  background: var(--glass);
+  backdrop-filter: blur(18px) saturate(1.25); -webkit-backdrop-filter: blur(18px) saturate(1.25);
+  border: 1px solid var(--glass-border); border-radius: 18px;
+  padding: 30px 30px 26px; overflow-y: auto;
+  box-shadow: 0 0 34px rgba(143,184,255,.14), 0 26px 70px rgba(0,0,0,.55);
+  opacity: 0; transform: translateX(22px) scale(.955); transform-origin: right center;
+  transition: opacity .24s ease, transform .3s var(--ease-overshoot);
+}
+#sheet.open { opacity: 1; transform: none }
+#sheet::before {
+  content: ''; position: absolute; inset: 0 0 auto 0; height: 1px; border-radius: 18px 18px 0 0;
+  background: linear-gradient(90deg, transparent, rgba(234,242,255,.35), transparent);
+}
+.sheet-title { font-family: 'Playfair Display', Georgia, serif; font-weight: 600; font-size: 24px; color: var(--star-white); margin-bottom: 8px }
+.sheet-sub { font-size: 13px; color: var(--ink-dim); line-height: 1.6; margin-bottom: 22px; max-width: 52ch }
+.sheet-section { margin-bottom: 28px }
+.sheet-section h3 { font-size: 11px; letter-spacing: .16em; text-transform: uppercase; color: var(--accent); font-weight: 500; margin-bottom: 12px }
+
+.card { background: rgba(6,10,24,.4); border: 1px solid var(--grid); border-radius: 12px; padding: 14px; margin-bottom: 12px }
+.card.row { display: flex; align-items: flex-start; gap: 14px; justify-content: space-between }
+.card-main { min-width: 0; flex: 1 }
+.card-name { font-size: 14px; color: var(--star-white); margin-bottom: 3px }
+.card-detail { font-size: 11.5px; color: var(--ink-dim); overflow-wrap: anywhere; line-height: 1.5 }
+.card-detail.dim { color: var(--ink-faint); margin-top: 2px }
+.card-meta { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; font-size: 11.5px; color: var(--ink-faint); flex-wrap: wrap }
+.card-actions { display: flex; gap: 8px; flex: none }
+.card-actions.wide { margin-top: 10px }
+
+.field {
+  display: block; width: 100%; background: rgba(6,10,24,.6);
+  border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px;
+  color: var(--star-white); font: inherit; font-size: 13.5px; margin-bottom: 8px;
+}
+.field:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent }
+.field.title { font-size: 15px }
+.field.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px }
+textarea.field { resize: vertical; line-height: 1.55 }
+select.field { appearance: none }
+
+.field-wrap { display: block; margin-bottom: 4px }
+.field-label { display: block; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 6px }
+.field-help { display: block; font-size: 11.5px; color: var(--ink-faint); margin: -2px 0 12px; line-height: 1.5 }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0 16px }
+
+.btn-primary, .btn-quiet, .btn-danger, .btn-add {
+  font: inherit; font-size: 12.5px; border-radius: 999px; padding: 7px 16px; cursor: pointer; border: 1px solid transparent;
+}
+.btn-primary { background: var(--star-white); color: var(--space-0); font-weight: 500 }
+.btn-primary:hover { background: var(--hot-core) }
+.btn-primary:disabled { opacity: .5; cursor: default }
+.btn-quiet { background: none; border-color: var(--line); color: var(--ink) }
+.btn-quiet:hover { border-color: var(--ink-dim); color: var(--star-white) }
+.btn-danger { background: none; border-color: transparent; color: var(--ink-faint) }
+.btn-danger:hover { color: var(--danger) }
+.btn-add { background: none; border: 1px dashed var(--line); color: var(--ink-dim); width: 100%; padding: 12px }
+.btn-add:hover { border-color: var(--ink-dim); color: var(--star-white) }
+
+.badge { font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; border-radius: 999px; padding: 4px 10px; border: 1px solid; white-space: nowrap; flex: none }
+.badge.ok { color: #9BE6B4; border-color: rgba(155,230,180,.35) }
+.badge.bad { color: var(--hot-gold); border-color: rgba(255,201,107,.4) }
+
+.warn { color: var(--hot-gold) }
+.note { font-size: 11.5px; color: var(--ink-faint); line-height: 1.6; margin-top: 10px }
+.test-result { font-size: 12px; color: var(--ink-dim); margin-top: 8px; line-height: 1.5; min-height: 1.2em }
+.test-result.ok { color: #9BE6B4 }
+.test-result.bad { color: var(--hot-gold) }
+.ladder { font-size: 12px; color: var(--ink-dim); line-height: 1.7; padding-left: 18px }
+.ladder li { margin-bottom: 4px }
+.add-source { border-style: dashed }
+
+@media (max-width: 640px) {
+  #settings { right: 12px; left: 12px; width: auto }
+  #sheet { top: auto; bottom: 0; right: 0; left: 0; width: 100%; max-height: 88vh; border-radius: 18px 18px 0 0; transform: translateY(22px); transform-origin: bottom center }
+}

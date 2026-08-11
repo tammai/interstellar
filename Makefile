@@ -13,10 +13,12 @@ BUILDER     ?= interstellar-builder
 help:
 	@grep -E '^## ' $(MAKEFILE_LIST) | sed 's/## //' | awk -F': ' '{printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
 
-## dev: run locally against ./.devdata (no Docker)
+## dev: run locally against ./.devdata, serving the UI from disk
+# INTERSTELLAR_WEB_DIR bypasses go:embed so a CSS or JS edit shows up on reload
+# instead of needing a rebuild. Production never sets it.
 dev:
 	@mkdir -p $(DEV_DATA)
-	DATA_DIR=$(DEV_DATA) go run ./cmd/interstellar
+	DATA_DIR=$(DEV_DATA) INTERSTELLAR_WEB_DIR=$(PWD)/web/assets go run ./cmd/interstellar
 
 ## build: compile the binary for this machine
 build:
@@ -32,6 +34,11 @@ test:
 ## test-race: same suite under the race detector
 test-race:
 	go test -race -timeout 300s ./...
+
+## test-ui: unit-test the star map's pure layout logic
+# groupSignals and relax encode §6 decisions a screenshot cannot verify.
+test-ui:
+	node --test web/sky.test.js
 
 ## lint: vet and formatting check
 lint:
@@ -66,4 +73,4 @@ run: docker
 clean:
 	rm -rf bin $(DEV_DATA)
 
-.PHONY: help dev build test test-race lint docker docker-multiarch size run clean
+.PHONY: help dev build test test-race test-ui lint docker docker-multiarch size run clean

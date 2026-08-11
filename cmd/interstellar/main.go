@@ -53,6 +53,9 @@ func run(log *slog.Logger) error {
 		return err
 	}
 	log.Info("database ready", "path", env.DBPath, "schema", version)
+	if !web.Embedded() {
+		log.Warn("serving UI from disk, not the embedded copy", "dir", os.Getenv(web.DevDirEnv))
+	}
 
 	runner := pipeline.NewRunner(db, env, log)
 

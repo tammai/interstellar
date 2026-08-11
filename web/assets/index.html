@@ -2,26 +2,81 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Interstellar</title>
-<style>
-  :root{ --space-0:#060A18; --ink:#C7D3EE; --ink-dim:#7787AE; --hot-gold:#FFC96B; --star-white:#EAF2FF; }
-  *{margin:0;padding:0;box-sizing:border-box}
-  html,body{height:100%}
-  body{
-    background:var(--space-0);color:var(--ink);
-    font-family:system-ui,sans-serif;
-    display:flex;align-items:center;justify-content:center;text-align:center;padding:24px;
-  }
-  .wordmark{font-size:26px;letter-spacing:.02em;color:var(--star-white);margin-bottom:10px}
-  .wordmark .glyph{color:var(--hot-gold)}
-  p{font-size:13.5px;color:var(--ink-dim);line-height:1.6;max-width:34ch}
-</style>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>Interstellar — Sky</title>
+<link rel="stylesheet" href="style.css">
+<link rel="preload" href="fonts/NotoSans-variable.woff2" as="font" type="font/woff2" crossorigin>
 </head>
 <body>
-  <div>
-    <div class="wordmark"><span class="glyph">✦</span> Interstellar</div>
-    <p>The sky is not built yet. This placeholder ships until the star map lands in M5.</p>
+
+<header>
+  <h1 class="wordmark"><span class="glyph" aria-hidden="true">✦</span>Interstellar</h1>
+  <div class="obs-date" id="obsDate"></div>
+  <div class="spacer"></div>
+  <div class="view-toggle" role="tablist" aria-label="View">
+    <button id="btnSky" class="active" role="tab" aria-selected="true" aria-controls="sky">Sky</button>
+    <button id="btnList" role="tab" aria-selected="false" aria-controls="list">List</button>
   </div>
+  <button class="icon-btn" id="btnRefresh" aria-label="Refresh now" title="Refresh now">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v5h-5"/>
+    </svg>
+  </button>
+  <button class="icon-btn" id="btnSettings" aria-label="Settings" aria-expanded="false" aria-haspopup="dialog">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="3"/>
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+    </svg>
+  </button>
+</header>
+
+<div id="banner" role="status"><span id="bannerText"></span><button id="bannerAction" hidden></button></div>
+
+<canvas id="sky" role="img"
+        aria-label="Star map of your recent signals. Switch to List view for a text version."></canvas>
+
+<div id="empty" aria-live="polite">
+  <div class="inner">
+    <h2 id="emptyTitle">The sky is empty</h2>
+    <p id="emptyBody"></p>
+  </div>
+</div>
+
+<div class="legend" aria-hidden="true">
+  <div class="row"><span class="lg-dot big"></span><span>Larger star — higher relevance</span></div>
+  <div class="row"><span class="lg-dot gold"></span><span>Gold pulse — 3+ sources (hot)</span></div>
+  <div class="row"><span class="lg-dot faded"></span><span>Dimmer — older signal</span></div>
+  <div class="row"><span class="lg-dot small"></span><span>Constellation = your topic</span></div>
+</div>
+
+<div class="nav">
+  <button id="zin" aria-label="Zoom in">+</button>
+  <button id="zout" aria-label="Zoom out">−</button>
+  <button id="zreset" aria-label="Reset view" style="font-size:12px">⌂</button>
+  <div class="hint" aria-hidden="true">scroll · drag<br>dbl-click reset</div>
+</div>
+
+<div id="tip" role="tooltip" aria-hidden="true">
+  <div class="t-topic"></div>
+  <div class="t-title"></div>
+  <div class="t-meta"></div>
+</div>
+
+<aside id="panel" aria-label="Signal detail" role="dialog" aria-modal="false">
+  <button class="p-close" aria-label="Close">×</button>
+  <div class="p-topic"></div>
+  <div class="p-hot"></div>
+  <h2 class="p-title"></h2>
+  <div class="p-stats"></div>
+  <p class="p-reason"></p>
+  <div class="p-members"></div>
+  <div class="p-srcs"></div>
+  <a class="p-link" href="#" target="_blank" rel="noopener noreferrer">Open source article →</a>
+</aside>
+
+<div id="list" role="tabpanel" aria-label="List view"><div class="lc" id="listContent"></div></div>
+
+<script type="module" src="app.js"></script>
 </body>
 </html>
