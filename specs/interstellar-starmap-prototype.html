@@ -1,0 +1,647 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Interstellar — Sky</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;500;600&family=Playfair+Display:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --space-0:#060A18; --space-1:#0B1128; --space-2:#101838;
+    --star-white:#EAF2FF; --hot-gold:#FFC96B; --hot-core:#FFE9C4;
+    --line:#26355E; --grid:#141E3F;
+    --ink:#C7D3EE; --ink-dim:#7787AE; --ink-faint:#4A567C;
+    --accent:#8FB8FF; --panel:#0D142ECC;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%}
+  body{background:var(--space-0);color:var(--ink);font-family:'Noto Sans',system-ui,sans-serif;overflow:hidden}
+
+  header{
+    position:fixed;inset:0 0 auto 0;z-index:20;display:flex;align-items:baseline;gap:18px;
+    padding:20px 28px 14px;
+    background:linear-gradient(to bottom, rgba(6,10,24,.92), rgba(6,10,24,0));
+    pointer-events:none;
+  }
+  header *{pointer-events:auto}
+  .wordmark{font-family:'Playfair Display',serif;font-weight:600;font-size:26px;letter-spacing:.02em;color:var(--star-white);display:flex;align-items:baseline;gap:10px}
+  .wordmark .glyph{color:var(--hot-gold);font-size:20px}
+  .obs-date{font-size:12px;letter-spacing:.18em;text-transform:uppercase;color:var(--ink-dim)}
+  .spacer{flex:1}
+  .view-toggle{display:flex;border:1px solid var(--line);border-radius:999px;overflow:hidden}
+  .view-toggle button{background:none;border:0;color:var(--ink-dim);font:inherit;font-size:12px;letter-spacing:.12em;text-transform:uppercase;padding:7px 16px;cursor:pointer}
+  .view-toggle button.active{background:var(--space-2);color:var(--star-white)}
+  .view-toggle button:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+  .icon-btn{
+    width:34px;height:34px;border-radius:50%;border:1px solid var(--line);
+    background:none;color:var(--ink-dim);cursor:pointer;
+    display:flex;align-items:center;justify-content:center;align-self:center;
+  }
+  .icon-btn:hover{color:var(--star-white);border-color:var(--ink-dim)}
+  .icon-btn:focus-visible{outline:2px solid var(--accent)}
+  .icon-btn svg{width:17px;height:17px}
+
+  /* settings popover — same glass language as the detail panel */
+  #settings{
+    position:fixed;top:64px;right:24px;z-index:45;width:300px;
+    background:linear-gradient(180deg,rgba(16,26,58,.82) 0%,rgba(9,15,36,.86) 100%);
+    backdrop-filter:blur(18px) saturate(1.25);-webkit-backdrop-filter:blur(18px) saturate(1.25);
+    border:1px solid rgba(143,184,255,.28);border-radius:14px;padding:18px 18px 14px;
+    box-shadow:0 0 34px rgba(143,184,255,.12),0 20px 50px rgba(0,0,0,.5);
+    opacity:0;visibility:hidden;pointer-events:none;
+    transform:translateY(-6px) scale(.97);transform-origin:top right;
+    transition:opacity .2s ease,transform .22s cubic-bezier(.2,.75,.25,1.05),visibility 0s .22s;
+  }
+  #settings.open{
+    opacity:1;visibility:visible;pointer-events:auto;transform:none;
+    transition:opacity .2s ease,transform .22s cubic-bezier(.2,.75,.25,1.05),visibility 0s 0s;
+  }
+  #settings h3{font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--accent);font-weight:500;margin-bottom:12px}
+  .set-row{
+    display:flex;align-items:center;justify-content:space-between;gap:12px;
+    padding:10px 8px;border-radius:8px;font-size:13.5px;color:var(--star-white);cursor:pointer;
+  }
+  .set-row:hover{background:rgba(143,184,255,.08)}
+  .set-row .v{font-size:12px;color:var(--ink-dim);white-space:nowrap}
+  .set-note{font-size:11px;color:var(--ink-faint);padding:10px 8px 2px;border-top:1px solid var(--grid);margin-top:8px;line-height:1.5}
+
+  #sky{position:fixed;inset:0;display:block;cursor:grab}
+  #sky.pointing{cursor:pointer}
+  #sky.grabbing{cursor:grabbing}
+
+  .legend{
+    position:fixed;left:28px;bottom:22px;z-index:20;font-size:11.5px;color:var(--ink-dim);letter-spacing:.04em;
+    display:flex;flex-direction:column;gap:7px;background:rgba(6,10,24,.55);padding:12px 14px;
+    border:1px solid var(--grid);border-radius:8px;backdrop-filter:blur(4px);
+  }
+  .legend .row{display:flex;align-items:center;gap:10px}
+  .lg-dot{border-radius:50%;background:var(--star-white);flex:none}
+  .lg-dot.big{width:11px;height:11px;box-shadow:0 0 10px 2px rgba(234,242,255,.7)}
+  .lg-dot.small{width:4px;height:4px;opacity:.55}
+  .lg-dot.gold{width:9px;height:9px;background:var(--hot-gold);box-shadow:0 0 12px 3px rgba(255,201,107,.65)}
+  .lg-dot.faded{width:6px;height:6px;opacity:.3}
+
+  .nav{
+    position:fixed;right:24px;bottom:22px;z-index:20;display:flex;flex-direction:column;gap:6px;align-items:center;
+  }
+  .nav button{
+    width:34px;height:34px;border-radius:50%;border:1px solid var(--line);background:rgba(6,10,24,.6);
+    color:var(--ink);font-size:16px;cursor:pointer;backdrop-filter:blur(4px);
+  }
+  .nav button:hover{border-color:var(--ink-dim);color:var(--star-white)}
+  .nav button:focus-visible{outline:2px solid var(--accent)}
+  .nav .hint{font-size:10px;color:var(--ink-faint);letter-spacing:.06em;margin-top:4px;text-align:center;line-height:1.5}
+
+  #tip{
+    position:fixed;z-index:30;pointer-events:none;max-width:300px;background:var(--panel);
+    border:1px solid var(--line);border-radius:8px;padding:10px 13px;backdrop-filter:blur(6px);
+    opacity:0;transform:translateY(4px);transition:opacity .12s,transform .12s;
+  }
+  #tip.on{opacity:1;transform:none}
+  #tip .t-topic{font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--accent);margin-bottom:4px}
+  #tip .t-title{font-size:13.5px;line-height:1.35;color:var(--star-white)}
+  #tip .t-meta{font-size:11px;color:var(--ink-dim);margin-top:5px}
+
+  #panel{
+    position:fixed;top:16px;right:16px;bottom:16px;z-index:40;width:min(430px,calc(100vw - 32px));
+    background:linear-gradient(180deg,rgba(16,26,58,.78) 0%,rgba(9,15,36,.82) 100%);
+    backdrop-filter:blur(18px) saturate(1.25);-webkit-backdrop-filter:blur(18px) saturate(1.25);
+    border:1px solid rgba(143,184,255,.28);border-radius:18px;
+    padding:30px 30px 26px;overflow-y:auto;
+    box-shadow:
+      0 0 0 1px rgba(143,184,255,.08),
+      0 0 34px rgba(143,184,255,.14),
+      0 0 90px rgba(120,160,255,.08),
+      0 26px 70px rgba(0,0,0,.55);
+    opacity:0;visibility:hidden;pointer-events:none;
+    transform:translateX(22px) scale(.955);transform-origin:right center;
+    transition:opacity .24s ease,transform .3s cubic-bezier(.2,.75,.25,1.05),visibility 0s .3s;
+  }
+  #panel.open{
+    opacity:1;visibility:visible;pointer-events:auto;transform:none;
+    transition:opacity .24s ease,transform .3s cubic-bezier(.2,.75,.25,1.05),visibility 0s 0s;
+  }
+  #panel::before{ /* faint inner top highlight — sells the glass */
+    content:'';position:absolute;inset:0 0 auto 0;height:1px;border-radius:18px 18px 0 0;
+    background:linear-gradient(90deg,transparent,rgba(234,242,255,.35),transparent);
+  }
+  #panel .p-close{position:absolute;top:18px;right:18px;background:none;border:1px solid var(--line);border-radius:50%;width:32px;height:32px;color:var(--ink-dim);cursor:pointer;font-size:15px}
+  #panel .p-close:hover{color:var(--star-white);border-color:var(--ink-dim)}
+  #panel .p-close:focus-visible{outline:2px solid var(--accent)}
+  .p-topic{font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--accent);margin-bottom:14px}
+  .p-title{font-family:'Playfair Display',serif;font-weight:600;font-size:25px;line-height:1.28;letter-spacing:.005em;color:var(--star-white);margin-bottom:18px}
+  .p-stats{display:flex;gap:22px;margin-bottom:20px;padding-bottom:18px;border-bottom:1px solid var(--grid)}
+  .p-stat .n{font-size:19px;color:var(--star-white);font-weight:500}
+  .p-stat .n.gold{color:var(--hot-gold)}
+  .p-stat .l{font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-faint);margin-top:2px}
+  .p-reason{font-size:14px;line-height:1.65;color:#D6E0F7;margin-bottom:20px}
+  .p-reason em{color:var(--ink-dim);font-style:normal}
+  .p-srcs{font-size:12px;color:var(--ink-dim);line-height:1.9;margin-bottom:26px}
+  .p-srcs .s-label{font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--ink-faint);display:block;margin-bottom:4px}
+  .p-link{display:inline-block;font-size:13px;letter-spacing:.06em;color:var(--space-0);background:var(--star-white);border-radius:999px;padding:10px 22px;text-decoration:none;font-weight:500}
+  .p-link:hover{background:var(--hot-core)}
+  .p-hotflag{display:inline-flex;align-items:center;gap:6px;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--hot-gold);border:1px solid rgba(255,201,107,.4);border-radius:999px;padding:4px 12px;margin-bottom:16px}
+
+  #list{position:fixed;inset:0;z-index:15;overflow-y:auto;display:none;padding:96px 28px 60px;background:var(--space-0)}
+  #list.on{display:block}
+  .lc{max-width:860px;margin:0 auto}
+  .l-topic{margin-bottom:34px}
+  .l-topic h2{font-size:12px;letter-spacing:.2em;text-transform:uppercase;color:var(--accent);font-weight:500;margin-bottom:4px}
+  .l-topic .l-sub{font-size:11px;color:var(--ink-faint);margin-bottom:14px}
+  .l-item{display:flex;align-items:baseline;gap:14px;padding:11px 12px;border-radius:8px;cursor:pointer}
+  .l-item:hover{background:var(--space-1)}
+  .l-dot{flex:none;border-radius:50%;background:var(--star-white);align-self:center}
+  .l-title{font-size:14.5px;color:var(--star-white);flex:1;line-height:1.4}
+  .l-meta{font-size:11.5px;color:var(--ink-faint);white-space:nowrap}
+  .l-none{font-size:13px;color:var(--ink-faint);font-style:italic;padding:6px 12px}
+
+  @media (prefers-reduced-motion: reduce){ #panel{transition:none} #tip{transition:none} }
+  @media (max-width:640px){
+    header{padding:16px 16px 10px;gap:10px}
+    .wordmark{font-size:21px}
+    .obs-date{display:none}
+    .legend{left:12px;bottom:12px;font-size:10.5px}
+    .nav{right:12px;bottom:12px}
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wordmark"><span class="glyph">✦</span>Interstellar</div>
+  <div class="obs-date">Observation · Aug 11 2026 · <span id="sigcount"></span> signals</div>
+  <div class="spacer"></div>
+  <div class="view-toggle" role="tablist">
+    <button id="btnSky" class="active" role="tab" aria-selected="true">Sky</button>
+    <button id="btnList" role="tab" aria-selected="false">List</button>
+  </div>
+  <button class="icon-btn" id="btnSettings" aria-label="Settings" aria-expanded="false">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="3"/>
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+    </svg>
+  </button>
+</header>
+
+<div id="settings" role="menu" aria-label="Settings">
+  <h3>Configuration</h3>
+  <div class="set-row"><span>Topics</span><span class="v">7 active</span></div>
+  <div class="set-row"><span>Sources</span><span class="v">21 active</span></div>
+  <div class="set-row"><span>Model</span><span class="v">classifier · synthesizer</span></div>
+  <div class="set-row"><span>Schedule</span><span class="v">daily · 11:00</span></div>
+  <div class="set-note">Prototype — these screens ship in the full build. Config lives in SQLite, editable right here.</div>
+</div>
+
+<canvas id="sky" aria-label="Star map of today's AI signals. Switch to List view for a text version."></canvas>
+
+<div class="legend" aria-hidden="true">
+  <div class="row"><span class="lg-dot big"></span><span>Larger star — higher relevance</span></div>
+  <div class="row"><span class="lg-dot gold"></span><span>Gold pulse — 3+ sources (hot)</span></div>
+  <div class="row"><span class="lg-dot faded"></span><span>Dimmer — older signal</span></div>
+  <div class="row"><span class="lg-dot small"></span><span>Constellation = your topic</span></div>
+</div>
+
+<div class="nav" aria-hidden="false">
+  <button id="zin" aria-label="Zoom in">+</button>
+  <button id="zout" aria-label="Zoom out">−</button>
+  <button id="zreset" aria-label="Reset view" style="font-size:12px">⌂</button>
+  <div class="hint">scroll · drag<br>dbl-click reset</div>
+</div>
+
+<div id="tip" role="tooltip">
+  <div class="t-topic"></div>
+  <div class="t-title"></div>
+  <div class="t-meta"></div>
+</div>
+
+<aside id="panel" aria-label="Signal detail">
+  <button class="p-close" aria-label="Close">✕</button>
+  <div class="p-topic"></div>
+  <div class="p-hot"></div>
+  <h1 class="p-title"></h1>
+  <div class="p-stats"></div>
+  <p class="p-reason"></p>
+  <div class="p-srcs"></div>
+  <a class="p-link" href="#" onclick="return false">Open source article →</a>
+</aside>
+
+<div id="list"><div class="lc" id="listContent"></div></div>
+
+<script>
+/* ============ MOCK DATA (mirrors items ⨝ matches ⨝ topics) ============ */
+const TOPICS = [
+  {id:1, name:"Agents & Harness Engineering", cx:.21, cy:.34},
+  {id:2, name:"Evolving Software Roles",      cx:.11, cy:.72},
+  {id:3, name:"Open-weight & On-prem",        cx:.46, cy:.22},
+  {id:4, name:"Voice AI",                     cx:.74, cy:.15},
+  {id:5, name:"Claude Code & Coding Agents",  cx:.63, cy:.50},
+  {id:6, name:"LLM Ops",                      cx:.85, cy:.68},
+  {id:7, name:"Small-team AI Product",        cx:.33, cy:.78},
+];
+const ITEMS = [
+ {t:3, score:5.0, srcs:6, age:0, title:"Qwen releases 72B open-weight model with on-prem deployment kit aimed at regulated industries",
+  reason:"Direct hit on your open-weight + regulated-industry constraint: bank-grade deployment guide, inference cost tables included.",
+  sources:["Hugging Face Blog","Hacker News (412 pts)","r/LocalLLaMA","Simon Willison","Latent Space","Meta thread"]},
+ {t:3, score:4.5, srcs:3, age:0, title:"Benchmark roundup: open 30–70B models now within 4% of frontier on finance-domain evals",
+  reason:"Cost/benchmark data point you asked for; three independent sources ran the same eval suite.",
+  sources:["Hacker News (188 pts)","Eugene Yan","r/LocalLLaMA"]},
+ {t:3, score:4.0, srcs:1, age:2, title:"A CTO's write-up: 9 months running on-prem inference at a mid-size bank",
+  reason:"Practitioner deployment story with real cost numbers — rare for this topic.",
+  sources:["Pragmatic Engineer"]},
+ {t:3, score:4.0, srcs:1, age:5, title:"Structured-output reliability across open models: a 4,000-call test",
+  reason:"Relevant to JSON-output reliability concerns in production pipelines.",
+  sources:["Hacker News (96 pts)"]},
+ {t:1, score:4.5, srcs:4, age:0, title:"Anthropic engineering: verification loops as the core primitive of agent harnesses",
+  reason:"Directly about wrapping agents with verification — your #1 topic definition, from a primary source.",
+  sources:["Anthropic Engineering","Hacker News (301 pts)","Simon Willison","Latent Space"]},
+ {t:1, score:4.5, srcs:2, age:1, title:"Context compaction strategies compared: 5 harness designs under long-horizon tasks",
+  reason:"Empirical comparison of context management approaches across harness architectures.",
+  sources:["Latent Space","Hacker News (145 pts)"]},
+ {t:1, score:4.0, srcs:1, age:3, title:"Why tool-permission design is the real security boundary in agent systems",
+  reason:"Harness security angle; overlaps your prompt-injection interests.",
+  sources:["Simon Willison"]},
+ {t:1, score:4.0, srcs:1, age:6, title:"A field guide to subagent orchestration failure modes",
+  reason:"Practitioner taxonomy of multi-agent failures with mitigations.",
+  sources:["AI Engineer (talk)"]},
+ {t:4, score:4.5, srcs:3, age:1, title:"New streaming STT stack claims 180ms end-to-end latency at $0.02/hr",
+  reason:"Latency + cost numbers for streaming voice — matches your voice-stack watch list.",
+  sources:["ElevenLabs Blog","Hacker News (203 pts)","Latent Space"]},
+ {t:4, score:4.0, srcs:1, age:4, title:"Deepgram ships word-level timestamps for real-time diarization",
+  reason:"Incremental but useful for streaming pipelines.",
+  sources:["Deepgram Blog"]},
+ {t:5, score:4.5, srcs:3, age:0, title:"How a 12-person team runs Claude Code: shared skills repo, gate hooks, review checklist",
+  reason:"Team-operating patterns for coding agents — almost a mirror of your bigin-skills setup.",
+  sources:["Hacker News (267 pts)","Pragmatic Engineer","Latent Space"]},
+ {t:5, score:4.0, srcs:2, age:1, title:"MCP server patterns that survived 6 months of production use",
+  reason:"Config/workflow tips with battle-tested MCP integration patterns.",
+  sources:["Simon Willison","Hacker News (119 pts)"]},
+ {t:5, score:4.0, srcs:1, age:3, title:"Cursor changelog: repo-wide semantic edits enter beta",
+  reason:"Tool update on your watch list.",
+  sources:["Cursor Changelog"]},
+ {t:5, score:4.0, srcs:1, age:5, title:"Skills vs system prompts: measuring instruction retention across long sessions",
+  reason:"Empirical take on skill-file effectiveness.",
+  sources:["Hamel Husain"]},
+ {t:6, score:4.5, srcs:2, age:2, title:"Regression testing LLM pipelines: golden sets, drift alarms, and when evals lie",
+  reason:"Squarely your monitoring/eval/regression topic; practical over academic.",
+  sources:["Hamel Husain","Eugene Yan"]},
+ {t:6, score:4.0, srcs:1, age:4, title:"Tracing multi-step agent runs: an OpenTelemetry convention proposal",
+  reason:"Observability standard emerging for agent pipelines.",
+  sources:["Hacker News (88 pts)"]},
+ {t:7, score:4.5, srcs:2, age:1, title:"Prototype-as-PRD: a 4-person team's bet factory, one year in",
+  reason:"Named exactly the pattern in your topic definition (prototype thay PRD, bet factory).",
+  sources:["Lenny's Newsletter","Hacker News (156 pts)"]},
+ {t:7, score:4.0, srcs:1, age:3, title:"Shipping an AI product with zero dedicated ML engineers",
+  reason:"Small-team build story; org design details.",
+  sources:["Latent Space"]},
+ {t:2, score:4.0, srcs:1, age:4, title:"The Quality Engineer is becoming the eval engineer",
+  reason:"One of the few direct signals on role evolution this week — this topic runs dry often.",
+  sources:["Pragmatic Engineer"]},
+];
+
+/* ============ SETUP ============ */
+const canvas=document.getElementById('sky'), ctx=canvas.getContext('2d');
+const tip=document.getElementById('tip'), panel=document.getElementById('panel');
+const reduceMotion=matchMedia('(prefers-reduced-motion: reduce)').matches;
+let W=0,H=0,DPR=1, stars=[], dustFar=[], dustNear=[], hoverStar=null;
+const view={x:0,y:0,s:1};          // pan/zoom state (screen = world*s + offset)
+const viewTarget={x:0,y:0,s:1};    // eased toward each frame
+
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+
+// color temperature palette for normal stars (real skies aren't uniform white)
+const TEMPS=[
+  {core:'255,255,255', mid:'214,230,255', halo:'150,185,255'},  // blue-white
+  {core:'255,255,255', mid:'232,240,255', halo:'175,200,255'},  // white
+  {core:'255,252,244', mid:'255,243,222', halo:'255,215,170'},  // warm white
+  {core:'252,248,255', mid:'238,230,255', halo:'195,175,255'},  // violet-white
+];
+const HOT={core:'255,240,210', mid:'255,214,140', halo:'255,190,90'};
+
+function starRadius(it){return 4.5+(it.score-4)*6+Math.min(it.srcs,6)*0.55}
+function starAlpha(it){return Math.max(.35,1-it.age*0.105)}
+function isHot(it){return it.srcs>=3}
+
+function layout(){
+  DPR=Math.min(devicePixelRatio||1,2);
+  W=innerWidth;H=innerHeight;
+  canvas.width=W*DPR;canvas.height=H*DPR;
+  canvas.style.width=W+'px';canvas.style.height=H+'px';
+  const rnd=mulberry32(20260811);
+  const m={x:70,top:90,bottom:110};
+  const uw=W-m.x*2, uh=H-m.top-m.bottom;
+  stars=ITEMS.map(it=>{
+    const tp=TOPICS.find(t=>t.id===it.t);
+    const sib=ITEMS.filter(x=>x.t===it.t), k=sib.indexOf(it), n=sib.length;
+    const ang=(k/Math.max(n,1))*Math.PI*2+rnd()*1.4;
+    const rad=(n===1?0:34+rnd()*46+(k%2)*18);
+    return{it,tp,
+      x:m.x+tp.cx*uw+Math.cos(ang)*rad,
+      y:m.top+tp.cy*uh+Math.sin(ang)*rad*0.72,
+      r:starRadius(it),a:starAlpha(it),
+      phase:rnd()*Math.PI*2, ph2:rnd()*Math.PI*2,
+      temp:TEMPS[Math.floor(rnd()*TEMPS.length)],
+      spin:rnd()*Math.PI,
+    };
+  });
+  const d1=mulberry32(42), d2=mulberry32(7);
+  dustFar=Array.from({length:130},()=>({x:d1()*W*1.6-W*.3,y:d1()*H*1.6-H*.3,r:.35+d1()*.8,a:.05+d1()*.18,ph:d1()*7,sp:.3+d1()}));
+  dustNear=Array.from({length:70},()=>({x:d2()*W*1.6-W*.3,y:d2()*H*1.6-H*.3,r:.6+d2()*1.4,a:.1+d2()*.3,ph:d2()*7,sp:.4+d2()*1.3}));
+}
+
+/* ============ RENDER ============ */
+function tapered(x1,y1,x2,y2,rgb,alpha,w){
+  // gradient line fading to transparent at the tip — for diffraction spikes
+  const g=ctx.createLinearGradient(x1,y1,x2,y2);
+  g.addColorStop(0,`rgba(${rgb},${alpha})`);
+  g.addColorStop(1,`rgba(${rgb},0)`);
+  ctx.strokeStyle=g;ctx.lineWidth=w;
+  ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();
+}
+
+function drawStar(s,now){
+  const hot=isHot(s.it);
+  const c = hot?HOT:s.temp;
+  // organic twinkle: two incommensurate sines
+  const tw = reduceMotion?1:(0.9+0.06*Math.sin(now/860+s.phase)+0.04*Math.sin(now/347+s.ph2));
+  const pulse=(hot&&!reduceMotion)?(1+0.2*Math.sin(now/520+s.phase)):1;
+  const hover=(hoverStar===s)?1.2:1;
+  const R=s.r*tw*hover, a=s.a;
+
+  // 1. chromatic outer halo — cool tint bleeding out
+  const haloR=R*(hot?4.6:3.2)*pulse;
+  let g=ctx.createRadialGradient(s.x,s.y,0,s.x,s.y,haloR);
+  g.addColorStop(0,`rgba(${c.mid},${.5*a})`);
+  g.addColorStop(.45,`rgba(${c.halo},${.16*a})`);
+  g.addColorStop(1,`rgba(${c.halo},0)`);
+  ctx.fillStyle=g;ctx.beginPath();ctx.arc(s.x,s.y,haloR,0,7);ctx.fill();
+
+  // 2. diffraction spikes — tapered, vertical pair slightly longer (like refractor optics)
+  if(s.r>5.5){
+    const L=R*(hot?3.4:2.7)*pulse, rgb=hot?HOT.mid:c.mid, sa=(hot?.6:.45)*a;
+    tapered(s.x,s.y,s.x,s.y-L*1.15,rgb,sa,1.1);
+    tapered(s.x,s.y,s.x,s.y+L*1.15,rgb,sa,1.1);
+    tapered(s.x,s.y,s.x-L,s.y,rgb,sa*.85,1);
+    tapered(s.x,s.y,s.x+L,s.y,rgb,sa*.85,1);
+    // secondary diagonal spikes on the largest stars, slowly rotating glint on hot ones
+    if(s.r>9){
+      const rot=(hot&&!reduceMotion)?now/9000:0;
+      const d=L*.5, ca=Math.cos(Math.PI/4+rot+s.spin), sb=Math.sin(Math.PI/4+rot+s.spin);
+      tapered(s.x,s.y,s.x+ca*d,s.y+sb*d,rgb,sa*.5,.8);
+      tapered(s.x,s.y,s.x-ca*d,s.y-sb*d,rgb,sa*.5,.8);
+      tapered(s.x,s.y,s.x-sb*d,s.y+ca*d,rgb,sa*.5,.8);
+      tapered(s.x,s.y,s.x+sb*d,s.y-ca*d,rgb,sa*.5,.8);
+    }
+  }
+
+  // 3. mid glow
+  g=ctx.createRadialGradient(s.x,s.y,0,s.x,s.y,R*1.15);
+  g.addColorStop(0,`rgba(${c.core},${.95*a})`);
+  g.addColorStop(.6,`rgba(${c.mid},${.55*a})`);
+  g.addColorStop(1,`rgba(${c.mid},0)`);
+  ctx.fillStyle=g;ctx.beginPath();ctx.arc(s.x,s.y,R*1.15,0,7);ctx.fill();
+
+  // 4. hard bright core — the pinprick that makes it read as a star, not a blob
+  ctx.fillStyle=`rgba(${c.core},${a})`;
+  ctx.beginPath();ctx.arc(s.x,s.y,Math.max(R*.28,1.4),0,7);ctx.fill();
+  ctx.fillStyle=`rgba(255,255,255,${.9*a})`;
+  ctx.beginPath();ctx.arc(s.x-R*.07,s.y-R*.07,Math.max(R*.12,.7),0,7);ctx.fill();
+}
+
+function drawConstellations(){
+  const fs=11.5/view.s;
+  for(const tp of TOPICS){
+    const pts=stars.filter(s=>s.tp.id===tp.id);
+    if(!pts.length)continue;
+    if(pts.length>1){
+      ctx.strokeStyle='rgba(56,78,140,.4)';ctx.lineWidth=1/view.s;
+      ctx.setLineDash([1/view.s,5/view.s]);
+      ctx.beginPath();
+      pts.forEach((p,i)=>i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y));
+      ctx.stroke();ctx.setLineDash([]);
+    }
+    const cx=pts.reduce((s,p)=>s+p.x,0)/pts.length;
+    const cy=Math.min(...pts.map(p=>p.y))-26/view.s;
+    ctx.font=fs+'px Noto Sans';ctx.textAlign='center';
+    ctx.fillStyle='rgba(158,195,255,.8)';
+    ctx.fillText(tp.name.toUpperCase(),cx,cy);
+    ctx.fillStyle='rgba(74,86,124,.8)';
+    ctx.fillText('· '+pts.length+' ·',cx,cy+14/view.s);
+  }
+}
+
+function drawDust(list,parallax,now){
+  // parallax: dust translated by a fraction of the view offset → depth
+  ctx.save();
+  ctx.setTransform(DPR,0,0,DPR,view.x*parallax,view.y*parallax);
+  const sc=1+(view.s-1)*parallax;
+  ctx.scale(sc,sc);
+  for(const d of list){
+    const tw=reduceMotion?1:(0.55+0.45*Math.sin(now/1500*d.sp+d.ph));
+    ctx.fillStyle=`rgba(200,215,245,${d.a*tw})`;
+    ctx.beginPath();ctx.arc(d.x,d.y,d.r,0,7);ctx.fill();
+  }
+  ctx.restore();
+}
+
+function frame(now){
+  // ease view toward target
+  const e=reduceMotion?1:.18;
+  view.x+=(viewTarget.x-view.x)*e;
+  view.y+=(viewTarget.y-view.y)*e;
+  view.s+=(viewTarget.s-view.s)*e;
+
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  ctx.clearRect(0,0,W,H);
+  const bg=ctx.createLinearGradient(0,0,W,H);
+  bg.addColorStop(0,'#060A18');bg.addColorStop(.55,'#0A1026');bg.addColorStop(1,'#0B0F24');
+  ctx.fillStyle=bg;ctx.fillRect(0,0,W,H);
+  const neb=ctx.createRadialGradient(W*.44,H*.28,0,W*.44,H*.28,Math.max(W,H)*.6);
+  neb.addColorStop(0,'rgba(38,53,94,.30)');neb.addColorStop(1,'rgba(38,53,94,0)');
+  ctx.fillStyle=neb;ctx.fillRect(0,0,W,H);
+
+  drawDust(dustFar,.25,now);
+  drawDust(dustNear,.55,now);
+
+  // world layer
+  ctx.setTransform(DPR,0,0,DPR,view.x*DPR/1,view.y*DPR/1);
+  ctx.scale(view.s,view.s);
+  // graticule in world space
+  ctx.strokeStyle='rgba(20,30,63,.55)';ctx.lineWidth=1/view.s;
+  for(let i=1;i<=4;i++){
+    ctx.beginPath();ctx.arc(W*0.5,H*2.1,H*1.55+i*90,Math.PI*1.28,Math.PI*1.72);ctx.stroke();
+  }
+  ctx.strokeStyle='rgba(20,30,63,.30)';
+  for(let i=1;i<=5;i++){
+    const x=(W/6)*i;
+    ctx.beginPath();ctx.moveTo(x,70);ctx.lineTo(x,H-60);ctx.stroke();
+  }
+  drawConstellations();
+  for(const s of stars)drawStar(s,now);
+  requestAnimationFrame(frame);
+}
+// fix transform helper: view.x/y are in CSS px, must scale by DPR once
+// (handled above by multiplying translate by DPR)
+
+/* ============ PAN / ZOOM ============ */
+function screenToWorld(mx,my){return{x:(mx-view.x)/view.s,y:(my-view.y)/view.s}}
+function clampScale(s){return Math.min(3.5,Math.max(.55,s))}
+function zoomAt(mx,my,factor){
+  const w=screenToWorld(mx,my);
+  viewTarget.s=clampScale(viewTarget.s*factor);
+  viewTarget.x=mx-w.x*viewTarget.s;
+  viewTarget.y=my-w.y*viewTarget.s;
+}
+canvas.addEventListener('wheel',e=>{
+  e.preventDefault();
+  zoomAt(e.clientX,e.clientY,Math.exp(-e.deltaY*0.0012));
+},{passive:false});
+
+let drag=null,moved=false;
+canvas.addEventListener('mousedown',e=>{
+  drag={mx:e.clientX,my:e.clientY,vx:viewTarget.x,vy:viewTarget.y};moved=false;
+  canvas.classList.add('grabbing');
+});
+addEventListener('mousemove',e=>{
+  if(drag){
+    const dx=e.clientX-drag.mx,dy=e.clientY-drag.my;
+    if(Math.hypot(dx,dy)>4)moved=true;
+    viewTarget.x=drag.vx+dx;viewTarget.y=drag.vy+dy;
+    view.x=viewTarget.x;view.y=viewTarget.y; // no easing mid-drag
+    return;
+  }
+  const w=screenToWorld(e.clientX,e.clientY);
+  const s=starAtWorld(w.x,w.y);
+  hoverStar=s;
+  canvas.classList.toggle('pointing',!!s);
+  if(s){
+    tip.querySelector('.t-topic').textContent=s.tp.name;
+    tip.querySelector('.t-title').textContent=s.it.title;
+    tip.querySelector('.t-meta').textContent=
+      `score ${s.it.score.toFixed(1)} · ${s.it.srcs} source${s.it.srcs>1?'s':''} · ${s.it.age===0?'today':s.it.age+'d ago'}`;
+    tip.style.left=Math.min(e.clientX+16,W-320)+'px';
+    tip.style.top=Math.min(e.clientY+14,H-110)+'px';
+    tip.classList.add('on');
+  }else tip.classList.remove('on');
+});
+addEventListener('mouseup',e=>{
+  if(drag&&!moved){
+    const w=screenToWorld(e.clientX,e.clientY);
+    const s=starAtWorld(w.x,w.y);
+    if(s)openPanel(s.it,s.tp);
+  }
+  drag=null;canvas.classList.remove('grabbing');
+});
+canvas.addEventListener('mouseleave',()=>{hoverStar=null;tip.classList.remove('on')});
+canvas.addEventListener('dblclick',()=>{viewTarget.x=0;viewTarget.y=0;viewTarget.s=1});
+
+// touch: 1-finger pan, 2-finger pinch
+let touches={};
+canvas.addEventListener('touchstart',e=>{
+  for(const t of e.changedTouches)touches[t.identifier]={x:t.clientX,y:t.clientY};
+},{passive:true});
+canvas.addEventListener('touchmove',e=>{
+  e.preventDefault();
+  const ids=Object.keys(touches);
+  if(e.touches.length===1&&ids.length>=1){
+    const t=e.touches[0],p=touches[t.identifier];
+    if(p){
+      viewTarget.x+=t.clientX-p.x;viewTarget.y+=t.clientY-p.y;
+      view.x=viewTarget.x;view.y=viewTarget.y;
+      touches[t.identifier]={x:t.clientX,y:t.clientY};
+    }
+  }else if(e.touches.length===2){
+    const[a,b]=e.touches,pa=touches[a.identifier],pb=touches[b.identifier];
+    if(pa&&pb){
+      const d0=Math.hypot(pa.x-pb.x,pa.y-pb.y),d1=Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY);
+      zoomAt((a.clientX+b.clientX)/2,(a.clientY+b.clientY)/2,d1/d0);
+      touches[a.identifier]={x:a.clientX,y:a.clientY};
+      touches[b.identifier]={x:b.clientX,y:b.clientY};
+    }
+  }
+},{passive:false});
+canvas.addEventListener('touchend',e=>{
+  for(const t of e.changedTouches)delete touches[t.identifier];
+},{passive:true});
+
+document.getElementById('zin').onclick=()=>zoomAt(W/2,H/2,1.35);
+document.getElementById('zout').onclick=()=>zoomAt(W/2,H/2,1/1.35);
+document.getElementById('zreset').onclick=()=>{viewTarget.x=0;viewTarget.y=0;viewTarget.s=1};
+
+function starAtWorld(wx,wy){
+  let best=null,bd=1e9;
+  for(const s of stars){
+    const d=Math.hypot(wx-s.x,wy-s.y);
+    if(d<Math.max(s.r*1.7,14/view.s)&&d<bd){best=s;bd=d}
+  }
+  return best;
+}
+
+/* ============ PANEL / LIST (unchanged from v1) ============ */
+function openPanel(it,tp){
+  panel.querySelector('.p-topic').textContent=tp.name;
+  panel.querySelector('.p-hot').innerHTML=isHot(it)?`<div class="p-hotflag">✦ hot · ${it.srcs} sources</div>`:'';
+  panel.querySelector('.p-title').textContent=it.title;
+  panel.querySelector('.p-stats').innerHTML=`
+    <div class="p-stat"><div class="n${isHot(it)?' gold':''}">${it.score.toFixed(1)}</div><div class="l">Relevance</div></div>
+    <div class="p-stat"><div class="n">${it.srcs}</div><div class="l">Sources</div></div>
+    <div class="p-stat"><div class="n">${it.age===0?'Today':it.age+'d'}</div><div class="l">Age</div></div>`;
+  panel.querySelector('.p-reason').innerHTML=`<em>Why it matched —</em> ${it.reason}`;
+  panel.querySelector('.p-srcs').innerHTML=`<span class="s-label">Seen on</span>`+it.sources.join('<br>');
+  panel.classList.add('open');
+}
+panel.querySelector('.p-close').addEventListener('click',()=>panel.classList.remove('open'));
+addEventListener('keydown',e=>{if(e.key==='Escape')panel.classList.remove('open')});
+
+const listEl=document.getElementById('list'),listContent=document.getElementById('listContent');
+function buildList(){
+  listContent.innerHTML=TOPICS.map(tp=>{
+    const its=ITEMS.filter(i=>i.t===tp.id).sort((a,b)=>b.score-a.score||a.age-b.age);
+    const rows=its.length?its.map(it=>{
+      const d=6+(it.score-4)*8;
+      const style=`width:${d}px;height:${d}px;${isHot(it)?'background:var(--hot-gold);box-shadow:0 0 8px rgba(255,201,107,.6)':''};opacity:${starAlpha(it)}`;
+      return `<div class="l-item" data-id="${ITEMS.indexOf(it)}">
+        <span class="l-dot" style="${style}"></span>
+        <span class="l-title">${it.title}</span>
+        <span class="l-meta">${it.score.toFixed(1)} · ${it.srcs} src · ${it.age===0?'today':it.age+'d'}</span>
+      </div>`;
+    }).join(''):`<div class="l-none">No signal today.</div>`;
+    return `<section class="l-topic"><h2>${tp.name}</h2>
+      <div class="l-sub">${its.length} signal${its.length!==1?'s':''}</div>${rows}</section>`;
+  }).join('');
+  listContent.querySelectorAll('.l-item').forEach(el=>{
+    el.addEventListener('click',()=>{
+      const it=ITEMS[+el.dataset.id];
+      openPanel(it,TOPICS.find(t=>t.id===it.t));
+    });
+  });
+}
+const btnSky=document.getElementById('btnSky'),btnList=document.getElementById('btnList');
+function setView(v){
+  const list=v==='list';
+  listEl.classList.toggle('on',list);
+  btnSky.classList.toggle('active',!list);btnList.classList.toggle('active',list);
+  btnSky.setAttribute('aria-selected',!list);btnList.setAttribute('aria-selected',list);
+}
+btnSky.onclick=()=>setView('sky');btnList.onclick=()=>setView('list');
+
+/* settings popover */
+const btnSettings=document.getElementById('btnSettings'),settings=document.getElementById('settings');
+function toggleSettings(force){
+  const open=force!==undefined?force:!settings.classList.contains('open');
+  settings.classList.toggle('open',open);
+  btnSettings.setAttribute('aria-expanded',open);
+}
+btnSettings.addEventListener('click',e=>{e.stopPropagation();toggleSettings()});
+document.addEventListener('click',e=>{
+  if(settings.classList.contains('open')&&!settings.contains(e.target))toggleSettings(false);
+});
+addEventListener('keydown',e=>{if(e.key==='Escape')toggleSettings(false)});
+
+document.getElementById('sigcount').textContent=ITEMS.length;
+layout();buildList();
+addEventListener('resize',layout);
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

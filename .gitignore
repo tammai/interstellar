@@ -1,0 +1,14 @@
+# Build output
+/bin/
+/dist/
+
+# Local dev database (see `make dev`)
+/.devdata/
+*.db
+*.db-wal
+*.db-shm
+
+# Local tool config
+.claude/settings.local.json
+
+.DS_Store
