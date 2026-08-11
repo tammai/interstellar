@@ -91,19 +91,32 @@ var placeholderTopics = []struct {
 // seedSources is a starter set, not Long's curated list -- §9 references a rev-2
 // list that never made it into rev 3. Every instance owner prunes their own, so
 // these exist to make a fresh install produce a non-empty sky on day one.
+//
+// Every RSS URL here was verified to return 200 before being seeded. A feed that
+// 404s forever is worse than no feed: it teaches the owner to ignore the failure
+// list, which is the one place a genuinely broken source shows up.
 var seedSources = []struct {
 	Kind, Name, Config string
+	Active             bool
 }{
-	{"rss", "Simon Willison", `{"url":"https://simonwillison.net/atom/everything/"}`},
-	{"rss", "Anthropic Engineering", `{"url":"https://www.anthropic.com/engineering/rss.xml"}`},
-	{"rss", "Latent Space", `{"url":"https://www.latent.space/feed"}`},
-	{"rss", "Pragmatic Engineer", `{"url":"https://blog.pragmaticengineer.com/rss/"}`},
-	{"rss", "Eugene Yan", `{"url":"https://eugeneyan.com/rss/"}`},
-	{"rss", "Hamel Husain", `{"url":"https://hamel.dev/index.xml"}`},
-	{"hn_search", "HN · AI agents", `{"query":"AI agents"}`},
-	{"hn_search", "HN · open weights LLM", `{"query":"open weights LLM"}`},
-	{"hn_search", "HN · LLM evaluation", `{"query":"LLM evaluation"}`},
-	{"youtube_rss", "YouTube · Latent Space", `{"channel_id":"UCbEwLPGYCJZmXbjJZq5eNRQ"}`},
+	{"rss", "Simon Willison", `{"url":"https://simonwillison.net/atom/everything/"}`, true},
+	{"rss", "Latent Space", `{"url":"https://www.latent.space/feed"}`, true},
+	{"rss", "Pragmatic Engineer", `{"url":"https://blog.pragmaticengineer.com/rss/"}`, true},
+	{"rss", "Eugene Yan", `{"url":"https://eugeneyan.com/rss/"}`, true},
+	{"rss", "Hamel Husain", `{"url":"https://hamel.dev/index.xml"}`, true},
+	{"rss", "Interconnects", `{"url":"https://www.interconnects.ai/feed"}`, true},
+	{"rss", "Ahead of AI", `{"url":"https://magazine.sebastianraschka.com/feed"}`, true},
+
+	{"hn_search", "HN · AI agents", `{"query":"AI agents"}`, true},
+	{"hn_search", "HN · open weights LLM", `{"query":"open weights LLM"}`, true},
+	{"hn_search", "HN · LLM evaluation", `{"query":"LLM evaluation"}`, true},
+	{"hn_search", "HN · voice AI", `{"query":"voice AI"}`, true},
+
+	// Inactive on purpose: a YouTube feed needs a channel ID only the owner
+	// knows (§9 says "channels Long actually watches"), and guessing one seeds a
+	// permanent failure. This row exists so the config shape is discoverable in
+	// Settings -- fill in the ID and switch it on.
+	{"youtube_rss", "YouTube · add your channel ID", `{"channel_id":""}`, false},
 }
 
 // Bootstrap fills an empty database. Each section is independently guarded, so
@@ -180,9 +193,13 @@ func (db *DB) seedSources() error {
 	defer tx.Rollback()
 
 	for _, s := range seedSources {
+		active := 0
+		if s.Active {
+			active = 1
+		}
 		_, err := tx.Exec(
-			`INSERT INTO sources (kind, name, config, active) VALUES (?, ?, ?, 1)`,
-			s.Kind, s.Name, s.Config,
+			`INSERT INTO sources (kind, name, config, active) VALUES (?, ?, ?, ?)`,
+			s.Kind, s.Name, s.Config, active,
 		)
 		if err != nil {
 			return fmt.Errorf("seed source %q: %w", s.Name, err)

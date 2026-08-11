@@ -1,0 +1,161 @@
+package store
+
+import (
+	"errors"
+	"fmt"
+	"time"
+)
+
+// NewItem is one normalized entry ready to persist.
+type NewItem struct {
+	SourceID     int64
+	CanonicalURL string
+	Title        string
+	Summary      string
+	PublishedAt  time.Time // zero means unknown
+	Detail       string    // per-source annotation, e.g. "412 points"
+}
+
+// UpsertItem stores an item and its source attribution, returning whether the
+// item itself was new.
+//
+// The two writes are not the same question. The item is deduplicated by
+// canonical URL, so the same story from three feeds yields one row. The
+// attribution is per (item, source), so all three feeds are still recorded --
+// and that is what signals.source_count counts, which is what makes a signal
+// gold. Losing the second write would silently break the hot flag.
+func (db *DB) UpsertItem(it NewItem) (itemID int64, isNew bool, err error) {
+	tx, err := db.Begin()
+	if err != nil {
+		return 0, false, fmt.Errorf("upsert item: begin: %w", err)
+	}
+	defer tx.Rollback()
+
+	var published any
+	if !it.PublishedAt.IsZero() {
+		published = it.PublishedAt.UTC().Format(time.RFC3339)
+	}
+
+	res, err := tx.Exec(
+		`INSERT INTO items (source_id, canonical_url, title, summary, published_at)
+		 VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(canonical_url) DO NOTHING`,
+		it.SourceID, it.CanonicalURL, it.Title, it.Summary, published,
+	)
+	if err != nil {
+		return 0, false, fmt.Errorf("insert item %q: %w", it.CanonicalURL, err)
+	}
+
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return 0, false, fmt.Errorf("insert item %q: rows affected: %w", it.CanonicalURL, err)
+	}
+	isNew = affected > 0
+
+	if isNew {
+		itemID, err = res.LastInsertId()
+		if err != nil {
+			return 0, false, fmt.Errorf("insert item %q: last id: %w", it.CanonicalURL, err)
+		}
+	} else {
+		err = tx.QueryRow(`SELECT id FROM items WHERE canonical_url = ?`, it.CanonicalURL).Scan(&itemID)
+		if err != nil {
+			return 0, false, fmt.Errorf("look up item %q: %w", it.CanonicalURL, err)
+		}
+	}
+
+	// Attribution. DO UPDATE rather than DO NOTHING so a re-fetch refreshes a
+	// changing annotation (an HN score climbs during the day) without creating
+	// a duplicate row.
+	_, err = tx.Exec(
+		`INSERT INTO item_sources (item_id, source_id, detail)
+		 VALUES (?, ?, ?)
+		 ON CONFLICT(item_id, source_id) DO UPDATE SET detail = excluded.detail`,
+		itemID, it.SourceID, nullIfEmpty(it.Detail),
+	)
+	if err != nil {
+		return 0, false, fmt.Errorf("attribute item %d to source %d: %w", itemID, it.SourceID, err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, false, fmt.Errorf("upsert item %q: commit: %w", it.CanonicalURL, err)
+	}
+	return itemID, isNew, nil
+}
+
+// ItemSourceNames returns the display names of every source that carried an
+// item, with each source's annotation appended when it has one -- the panel's
+// "Seen on" list.
+func (db *DB) ItemSourceNames(itemID int64) ([]string, error) {
+	rows, err := db.Query(
+		`SELECT s.name, COALESCE(i.detail, '')
+		   FROM item_sources i
+		   JOIN sources s ON s.id = i.source_id
+		  WHERE i.item_id = ?
+		  ORDER BY s.name`,
+		itemID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("item %d sources: %w", itemID, err)
+	}
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var name, detail string
+		if err := rows.Scan(&name, &detail); err != nil {
+			return nil, fmt.Errorf("scan item source: %w", err)
+		}
+		if detail != "" {
+			name = fmt.Sprintf("%s (%s)", name, detail)
+		}
+		out = append(out, name)
+	}
+	return out, rows.Err()
+}
+
+// ItemsSince returns items fetched after the watermark, oldest first. This is
+// the classifier's work queue: an empty watermark means everything.
+func (db *DB) ItemsSince(watermark string, limit int) ([]ClassifiableItem, error) {
+	query := `SELECT i.id, i.title, COALESCE(i.summary, ''), i.fetched_at,
+	                 COALESCE((SELECT s.name FROM sources s WHERE s.id = i.source_id), '')
+	            FROM items i
+	           WHERE i.fetched_at > ?
+	           ORDER BY i.fetched_at, i.id
+	           LIMIT ?`
+	rows, err := db.Query(query, watermark, limit)
+	if err != nil {
+		return nil, fmt.Errorf("items since %q: %w", watermark, err)
+	}
+	defer rows.Close()
+
+	var out []ClassifiableItem
+	for rows.Next() {
+		var it ClassifiableItem
+		if err := rows.Scan(&it.ID, &it.Title, &it.Summary, &it.FetchedAt, &it.SourceName); err != nil {
+			return nil, fmt.Errorf("scan item: %w", err)
+		}
+		out = append(out, it)
+	}
+	return out, rows.Err()
+}
+
+// ClassifiableItem is the projection the classifier prompt needs -- deliberately
+// narrow, because every field costs tokens on every batch.
+type ClassifiableItem struct {
+	ID         int64
+	Title      string
+	Summary    string
+	SourceName string
+	FetchedAt  string
+}
+
+func nullIfEmpty(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+// ErrNotFound is returned when a lookup by id finds nothing.
+var ErrNotFound = errors.New("not found")
