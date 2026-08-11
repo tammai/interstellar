@@ -607,3 +607,83 @@ func TestSynthesizeBoundsTheComposePrompt(t *testing.T) {
 		t.Errorf("signal has %d members, want at most %d", members, maxMatchesPerTopic)
 	}
 }
+
+// Classification batches must run concurrently. Sequentially, a real run of
+// 7 topics x 12 batches at ~25s per call takes half an hour — measured against a
+// live provider, and several times over §10's three-minute budget.
+func TestClassifyRunsBatchesConcurrently(t *testing.T) {
+	db := testDB(t)
+	src := seedSource(t, db, "Blog")
+	for i := 0; i < 90; i++ {
+		seedItem(t, db, src, fmt.Sprintf("https://x.test/p-%d", i), fmt.Sprintf("Post %d", i))
+	}
+	seedTopic(t, db, "A", "A definition.")
+	seedTopic(t, db, "B", "Another definition.")
+
+	var mu sync.Mutex
+	inFlight, peak := 0, 0
+
+	model := newFakeModel(t, func(prompt string) string {
+		mu.Lock()
+		inFlight++
+		if inFlight > peak {
+			peak = inFlight
+		}
+		mu.Unlock()
+
+		time.Sleep(60 * time.Millisecond) // long enough for overlap to be observable
+		mu.Lock()
+		inFlight--
+		mu.Unlock()
+		return scoreAllHigh(prompt)
+	})
+
+	if _, err := Classify(context.Background(), db, clientFor(t, db, model), testConfig(), quietLogger()); err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+
+	mu.Lock()
+	got := peak
+	mu.Unlock()
+	if got < 2 {
+		t.Errorf("peak concurrent model calls = %d; batches are running one at a time", got)
+	}
+	if got > classifyWorkers {
+		t.Errorf("peak concurrent model calls = %d, above the %d cap; a provider would rate-limit",
+			got, classifyWorkers)
+	}
+}
+
+// Concurrency must not cost idempotency: the watermark still has to hold.
+func TestConcurrentClassifyStillHonorsWatermark(t *testing.T) {
+	db := testDB(t)
+	src := seedSource(t, db, "Blog")
+	for i := 0; i < 70; i++ {
+		seedItem(t, db, src, fmt.Sprintf("https://x.test/w-%d", i), fmt.Sprintf("Post %d", i))
+	}
+	seedTopic(t, db, "A", "A definition.")
+	seedTopic(t, db, "B", "Another definition.")
+
+	model := newFakeModel(t, scoreAllHigh)
+	client := clientFor(t, db, model)
+
+	if _, err := Classify(context.Background(), db, client, testConfig(), quietLogger()); err != nil {
+		t.Fatal(err)
+	}
+	first := model.callCount()
+
+	cfg2, err := configFromDB(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := Classify(context.Background(), db, client, cfg2, quietLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ItemsConsidered != 0 {
+		t.Errorf("second pass considered %d items, want 0", result.ItemsConsidered)
+	}
+	if model.callCount() != first {
+		t.Errorf("second pass made %d extra calls", model.callCount()-first)
+	}
+}

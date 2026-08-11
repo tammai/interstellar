@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 
 	"github.com/tammai/interstellar/internal/config"
 	"github.com/tammai/interstellar/internal/llm"
@@ -20,6 +21,15 @@ const classifyWindowLimit = 2000
 // maxSummaryChars truncates summaries in the prompt. Relevance is decided by
 // the first couple of sentences; the rest is tokens billed per topic per batch.
 const maxSummaryChars = 400
+
+// classifyWorkers bounds concurrent model calls.
+//
+// Batches are independent, so this is the difference between a refresh that
+// fits §10's three-minute budget and one that takes half an hour. Six is a
+// compromise: enough to hide per-call latency, low enough to stay clear of a
+// provider's rate limit — and a 429 costs more than the parallelism saves,
+// because it burns a retry and then the fallback chain.
+const classifyWorkers = 6
 
 // ClassifyResult summarizes a pass.
 type ClassifyResult struct {
@@ -94,58 +104,117 @@ func Classify(
 	// items forever.
 	highWater := cfg.ClassifyWatermark
 
+	// Every (topic, batch) pair is independent, so build the whole work list and
+	// run it through a bounded pool. Sequentially this is topics x batches round
+	// trips end to end -- measured at ~25s each against a real provider, which
+	// blows §10's three-minute budget several times over before the day's second
+	// topic is finished.
+	type work struct {
+		topic store.Topic
+		batch []store.ClassifiableItem
+	}
+	var queue []work
 	for _, topic := range ready {
 		result.TopicsRun++
-
 		for start := 0; start < len(items); start += batchSize {
 			end := min(start+batchSize, len(items))
-			batch := items[start:end]
-			result.Batches++
+			queue = append(queue, work{topic: topic, batch: items[start:end]})
+		}
+	}
+	result.Batches = len(queue)
 
-			verdicts, repaired, err := classifyBatch(ctx, client, topic, batch, log)
-			if err != nil {
-				if errors.Is(err, llm.ErrCapReached) || errors.Is(err, context.Canceled) ||
-					errors.Is(err, context.DeadlineExceeded) {
-					// The guard stopping a run, or a shutdown: stop cleanly and
-					// keep what we have. The watermark is deliberately not
-					// advanced.
-					return result, err
+	type outcome struct {
+		matches  []store.Match
+		dropped  int
+		repaired bool
+		topic    string
+		err      error
+	}
+
+	jobs := make(chan work)
+	results := make(chan outcome)
+
+	var wg sync.WaitGroup
+	for i := 0; i < min(classifyWorkers, len(queue)); i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for w := range jobs {
+				verdicts, repaired, err := classifyBatch(ctx, client, w.topic, w.batch, log)
+				out := outcome{repaired: repaired, err: err, topic: w.topic.Title}
+				if err == nil {
+					known := itemIDSet(w.batch)
+					for _, v := range verdicts {
+						// A model can hallucinate an id that wasn't in the
+						// batch; storing one would attach a verdict to an
+						// unrelated article.
+						if !known[v.ItemID] {
+							out.dropped++
+							continue
+						}
+						if v.Score < cfg.MatchThreshold {
+							continue // §5.2 keeps >= 4 only
+						}
+						out.matches = append(out.matches, store.Match{
+							ItemID:  v.ItemID,
+							TopicID: w.topic.ID,
+							Score:   v.Score,
+							Reason:  strings.TrimSpace(v.Reason),
+						})
+					}
 				}
-				log.Warn("classify batch failed",
-					"topic", topic.Title, "items", len(batch), "err", err)
-				result.Problems = append(result.Problems,
-					fmt.Sprintf("topic %q: %v", topic.Title, err))
+				results <- out
+			}
+		}()
+	}
+
+	go func() {
+		defer close(jobs)
+		for _, w := range queue {
+			select {
+			case jobs <- w:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	// All database writes happen here, on one goroutine.
+	var fatal error
+	for out := range results {
+		if out.err != nil {
+			if errors.Is(out.err, llm.ErrCapReached) || errors.Is(out.err, context.Canceled) ||
+				errors.Is(out.err, context.DeadlineExceeded) {
+				// The guard stopping a run, or a shutdown. Keep draining so the
+				// workers can exit, but remember to stop afterwards without
+				// advancing the watermark.
+				if fatal == nil {
+					fatal = out.err
+				}
 				continue
 			}
-			if repaired {
-				result.Repairs++
-			}
-
-			matches := make([]store.Match, 0, len(verdicts))
-			known := itemIDSet(batch)
-			for _, v := range verdicts {
-				// A model can hallucinate an id that wasn't in the batch;
-				// storing one would attach a verdict to an unrelated article.
-				if !known[v.ItemID] {
-					result.VerdictsDropped++
-					continue
-				}
-				if v.Score < cfg.MatchThreshold {
-					continue // §5.2 keeps >= 4 only
-				}
-				matches = append(matches, store.Match{
-					ItemID:  v.ItemID,
-					TopicID: topic.ID,
-					Score:   v.Score,
-					Reason:  strings.TrimSpace(v.Reason),
-				})
-			}
-
-			if err := db.SaveMatches(matches); err != nil {
-				return result, err
-			}
-			result.MatchesKept += len(matches)
+			log.Warn("classify batch failed", "topic", out.topic, "err", out.err)
+			result.Problems = append(result.Problems,
+				fmt.Sprintf("topic %q: %v", out.topic, out.err))
+			continue
 		}
+		if out.repaired {
+			result.Repairs++
+		}
+		result.VerdictsDropped += out.dropped
+
+		if err := db.SaveMatches(out.matches); err != nil {
+			return result, err
+		}
+		result.MatchesKept += len(out.matches)
+	}
+	if fatal != nil {
+		return result, fatal
 	}
 
 	for _, it := range items {
@@ -244,6 +313,11 @@ const classifySystemPrompt = `You score news items for relevance to a single top
 Reply with ONLY a JSON array, one object per item you were given:
 [{"item_id": <number>, "score": <1-5>, "reason": "<one sentence>"}]
 
+Include "reason" ONLY for items you score 4 or 5. For anything scored 3 or below,
+return just the item_id and score. Most items in a batch are not relevant, and a
+justification for each one is text nobody will ever read -- it is the single
+largest cost and the largest source of latency in a run.
+
 Scoring:
 5 - squarely about this topic, and substantive
 4 - clearly relevant, worth the reader's time
@@ -253,7 +327,13 @@ Scoring:
 
 Judge the item, not the source's reputation. The reason must say what in the item
 matched the topic definition, in one sentence, and must be specific enough to be
-useful to someone deciding whether to click. No preamble, no code fences.`
+useful to someone deciding whether to click.
+
+Always write the reason in English, even when the topic definition is written in
+another language. The definition is the owner's private note to themselves; the
+reason is read in the interface, which is English.
+
+No preamble, no code fences.`
 
 func classifyPrompt(topic store.Topic, batch []store.ClassifiableItem) string {
 	var b strings.Builder
@@ -274,7 +354,8 @@ func classifyPrompt(topic store.Topic, batch []store.ClassifiableItem) string {
 		}
 	}
 
-	fmt.Fprintf(&b, "\nScore all %d items. Return the JSON array only.", len(batch))
+	fmt.Fprintf(&b, "\nScore all %d items. Include a reason only for those scoring 4 or 5. "+
+		"Return the JSON array only.", len(batch))
 	return b.String()
 }
 

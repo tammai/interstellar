@@ -246,6 +246,9 @@ Rules:
   written for someone who already cares about this topic. Say what is new or
   what it changes, not that it is "interesting" or "important".
 - Do not count sources or rank the stories; that is computed elsewhere.
+- Always write the title and reason in English, even when the topic definition is
+  written in another language. The definition is the owner's private note; the
+  title and reason are what the sky and the list show.
 
 No preamble, no code fences.`
 

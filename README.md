@@ -81,6 +81,30 @@ When quality forces a change, the ladder is: classifier failing the JSON gate �
 step up a tier; digest reading poorly → step the synthesizer up. Each step is a
 settings change.
 
+### Ollama
+
+The `ollama` preset is keyless: the `ollama` CLI holds your credentials and the
+local server proxies for you, so Interstellar needs no key of its own.
+
+```sh
+ollama signin                     # once, for cloud models
+ollama pull <model>               # or, for local weights
+```
+
+Then set either role to `ollama/<model>` — for example
+`ollama/deepseek-v4-flash:cloud`.
+
+Two things to get right:
+
+- **The base URL depends on where Interstellar runs.** In Docker it must be
+  `http://host.docker.internal:11434/v1`, which is what ships. Running natively
+  (`make dev`), change it to `http://localhost:11434/v1` — the container address
+  does not resolve on the host.
+- **Local weights need a GPU Ollama can actually use.** That means Apple Silicon
+  (Metal) or Linux with CUDA/ROCm. On an Intel Mac, Ollama is CPU-only: a 7B
+  model runs at single-digit tokens/second, and the classifier generates
+  thousands of tokens per batch. Use `:cloud` models there instead.
+
 ## Verifying a model swap
 
 Before trusting a model you just switched to:
