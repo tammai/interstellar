@@ -553,3 +553,57 @@ func TestFullPipelineProducesASky(t *testing.T) {
 func configFromDB(db *store.DB) (config.Runtime, error) {
 	return config.Load(db)
 }
+
+// How many matches exist is decided by the classifier's generosity, so the
+// synthesizer needs its own bound or one compose call becomes an arbitrarily
+// large prompt. Found by running the real pipeline: a lenient classifier
+// produced a single signal with 113 members.
+func TestSynthesizeBoundsTheComposePrompt(t *testing.T) {
+	db := testDB(t)
+	topic := seedTopic(t, db, "Busy topic", "Everything matches this.")
+	src := seedSource(t, db, "Blog")
+
+	const matchCount = maxMatchesPerTopic + 25
+	matches := make([]store.Match, 0, matchCount)
+	for i := 0; i < matchCount; i++ {
+		url := fmt.Sprintf("https://x.test/post-%d", i)
+		id := seedItem(t, db, src, url, fmt.Sprintf("Post %d", i))
+		// Descending scores, so the cap should keep the highest.
+		matches = append(matches, store.Match{
+			ItemID: id, TopicID: topic, Score: 5 - float64(i)*0.01,
+		})
+	}
+	if err := db.SaveMatches(matches); err != nil {
+		t.Fatal(err)
+	}
+
+	var sawItems int
+	model := newFakeModel(t, func(prompt string) string {
+		if strings.Contains(prompt, "MATCHED ITEMS") {
+			sawItems = len(itemIDsIn(prompt))
+		}
+		return oneStory(prompt)
+	})
+
+	if _, err := Synthesize(context.Background(), db, clientFor(t, db, model),
+		testConfig(), store.RunDate(time.Now()), quietLogger()); err != nil {
+		t.Fatalf("Synthesize: %v", err)
+	}
+
+	if sawItems > maxMatchesPerTopic {
+		t.Errorf("compose prompt carried %d items, want at most %d", sawItems, maxMatchesPerTopic)
+	}
+	if sawItems == 0 {
+		t.Fatal("compose prompt carried no items")
+	}
+
+	// And a signal cannot end up with more members than the prompt had.
+	signals, _ := db.RecentSignals(7)
+	if len(signals) != 1 {
+		t.Fatalf("got %d signals", len(signals))
+	}
+	members := countRows(t, db, "SELECT count(*) FROM signal_items WHERE signal_id = ?", signals[0].ID)
+	if members > maxMatchesPerTopic {
+		t.Errorf("signal has %d members, want at most %d", members, maxMatchesPerTopic)
+	}
+}

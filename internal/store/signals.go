@@ -56,9 +56,16 @@ type MatchedItem struct {
 	SourceCount  int
 }
 
-// MatchesForTopic returns a topic's matches over items fetched in the last
-// `days` days, best first. This is the synthesizer's input.
-func (db *DB) MatchesForTopic(topicID int64, days int) ([]MatchedItem, error) {
+// MatchesForTopic returns a topic's best matches over items fetched in the last
+// `days` days, highest score first. This is the synthesizer's input.
+//
+// limit is not an optimization, it is a safety bound. The number of matches is
+// decided by a model's generosity, so without a cap a lenient classifier turns
+// one compose call into a prompt of arbitrary size -- expensive, slow, and
+// eventually past the context window. Taking the top N by score keeps the cost
+// of a compose pass predictable no matter how the classifier behaves, and the
+// items being dropped are by definition the least relevant ones.
+func (db *DB) MatchesForTopic(topicID int64, days, limit int) ([]MatchedItem, error) {
 	rows, err := db.Query(
 		`SELECT m.item_id, m.score, COALESCE(m.reason, ''),
 		        i.title, COALESCE(i.summary, ''), i.canonical_url,
@@ -67,8 +74,9 @@ func (db *DB) MatchesForTopic(topicID int64, days int) ([]MatchedItem, error) {
 		   JOIN items i ON i.id = m.item_id
 		  WHERE m.topic_id = ?
 		    AND i.fetched_at >= datetime('now', ?)
-		  ORDER BY m.score DESC, i.fetched_at DESC`,
-		topicID, fmt.Sprintf("-%d days", days),
+		  ORDER BY m.score DESC, i.fetched_at DESC
+		  LIMIT ?`,
+		topicID, fmt.Sprintf("-%d days", days), limit,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("matches for topic %d: %w", topicID, err)
@@ -334,4 +342,31 @@ func (db *DB) SignalByID(id int64) (SignalDetail, error) {
 		}
 	}
 	return d, nil
+}
+
+// SignalCountsByTopic counts signals per topic over the last `days` days. Shown
+// in Settings so a topic that has produced nothing all week is visible -- badly
+// defined or genuinely dry, either way the owner should know.
+func (db *DB) SignalCountsByTopic(days int) (map[int64]int, error) {
+	rows, err := db.Query(
+		`SELECT topic_id, count(*) FROM signals
+		  WHERE run_date >= date('now', 'localtime', ?)
+		  GROUP BY topic_id`,
+		fmt.Sprintf("-%d days", days-1),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("signal counts by topic: %w", err)
+	}
+	defer rows.Close()
+
+	out := map[int64]int{}
+	for rows.Next() {
+		var topicID int64
+		var n int
+		if err := rows.Scan(&topicID, &n); err != nil {
+			return nil, fmt.Errorf("scan signal count: %w", err)
+		}
+		out[topicID] = n
+	}
+	return out, rows.Err()
 }

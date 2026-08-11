@@ -18,6 +18,7 @@ import (
 
 	"github.com/tammai/interstellar/internal/config"
 	"github.com/tammai/interstellar/internal/httpapi"
+	"github.com/tammai/interstellar/internal/pipeline"
 	"github.com/tammai/interstellar/internal/store"
 	"github.com/tammai/interstellar/web"
 )
@@ -53,9 +54,19 @@ func run(log *slog.Logger) error {
 	}
 	log.Info("database ready", "path", env.DBPath, "schema", version)
 
+	runner := pipeline.NewRunner(db, env, log)
+
+	scheduler := pipeline.NewScheduler(db, env, runner, log)
+	if err := scheduler.Start(); err != nil {
+		// A bad schedule must not stop the app: the sky and an on-demand
+		// refresh still work, and Settings is where the owner fixes it.
+		log.Error("could not start scheduler", "err", err)
+	}
+	defer scheduler.Stop()
+
 	srv := &http.Server{
 		Addr:              ":" + env.Port,
-		Handler:           httpapi.New(db, env, web.FS(), log).Routes(),
+		Handler:           httpapi.New(db, env, web.FS(), runner, scheduler, log).Routes(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -77,6 +88,11 @@ func run(log *slog.Logger) error {
 		return err
 	case <-ctx.Done():
 		log.Info("shutting down")
+		// Stop accepting work, then let an in-flight run notice the
+		// cancellation. Every stage is idempotent, so an interrupted run costs
+		// at most the batch it was in the middle of.
+		scheduler.Stop()
+		runner.Stop()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		return srv.Shutdown(shutdownCtx)

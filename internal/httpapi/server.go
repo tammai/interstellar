@@ -6,9 +6,11 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/tammai/interstellar/internal/config"
+	"github.com/tammai/interstellar/internal/pipeline"
 	"github.com/tammai/interstellar/internal/store"
 )
 
@@ -16,17 +18,30 @@ import (
 // resolved config snapshot: handlers and runs read settings fresh, so a provider
 // swap takes effect without a restart (§3.1).
 type Server struct {
-	DB   *store.DB
-	Env  config.Env
-	Web  fs.FS
-	Log  *slog.Logger
-	boot time.Time
+	DB        *store.DB
+	Env       config.Env
+	Web       fs.FS
+	Log       *slog.Logger
+	Runner    *pipeline.Runner
+	Scheduler *pipeline.Scheduler
+	boot      time.Time
 }
 
 // New builds a Server. web is the embedded UI filesystem, rooted at the
 // directory containing index.html.
-func New(db *store.DB, env config.Env, web fs.FS, log *slog.Logger) *Server {
-	return &Server{DB: db, Env: env, Web: web, Log: log, boot: time.Now()}
+func New(
+	db *store.DB,
+	env config.Env,
+	web fs.FS,
+	runner *pipeline.Runner,
+	scheduler *pipeline.Scheduler,
+	log *slog.Logger,
+) *Server {
+	return &Server{
+		DB: db, Env: env, Web: web,
+		Runner: runner, Scheduler: scheduler,
+		Log: log, boot: time.Now(),
+	}
 }
 
 // Routes returns the full handler tree.
@@ -35,11 +50,48 @@ func (s *Server) Routes() http.Handler {
 
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 
+	// The sky and its detail panel: the front door.
+	mux.HandleFunc("GET /api/sky", s.handleSky)
+	mux.HandleFunc("GET /api/signals/{id}", s.handleSignal)
+
+	// Run control and progress.
+	mux.HandleFunc("POST /api/refresh", s.handleRefresh)
+	mux.HandleFunc("GET /api/status", s.handleStatus)
+
+	// Settings.
+	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
+	mux.HandleFunc("PUT /api/settings", s.handlePutSettings)
+	mux.HandleFunc("POST /api/model/test", s.handleModelTest)
+
+	mux.HandleFunc("GET /api/topics", s.handleListTopics)
+	mux.HandleFunc("POST /api/topics", s.handleCreateTopic)
+	mux.HandleFunc("PATCH /api/topics/{id}", s.handleUpdateTopic)
+	mux.HandleFunc("DELETE /api/topics/{id}", s.handleDeleteTopic)
+
+	mux.HandleFunc("GET /api/sources", s.handleListSources)
+	mux.HandleFunc("POST /api/sources", s.handleCreateSource)
+	mux.HandleFunc("PATCH /api/sources/{id}", s.handleUpdateSource)
+	mux.HandleFunc("DELETE /api/sources/{id}", s.handleDeleteSource)
+
 	// The UI is embedded, so this is the last route: everything not under /api
-	// is a static asset or the SPA entry point.
+	// is a static asset or the entry point.
 	mux.Handle("GET /", http.FileServerFS(s.Web))
 
-	return s.withLogging(mux)
+	return s.withLogging(s.withNoStore(mux))
+}
+
+// withNoStore stops API responses being cached.
+//
+// The sky changes when a run finishes, and a browser serving yesterday's stars
+// from cache would look exactly like a broken pipeline. Static assets are left
+// cacheable.
+func (s *Server) withNoStore(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			w.Header().Set("Cache-Control", "no-store")
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 type healthResponse struct {

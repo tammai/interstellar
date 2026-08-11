@@ -20,6 +20,14 @@ const maxSignalTitle = 120
 // would miss a story that broke late yesterday and got picked up this morning.
 const synthesizeWindowDays = 2
 
+// maxMatchesPerTopic bounds one compose call.
+//
+// How many matches a topic has is decided by the classifier's generosity, not by
+// us, so this is the backstop that keeps a compose call's cost and latency
+// predictable regardless. Forty of a day's best items is already more than a
+// person will read; the ones dropped are the lowest-scoring.
+const maxMatchesPerTopic = 40
+
 // SynthesizeResult summarizes a compose pass.
 type SynthesizeResult struct {
 	TopicsRun      int      `json:"topics_run"`
@@ -62,7 +70,7 @@ func Synthesize(
 			continue
 		}
 
-		matched, err := db.MatchesForTopic(topic.ID, synthesizeWindowDays)
+		matched, err := db.MatchesForTopic(topic.ID, synthesizeWindowDays, maxMatchesPerTopic)
 		if err != nil {
 			return result, err
 		}

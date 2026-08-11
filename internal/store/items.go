@@ -159,3 +159,26 @@ func nullIfEmpty(s string) any {
 
 // ErrNotFound is returned when a lookup by id finds nothing.
 var ErrNotFound = errors.New("not found")
+
+// ItemCountsBySource counts each source's contributions, via item_sources rather
+// than items.source_id -- a source that was the second to carry a story still
+// contributed it, and crediting only the first finder would undersell every feed
+// that isn't fastest.
+func (db *DB) ItemCountsBySource() (map[int64]int, error) {
+	rows, err := db.Query(`SELECT source_id, count(*) FROM item_sources GROUP BY source_id`)
+	if err != nil {
+		return nil, fmt.Errorf("item counts by source: %w", err)
+	}
+	defer rows.Close()
+
+	out := map[int64]int{}
+	for rows.Next() {
+		var sourceID int64
+		var n int
+		if err := rows.Scan(&sourceID, &n); err != nil {
+			return nil, fmt.Errorf("scan item count: %w", err)
+		}
+		out[sourceID] = n
+	}
+	return out, rows.Err()
+}

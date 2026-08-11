@@ -140,8 +140,19 @@ var ErrRoleNotConfigured = errors.New("role has no model configured")
 // can cross vendors. Every attempt -- success or failure -- is recorded, so a
 // fallback that quietly fires still shows up in the cost log.
 func (c *Client) Complete(ctx context.Context, role Role, req Request) (Response, error) {
+	return c.CompleteAs(ctx, role, role, req)
+}
+
+// CompleteAs runs a request through chainRole's models while accounting for it
+// under logRole.
+//
+// The split exists for the Settings test button: it must exercise the real
+// classifier or synthesizer chain -- a test down a different code path proves
+// nothing -- while being logged and capped as a test rather than as run work.
+func (c *Client) CompleteAs(ctx context.Context, chainRole, logRole Role, req Request) (Response, error) {
+	role := chainRole
 	chain, ok := c.cfg.Roles[role]
-	if !ok && role != RoleTest {
+	if !ok {
 		return Response{}, fmt.Errorf("unknown role %q", role)
 	}
 	refs := chain.Refs()
@@ -149,7 +160,7 @@ func (c *Client) Complete(ctx context.Context, role Role, req Request) (Response
 		return Response{}, fmt.Errorf("%w: %s", ErrRoleNotConfigured, role)
 	}
 
-	if err := c.reserve(role); err != nil {
+	if err := c.reserve(logRole); err != nil {
 		return Response{}, err
 	}
 
@@ -160,7 +171,7 @@ func (c *Client) Complete(ctx context.Context, role Role, req Request) (Response
 			// A ref naming a provider that isn't in the registry is a config
 			// error, not a transport one. Record it and try the next hop.
 			lastErr = err
-			c.record(role, ref, Usage{}, err)
+			c.record(logRole, ref, Usage{}, err)
 			continue
 		}
 
@@ -174,7 +185,7 @@ func (c *Client) Complete(ctx context.Context, role Role, req Request) (Response
 			}
 
 			resp, err := call(ctx, c.http, provider, ref.Model, req)
-			c.record(role, ref, resp.Usage, err)
+			c.record(logRole, ref, resp.Usage, err)
 
 			if err == nil {
 				if i > 0 {
