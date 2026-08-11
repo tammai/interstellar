@@ -23,8 +23,15 @@ build:
 	go build -trimpath -o bin/interstellar ./cmd/interstellar
 
 ## test: run the offline test suite
+# The timeout is load-bearing: the connection pool is capped at one, so a query
+# nested inside an open rows loop deadlocks rather than erroring. Without a
+# timeout that reads as a hung suite instead of a failing test.
 test:
-	go test ./...
+	go test -timeout 120s ./...
+
+## test-race: same suite under the race detector
+test-race:
+	go test -race -timeout 300s ./...
 
 ## lint: vet and formatting check
 lint:
@@ -59,4 +66,4 @@ run: docker
 clean:
 	rm -rf bin $(DEV_DATA)
 
-.PHONY: help dev build test lint docker docker-multiarch size run clean
+.PHONY: help dev build test test-race lint docker docker-multiarch size run clean

@@ -4,6 +4,13 @@
 // Concurrency model: single user, single writer. The pool is capped at one
 // connection, which removes SQLITE_BUSY as an entire category of bug at a cost
 // (serialized reads) that is irrelevant at this scale.
+//
+// That cap has one sharp edge worth knowing before writing a query here: NEVER
+// issue a second query while a *sql.Rows is still open. The open rows hold the
+// only connection, so the inner call waits for a connection that the outer loop
+// will not release until it finishes -- a deadlock, not a slow path, and it hangs
+// rather than erroring. Drain the rows into a slice, close them, then do the
+// follow-up work. SignalByID is the worked example.
 package store
 
 import (
