@@ -4,7 +4,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Status
 
-Early implementation, building milestone by milestone against the approved plan. Verify what actually exists before assuming a package is there.
+Phase 0 is built and every §10 acceptance criterion passes. What happens next is decided by real use, not by a backlog — see "Phase discipline" below.
+
+## Working on this
+
+```sh
+make dev      # run at :8422 against ./.devdata, UI served from disk
+make test     # offline suite; never touches a network or a provider
+make test-ui  # the star map's pure layout logic (node)
+make lint     # vet + gofmt
+```
+
+Two conventions worth knowing before you write code here:
+
+- **Tests never make live calls.** `make test` must stay runnable with a provider key exported in the shell and cost nothing. Test helpers clear provider env vars explicitly; a test that resolved a real provider once did bill a real account. The single exception is `cmd/verify-classifier`, which is opt-in and says so.
+- **`go:embed` bakes the UI into the binary.** `make dev` sets `INTERSTELLAR_WEB_DIR` to serve `web/assets` from disk instead. Without it, a CSS or JS edit does nothing until you rebuild, and the resulting "my change had no effect" is a genuinely confusing hour.
 
 ## Authoritative documents
 
@@ -81,7 +95,8 @@ These come straight from spec §10 (acceptance criteria) and §6 (UI contract). 
 - Provider API keys come from env only, referenced by the name the registry stores (`DEEPSEEK_API_KEY`, `ANTHROPIC_API_KEY`, …). Never write a key value to the DB, never return one from an endpoint, never log one.
 - Config lives in the `settings` table and is resolved per run. `PORT` and `TZ` are the only process-level env knobs besides the provider keys.
 - Every LLM call attempt gets a row in `llm_calls` (run date, role, **provider**, model, token counts). Cost visibility is a feature, and it feeds the Phase 3 habit analysis.
-- Schema changes go through the embedded migration path, never hand-edited SQL against a live DB. First run must bootstrap an empty volume with seed sources and placeholder topics.
+- Schema changes go through the embedded migration path, never hand-edited SQL against a live DB. Migrations are append-only: never edit one that has shipped, add the next number.
+- **The connection pool is capped at one.** Never issue a query while a `*sql.Rows` is still open — the open rows hold the only connection, so the inner call waits on a connection the outer loop won't release. It hangs rather than erroring. Drain into a slice, close, then do the follow-up work; `store.SignalByID` is the worked example.
 - `specs/` is history. Amend it by adding a revision, not by silently rewriting a decision.
 
 ## Phase discipline

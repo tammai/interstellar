@@ -56,6 +56,12 @@ docker-multiarch:
 		docker buildx create --name $(BUILDER) --driver docker-container
 	docker buildx build --builder $(BUILDER) --platform $(PLATFORMS) -t $(IMAGE):$(TAG) .
 
+## verify-classifier: the §10 gate — real, billable calls against your provider
+# Not part of `make test`: a suite that spends money when someone types `make
+# test` is a trap. Run it on purpose, before trusting a model you just switched.
+verify-classifier:
+	DATA_DIR=$(DEV_DATA) go run ./cmd/verify-classifier -n 200
+
 ## size: check the image against the <30MB target from §3
 size: docker
 	@bytes=$$(docker image inspect $(IMAGE):$(TAG) --format '{{.Size}}'); \
@@ -73,4 +79,4 @@ run: docker
 clean:
 	rm -rf bin $(DEV_DATA)
 
-.PHONY: help dev build test test-race test-ui lint docker docker-multiarch size run clean
+.PHONY: help dev build test test-race test-ui lint verify-classifier docker docker-multiarch size run clean
