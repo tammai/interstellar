@@ -43,11 +43,23 @@
   </div>
 </div>
 
-<div class="legend" aria-hidden="true">
-  <div class="row"><span class="lg-dot big"></span><span>Larger star — higher relevance</span></div>
-  <div class="row"><span class="lg-dot gold"></span><span>Gold pulse — 3+ sources (hot)</span></div>
-  <div class="row"><span class="lg-dot faded"></span><span>Dimmer — older signal</span></div>
-  <div class="row"><span class="lg-dot small"></span><span>Constellation = your topic</span></div>
+<!-- The legend and the filter are the same control: each row explains one visual
+     encoding and switches it on as a filter. Pressed state is carried by
+     aria-pressed, so the toggles announce themselves correctly. -->
+<div class="legend" role="group" aria-label="Filter signals">
+  <button class="row" id="fBig" aria-pressed="false" aria-label="Show only larger stars — higher relevance">
+    <span class="lg-star big" aria-hidden="true"></span>
+    <span class="txt">Larger — higher relevance</span>
+  </button>
+  <button class="row" id="fGold" aria-pressed="false" aria-label="Show only gold stars — 3 or more sources">
+    <span class="lg-star gold" aria-hidden="true"></span>
+    <span class="txt">Gold — 3+ sources (hot)</span>
+  </button>
+  <button class="row" id="fDim" aria-pressed="false" aria-label="Show only dimmer stars — older signals">
+    <span class="lg-star faded" aria-hidden="true"></span>
+    <span class="txt">Dimmer — older signal</span>
+  </button>
+  <div class="row note"><span class="lg-star tiny" aria-hidden="true"></span><span class="txt">Constellation = your topic</span></div>
 </div>
 
 <div class="nav">
@@ -63,16 +75,23 @@
   <div class="t-meta"></div>
 </div>
 
+<!-- The head/body split exists so the head can be position:sticky. A signal's
+     title is how you know which one you are reading; it should not scroll away
+     while you are working through its member articles. -->
 <aside id="panel" aria-label="Signal detail" role="dialog" aria-modal="false">
-  <button class="p-close" aria-label="Close">×</button>
-  <div class="p-topic"></div>
-  <div class="p-hot"></div>
-  <h2 class="p-title"></h2>
-  <div class="p-stats"></div>
-  <p class="p-reason"></p>
-  <div class="p-members"></div>
-  <div class="p-srcs"></div>
-  <a class="p-link" href="#" target="_blank" rel="noopener noreferrer">Open source article →</a>
+  <div class="p-head">
+    <button class="p-close" aria-label="Close">×</button>
+    <div class="p-topic"></div>
+    <div class="p-hot"></div>
+    <h2 class="p-title"></h2>
+  </div>
+  <div class="p-body">
+    <div class="p-stats"></div>
+    <p class="p-reason"></p>
+    <div class="p-members"></div>
+    <div class="p-srcs"></div>
+    <a class="p-link" href="#" target="_blank" rel="noopener noreferrer">Open source article →</a>
+  </div>
 </aside>
 
 <div id="list" role="tabpanel" aria-label="List view"><div class="lc" id="listContent"></div></div>

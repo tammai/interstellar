@@ -38,7 +38,7 @@ test-race:
 ## test-ui: unit-test the star map's pure layout logic
 # groupSignals and relax encode §6 decisions a screenshot cannot verify.
 test-ui:
-	node --test web/sky.test.js
+	node --test web/sky.test.js web/css.test.js
 
 ## lint: vet and formatting check
 lint:
@@ -61,6 +61,15 @@ docker-multiarch:
 # test` is a trap. Run it on purpose, before trusting a model you just switched.
 verify-classifier:
 	DATA_DIR=$(DEV_DATA) go run ./cmd/verify-classifier -n 200
+
+## feedcheck: probe candidate feed URLs with the app's own parser
+# Use before adding a source, and before seeding one. A URL that returns 200 in a
+# browser can still yield zero items here, and a guessed YouTube channel ID
+# happily serves someone else's channel — both mistakes shipped into seedSources
+# once and were only caught by running the real fetcher against them.
+#   make feedcheck URLS="https://example.com/feed https://example.com/atom.xml"
+feedcheck:
+	go run ./cmd/feedcheck $(URLS)
 
 ## size: check the image against the <30MB target from §3
 size: docker

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/tammai/interstellar/internal/config"
 	"github.com/tammai/interstellar/internal/store"
@@ -29,7 +30,10 @@ func quietLogger() *slog.Logger {
 }
 
 func testConfig() config.Runtime {
-	return config.Runtime{HNMinPoints: 25, ClassifyBatchSize: 30, MatchThreshold: 4, HotThreshold: 3, SkyDays: 7}
+	return config.Runtime{
+		HNMinPoints: 25, ClassifyBatchSize: 30, MatchThreshold: 4,
+		HotThreshold: 3, SkyDays: 7, MaxItemAgeDays: 30,
+	}
 }
 
 // feedServer serves a one-item RSS feed pointing at articleURL.
@@ -254,5 +258,75 @@ func TestIngestUnknownKindIsRecordedNotFatal(t *testing.T) {
 	}
 	if len(result.Failures) != 1 {
 		t.Errorf("failures = %d, want 1", len(result.Failures))
+	}
+}
+
+// Feeds routinely serve their whole archive. Without an age filter, a first run
+// classifies years of writing and can render a 2017 post as today's news —
+// observed on real data, where 27 of 52 signals came from articles over a year
+// old.
+func TestIngestSkipsArchiveContent(t *testing.T) {
+	db := testDB(t)
+
+	old := time.Now().AddDate(-3, 0, 0).Format(time.RFC1123Z)
+	recent := time.Now().AddDate(0, 0, -2).Format(time.RFC1123Z)
+	body := fmt.Sprintf(`<?xml version="1.0"?><rss version="2.0"><channel><title>Feed</title>
+	  <item><title>Ancient post</title><link>https://example.test/old</link><pubDate>%s</pubDate></item>
+	  <item><title>Recent post</title><link>https://example.test/new</link><pubDate>%s</pubDate></item>
+	  <item><title>Undated post</title><link>https://example.test/undated</link></item>
+	</channel></rss>`, old, recent)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, body)
+	}))
+	defer srv.Close()
+	addSource(t, db, "Archive Feed", srv.URL)
+
+	cfg := testConfig()
+	cfg.MaxItemAgeDays = 30
+
+	result, err := Ingest(context.Background(), db, cfg, quietLogger())
+	if err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+
+	if result.ItemsTooOld != 1 {
+		t.Errorf("ItemsTooOld = %d, want 1", result.ItemsTooOld)
+	}
+	// The undated one is kept: plenty of feeds omit a date, and dropping those
+	// would silently lose real news.
+	if result.ItemsNew != 2 {
+		t.Errorf("stored %d items, want 2 (recent + undated)", result.ItemsNew)
+	}
+	if n := countRows(t, db, "SELECT count(*) FROM items WHERE canonical_url = 'https://example.test/old'"); n != 0 {
+		t.Error("a three-year-old post was stored as news")
+	}
+	if n := countRows(t, db, "SELECT count(*) FROM items WHERE canonical_url = 'https://example.test/undated'"); n != 1 {
+		t.Error("an undated post was dropped; feeds without dates would go dark")
+	}
+}
+
+// Zero disables the filter, for anyone who wants the whole archive.
+func TestIngestAgeFilterCanBeDisabled(t *testing.T) {
+	db := testDB(t)
+	old := time.Now().AddDate(-5, 0, 0).Format(time.RFC1123Z)
+	body := fmt.Sprintf(`<?xml version="1.0"?><rss version="2.0"><channel><title>F</title>
+	  <item><title>Ancient</title><link>https://example.test/a</link><pubDate>%s</pubDate></item>
+	</channel></rss>`, old)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, body)
+	}))
+	defer srv.Close()
+	addSource(t, db, "Feed", srv.URL)
+
+	cfg := testConfig()
+	cfg.MaxItemAgeDays = 0
+
+	result, err := Ingest(context.Background(), db, cfg, quietLogger())
+	if err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+	if result.ItemsNew != 1 || result.ItemsTooOld != 0 {
+		t.Errorf("filter still applied with maxAge=0: %+v", result)
 	}
 }

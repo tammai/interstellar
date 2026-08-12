@@ -63,6 +63,7 @@ type Runtime struct {
 	MaxCallsPerDay int
 
 	HNMinPoints       int
+	MaxItemAgeDays    int
 	SkyDays           int
 	ClassifyBatchSize int
 	MatchThreshold    float64
@@ -83,10 +84,14 @@ func Load(db *store.DB) (Runtime, error) {
 		ScheduleIngest:     str(s, store.KeyScheduleIngest, "09:30"),
 		ScheduleSynthesize: str(s, store.KeyScheduleSynthesis, "10:30"),
 
-		MaxCallsPerRun: integer(s, store.KeyMaxCallsPerRun, 200),
-		MaxCallsPerDay: integer(s, store.KeyMaxCallsPerDay, 500),
+		// These fall back only when the row is missing, but they still have to
+		// agree with what bootstrap seeds -- a fallback quietly stricter than the
+		// seed would abort a run that the seeded instance next door completes.
+		MaxCallsPerRun: integer(s, store.KeyMaxCallsPerRun, 400),
+		MaxCallsPerDay: integer(s, store.KeyMaxCallsPerDay, 1000),
 
 		HNMinPoints:       integer(s, store.KeyHNMinPoints, 25),
+		MaxItemAgeDays:    integer(s, store.KeyMaxItemAgeDays, 30),
 		SkyDays:           integer(s, store.KeySkyDays, 7),
 		ClassifyBatchSize: integer(s, store.KeyClassifyBatchSize, 30),
 		MatchThreshold:    float(s, store.KeyMatchThreshold, 4),

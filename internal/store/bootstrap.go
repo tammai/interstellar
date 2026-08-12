@@ -17,7 +17,10 @@ const (
 	KeyMaxCallsPerRun = "max_calls_per_run"
 	KeyMaxCallsPerDay = "max_calls_per_day"
 
-	KeyHNMinPoints       = "hn_min_points"
+	KeyHNMinPoints = "hn_min_points"
+	// Items published longer ago than this are not news and are skipped at
+	// ingest. Feeds routinely serve their whole archive.
+	KeyMaxItemAgeDays    = "max_item_age_days"
 	KeySkyDays           = "sky_days"
 	KeyMatchThreshold    = "match_threshold"
 	KeyHotThreshold      = "hot_threshold"
@@ -58,10 +61,19 @@ func defaultSettings() map[string]string {
 		KeyScheduleIngest:    "09:30",
 		KeyScheduleSynthesis: "10:30",
 
-		KeyMaxCallsPerRun: "200",
-		KeyMaxCallsPerDay: "500",
+		// Sized against the seed list, not against a blank instance. The starter
+		// set is ~62 active sources and max_item_age_days admits a 30-day
+		// backlog, so a first run can reach 500-900 items; at a 30-item batch
+		// across 7 topics that is 140-210 classifier calls before synthesis.
+		// The old 200 would abort the very first run part-way and show the
+		// runaway banner on entirely normal work -- the one run that has to go
+		// well. Steady-state runs classify only what is past the watermark and
+		// sit far below this; the cap is still a ceiling, not a budget.
+		KeyMaxCallsPerRun: "400",
+		KeyMaxCallsPerDay: "1000",
 
 		KeyHNMinPoints:       "25", // decision #4
+		KeyMaxItemAgeDays:    "30",
 		KeySkyDays:           "7",  // §5.4
 		KeyMatchThreshold:    "4",  // §5.2
 		KeyHotThreshold:      "3",  // §6, gold + pulse
@@ -99,6 +111,7 @@ var seedSources = []struct {
 	Kind, Name, Config string
 	Active             bool
 }{
+	// --- practitioners and analysis ---
 	{"rss", "Simon Willison", `{"url":"https://simonwillison.net/atom/everything/"}`, true},
 	{"rss", "Latent Space", `{"url":"https://www.latent.space/feed"}`, true},
 	{"rss", "Pragmatic Engineer", `{"url":"https://blog.pragmaticengineer.com/rss/"}`, true},
@@ -106,16 +119,113 @@ var seedSources = []struct {
 	{"rss", "Hamel Husain", `{"url":"https://hamel.dev/index.xml"}`, true},
 	{"rss", "Interconnects", `{"url":"https://www.interconnects.ai/feed"}`, true},
 	{"rss", "Ahead of AI", `{"url":"https://magazine.sebastianraschka.com/feed"}`, true},
+	{"rss", "Lilian Weng", `{"url":"https://lilianweng.github.io/index.xml"}`, true},
+	{"rss", "Chip Huyen", `{"url":"https://huyenchip.com/feed.xml"}`, true},
+	{"rss", "Phil Schmid", `{"url":"https://www.philschmid.de/rss"}`, true},
+	{"rss", "Answer.AI", `{"url":"https://www.answer.ai/index.xml"}`, true},
+	{"rss", "Vicki Boykis", `{"url":"https://vickiboykis.com/index.xml"}`, true},
 
-	{"hn_search", "HN · AI agents", `{"query":"AI agents"}`, true},
-	{"hn_search", "HN · open weights LLM", `{"query":"open weights LLM"}`, true},
-	{"hn_search", "HN · LLM evaluation", `{"query":"LLM evaluation"}`, true},
-	{"hn_search", "HN · voice AI", `{"query":"voice AI"}`, true},
+	// --- software roles and practice ---
+	{"rss", "Martin Fowler", `{"url":"https://martinfowler.com/feed.atom"}`, true},
+	{"rss", "ByteByteGo", `{"url":"https://blog.bytebytego.com/feed"}`, true},
 
-	// Inactive on purpose: a YouTube feed needs a channel ID only the owner
-	// knows (§9 says "channels Long actually watches"), and guessing one seeds a
-	// permanent failure. This row exists so the config shape is discoverable in
-	// Settings -- fill in the ID and switch it on.
+	// --- labs and open weights ---
+	{"rss", "Hugging Face", `{"url":"https://huggingface.co/blog/feed.xml"}`, true},
+	{"rss", "OpenAI", `{"url":"https://openai.com/blog/rss.xml"}`, true},
+	{"rss", "Google AI", `{"url":"https://blog.google/technology/ai/rss/"}`, true},
+	{"rss", "DeepMind", `{"url":"https://deepmind.google/blog/rss.xml"}`, true},
+	{"rss", "Qwen", `{"url":"https://qwenlm.github.io/blog/index.xml"}`, true},
+	{"rss", "Together AI", `{"url":"https://www.together.ai/blog/rss.xml"}`, true},
+	{"rss", "Replicate", `{"url":"https://replicate.com/blog/rss"}`, true},
+	{"rss", "Ollama", `{"url":"https://ollama.com/blog/rss.xml"}`, true},
+	{"rss", "Mozilla AI", `{"url":"https://blog.mozilla.ai/rss/"}`, true},
+	{"rss", "LangChain", `{"url":"https://www.langchain.com/blog/rss.xml"}`, true},
+
+	// GitHub release feeds. `releases.atom` is ordinary Atom, so these need no new
+	// fetcher -- and deliberately so: a dedicated kind would mean widening the
+	// CHECK constraint on sources.kind, which in SQLite is a whole-table rebuild,
+	// bought for nothing but a nicer item title. The classifier already sees the
+	// source name next to the title, so "v0.5.13" arrives as
+	// "GitHub · ollama/ollama — v0.5.13" in everything but literal string terms.
+	//
+	// Which repos ship active was decided from measured release cadence, not taste:
+	//   - dormant (no release in 90 days) are not seeded at all -- autogen,
+	//     text-generation-inference, faster-whisper, aider and fish-speech were all
+	//     dropped here
+	//   - over ~8 releases a week is tag churn rather than news, and is seeded
+	//     inactive: those repos publish nightly-ish builds whose titles are version
+	//     numbers, so every one costs a classification call to score low. llama.cpp
+	//     alone ships about 70 a week
+	{"rss", "GitHub · anthropics/claude-code", `{"url":"https://github.com/anthropics/claude-code/releases.atom"}`, true},
+	{"rss", "GitHub · sst/opencode", `{"url":"https://github.com/sst/opencode/releases.atom"}`, true},
+	{"rss", "GitHub · All-Hands-AI/OpenHands", `{"url":"https://github.com/All-Hands-AI/OpenHands/releases.atom"}`, true},
+	{"rss", "GitHub · continuedev/continue", `{"url":"https://github.com/continuedev/continue/releases.atom"}`, true},
+	{"rss", "GitHub · browser-use/browser-use", `{"url":"https://github.com/browser-use/browser-use/releases.atom"}`, true},
+	{"rss", "GitHub · modelcontextprotocol/servers", `{"url":"https://github.com/modelcontextprotocol/servers/releases.atom"}`, true},
+	{"rss", "GitHub · modelcontextprotocol/python-sdk", `{"url":"https://github.com/modelcontextprotocol/python-sdk/releases.atom"}`, true},
+	{"rss", "GitHub · openai/openai-agents-python", `{"url":"https://github.com/openai/openai-agents-python/releases.atom"}`, true},
+	{"rss", "GitHub · crewAIInc/crewAI", `{"url":"https://github.com/crewAIInc/crewAI/releases.atom"}`, true},
+	{"rss", "GitHub · ollama/ollama", `{"url":"https://github.com/ollama/ollama/releases.atom"}`, true},
+	{"rss", "GitHub · vllm-project/vllm", `{"url":"https://github.com/vllm-project/vllm/releases.atom"}`, true},
+	{"rss", "GitHub · huggingface/transformers", `{"url":"https://github.com/huggingface/transformers/releases.atom"}`, true},
+	{"rss", "GitHub · ggml-org/whisper.cpp", `{"url":"https://github.com/ggml-org/whisper.cpp/releases.atom"}`, true},
+	{"rss", "GitHub · k2-fsa/sherpa-onnx", `{"url":"https://github.com/k2-fsa/sherpa-onnx/releases.atom"}`, true},
+	{"rss", "GitHub · pipecat-ai/pipecat", `{"url":"https://github.com/pipecat-ai/pipecat/releases.atom"}`, true},
+	{"rss", "GitHub · livekit/agents", `{"url":"https://github.com/livekit/agents/releases.atom"}`, true},
+	{"rss", "GitHub · BerriAI/litellm", `{"url":"https://github.com/BerriAI/litellm/releases.atom"}`, true},
+	{"rss", "GitHub · langchain-ai/langchain", `{"url":"https://github.com/langchain-ai/langchain/releases.atom"}`, true},
+	{"rss", "GitHub · run-llama/llama_index", `{"url":"https://github.com/run-llama/llama_index/releases.atom"}`, true},
+
+	// Seeded inactive: all six release far too often for their titles to be news.
+	// Switch one on if you want its churn.
+	{"rss", "GitHub · ggml-org/llama.cpp (high volume)", `{"url":"https://github.com/ggml-org/llama.cpp/releases.atom"}`, false},
+	{"rss", "GitHub · cline/cline (high volume)", `{"url":"https://github.com/cline/cline/releases.atom"}`, false},
+	{"rss", "GitHub · unslothai/unsloth (high volume)", `{"url":"https://github.com/unslothai/unsloth/releases.atom"}`, false},
+	{"rss", "GitHub · google-gemini/gemini-cli (high volume)", `{"url":"https://github.com/google-gemini/gemini-cli/releases.atom"}`, false},
+	{"rss", "GitHub · Arize-ai/phoenix (high volume)", `{"url":"https://github.com/Arize-ai/phoenix/releases.atom"}`, false},
+	{"rss", "GitHub · langfuse/langfuse (high volume)", `{"url":"https://github.com/langfuse/langfuse/releases.atom"}`, false},
+
+	// Hacker News. Queries are deliberately broad single concepts: Algolia does
+	// literal matching, so a phrase like "open weights LLM" matches almost
+	// nothing. Breadth plus the points threshold is what produces signal --
+	// narrow phrasing plus a threshold produces silence, which is what the first
+	// seed list did.
+	//
+	// min_points is per query: a broad term needs a higher bar to stay useful,
+	// while a niche one would go quiet at the same threshold.
+	{"hn_search", "HN · LLM", `{"query":"LLM","min_points":100}`, true},
+	{"hn_search", "HN · AI agents", `{"query":"agent","min_points":75}`, true},
+	{"hn_search", "HN · open weights", `{"query":"open weight model","min_points":25}`, true},
+	{"hn_search", "HN · local LLM", `{"query":"local LLM","min_points":25}`, true},
+	{"hn_search", "HN · Claude", `{"query":"Claude","min_points":50}`, true},
+	{"hn_search", "HN · coding agents", `{"query":"coding agent","min_points":25}`, true},
+	{"hn_search", "HN · MCP", `{"query":"MCP","min_points":25}`, true},
+	{"hn_search", "HN · evals", `{"query":"eval","min_points":50}`, true},
+	{"hn_search", "HN · speech and voice", `{"query":"speech recognition","min_points":25}`, true},
+	{"hn_search", "HN · text to speech", `{"query":"text to speech","min_points":25}`, true},
+	{"hn_search", "HN · inference", `{"query":"inference","min_points":50}`, true},
+	{"hn_search", "HN · AI engineer", `{"query":"AI engineer","min_points":25}`, true},
+
+	// YouTube. Every ID below was resolved from the channel's rel="canonical" link
+	// and then verified against the <title> its own feed returns -- not scraped
+	// from a "channelId" match in the page HTML, which picks up the *recommended*
+	// channels in the sidebar. That mistake seeded Karpathy's row with
+	// 3Blue1Brown's ID and looked entirely plausible until the feed titles were
+	// checked.
+	//
+	// §9 wants "channels Long actually watches", so treat these as a starting set
+	// to prune rather than a recommendation.
+	{"youtube_rss", "YouTube · Latent Space", `{"channel_id":"UCvi5jNRoRVm436TVAXet1kQ"}`, true},
+	{"youtube_rss", "YouTube · AI Engineer", `{"channel_id":"UCLKPca3kwwd-B59HNr-_lvA"}`, true},
+	{"youtube_rss", "YouTube · Andrej Karpathy", `{"channel_id":"UCXUPKJO5MZQN11PqgIvyuvQ"}`, true},
+	{"youtube_rss", "YouTube · Yannic Kilcher", `{"channel_id":"UCZHmQk67mSJgfCCTn7xBfew"}`, true},
+	{"youtube_rss", "YouTube · Two Minute Papers", `{"channel_id":"UCbfYPyITQ-7l4upoX8nvctg"}`, true},
+	{"youtube_rss", "YouTube · IndyDevDan", `{"channel_id":"UC_x36zCEGilGpB1m-V4gmjg"}`, true},
+	{"youtube_rss", "YouTube · ThePrimeagen", `{"channel_id":"UC8ENHE5xdFSwx71u3fDH5Xw"}`, true},
+
+	// Inactive on purpose, and kept even though seven real channels now ship: it
+	// is the only place the youtube_rss config shape is discoverable in Settings
+	// without deleting a working row to look at it.
 	{"youtube_rss", "YouTube · add your channel ID", `{"channel_id":""}`, false},
 }
 

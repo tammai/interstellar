@@ -1,12 +1,13 @@
-// Tests for the two pure functions in sky.js.
+// Tests for the layout logic in sky.js.
 //
-// Both encode §6 decisions that a screenshot cannot check: whether one story
-// under several topics becomes one star, and whether a crowded constellation
-// stops overlapping. Run with `make test-ui`.
+// These encode §6 decisions that a screenshot cannot check: whether one story
+// under several topics becomes one star, whether a crowded constellation stops
+// overlapping, what each legend filter actually selects, and which stars are
+// allowed to lift a constellation's label. Run with `make test-ui`.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { groupSignals, relax } from './assets/sky.js';
+import { groupSignals, relax, passesFilter, bigCutFor, Sky } from './assets/sky.js';
 
 const signal = (over = {}) => ({
   id: 1, topic_id: 1, title: 'A story', reason: 'because',
@@ -117,4 +118,172 @@ test('relax leaves a lone star alone', () => {
   relax(stars);
   assert.equal(stars[0].x, 200);
   assert.equal(stars[0].y, 200);
+});
+
+// ---------- filters ----------
+//
+// These guard against the mistake that shipped first: a `score >= 6` threshold
+// that looked reasonable and matched nothing, because the classifier returns 1-5
+// and the match threshold clips it at 4.
+
+const opts = (over = {}) => ({
+  filters: new Set(), hotThreshold: 3, bigCut: 9, radius: 5, alpha: 1, ...over,
+});
+
+test('no active filter shows everything', () => {
+  assert.equal(passesFilter(signal(), opts({ radius: 0, alpha: 0.1 })), true);
+});
+
+test('the big filter follows radius, not score', () => {
+  const f = new Set(['big']);
+  assert.equal(passesFilter(signal(), opts({ filters: f, radius: 12 })), true);
+  assert.equal(passesFilter(signal(), opts({ filters: f, radius: 8 })), false);
+});
+
+test('the gold filter is the same hot test the renderer uses', () => {
+  const f = new Set(['gold']);
+  assert.equal(passesFilter({ sourceCount: 3 }, opts({ filters: f })), true);
+  assert.equal(passesFilter({ sourceCount: 2 }, opts({ filters: f })), false);
+});
+
+test('the dim filter matches anything not at full brightness', () => {
+  const f = new Set(['dim']);
+  assert.equal(passesFilter(signal(), opts({ filters: f, alpha: 1 })), false);
+  assert.equal(passesFilter(signal(), opts({ filters: f, alpha: 0.9 })), true);
+});
+
+// The legend now activates one filter at a time (see FILTERS in app.js), so a
+// two-filter set should not reach here from the UI. The predicate still defines
+// what happens if one does, and union is the safe answer: it can only ever show
+// more, never blank a sky the reader did not ask to empty.
+test('several filters union rather than intersect', () => {
+  const f = new Set(['big', 'gold']);
+  // Big but cold, and hot but small: both must survive.
+  assert.equal(passesFilter({ sourceCount: 1 }, opts({ filters: f, radius: 12 })), true);
+  assert.equal(passesFilter({ sourceCount: 5 }, opts({ filters: f, radius: 4 })), true);
+  assert.equal(passesFilter({ sourceCount: 1 }, opts({ filters: f, radius: 4 })), false);
+});
+
+test('bigCutFor splits the middle of the observed range', () => {
+  assert.equal(bigCutFor([4, 14]), 9);
+  assert.equal(bigCutFor([4.5, 10.5, 13.8]), 9.15);
+});
+
+test('bigCutFor matches nothing when every star is the same size', () => {
+  // Otherwise a uniform field would be arbitrarily cut in half, and "larger"
+  // would point at stars indistinguishable from the rest.
+  assert.equal(bigCutFor([7, 7, 7]), Infinity);
+  assert.equal(bigCutFor([]), Infinity);
+});
+
+// buildConstellations replaced a per-frame recomputation inside the render
+// loop. It is not pure, but it is the part of that change most able to go wrong
+// silently: nothing on screen tells you the label is being lifted by the wrong
+// set of stars until two topics' names overprint.
+
+const constellationsFor = (topics, centres, shown) => {
+  const self = { topics, centres: new Map(centres), shown, constellations: null };
+  Sky.prototype.buildConstellations.call(self);
+  return self.constellations;
+};
+
+const member = (topicIds, y, shared = false) => ({ g: { topicIds }, x: 0, y, shared });
+
+test('an empty topic keeps its label and reads as no signal', () => {
+  const [c] = constellationsFor(
+    [{ id: 1, title: 'Robotics' }],
+    [[1, { x: 50, y: 100 }]],
+    [],
+  );
+  assert.equal(c.label, 'ROBOTICS');
+  assert.equal(c.count, '· no signal ·');
+  assert.equal(c.dim, true, 'an empty constellation is drawn dimmer, not dropped');
+  assert.equal(c.minOwnY, 100, 'with no stars the label hangs off the centre');
+});
+
+test('only a topic own stars lift its label', () => {
+  const shared = member([1, 2], 10, true);
+  const [c] = constellationsFor(
+    [{ id: 1, title: 'AI' }, { id: 2, title: 'Chips' }],
+    [[1, { x: 50, y: 100 }], [2, { x: 300, y: 100 }]],
+    [member([1], 40), shared],
+  );
+
+  // The shared star sits highest at y=10, but letting it raise the label would
+  // drag both topics' names toward each other until they overprint (§6).
+  assert.equal(c.minOwnY, 40);
+  assert.equal(c.pts.length, 2, 'it is still drawn as a member of this topic');
+  assert.deepEqual(c.shared, [shared], 'and still gets its own tie to the centre');
+  assert.equal(c.count, '· 2 ·');
+});
+
+test('a star below the centre never pushes the label down', () => {
+  const [c] = constellationsFor(
+    [{ id: 1, title: 'AI' }],
+    [[1, { x: 50, y: 100 }]],
+    [member([1], 260)],
+  );
+  assert.equal(c.minOwnY, 100);
+});
+
+test('a topic with no centre is skipped rather than drawn at the origin', () => {
+  const cs = constellationsFor([{ id: 9, title: 'Orphan' }], [], [member([9], 40)]);
+  assert.deepEqual(cs, []);
+});
+
+// Culling decides what the frame costs, and it fails silently in both
+// directions: too tight and stars pop in at the edge with their halos sliced,
+// too loose and it stops being a saving. Neither shows up in a screenshot of a
+// centred sky.
+
+const bounds = (view, W = 1000, H = 800) =>
+  Sky.prototype.viewBounds.call({ view, W, H });
+
+const onScreen = (s, b) => Sky.prototype.onScreen.call(null, s, b);
+
+test('viewBounds inverts the world transform', () => {
+  // Compared field by field rather than deep-equal: an unpanned view divides
+  // -0 by the scale, and -0 is not deep-equal to 0 even though every comparison
+  // onScreen makes treats them the same.
+  const same = (got, want) => {
+    for (const k of ['x0', 'y0', 'x1', 'y1']) {
+      assert.ok(got[k] === want[k], `${k}: got ${got[k]}, want ${want[k]}`);
+    }
+  };
+
+  same(bounds({ x: 0, y: 0, s: 1 }), { x0: 0, y0: 0, x1: 1000, y1: 800 });
+
+  // Zoomed 2x, the visible world is half as wide.
+  same(bounds({ x: 0, y: 0, s: 2 }), { x0: 0, y0: 0, x1: 500, y1: 400 });
+
+  // Panned right by 200px at 1x: the world scrolls left under the viewport.
+  same(bounds({ x: 200, y: 0, s: 1 }), { x0: -200, y0: 0, x1: 800, y1: 800 });
+});
+
+test('a star in view is drawn and one far outside is not', () => {
+  const b = bounds({ x: 0, y: 0, s: 1 });
+  assert.equal(onScreen({ x: 500, y: 400, r: 10 }, b), true);
+  assert.equal(onScreen({ x: 5000, y: 400, r: 10 }, b), false);
+  assert.equal(onScreen({ x: 500, y: -900, r: 10 }, b), false);
+});
+
+test('a star just off the edge is still drawn, halo and all', () => {
+  const b = bounds({ x: 0, y: 0, s: 1 });
+  // Its centre is outside the viewport but its widest sprite layer reaches
+  // 4.8x the radius, and the hot pulse scales that by 1.2 again. Culling on the
+  // centre alone would slice the halo off at the border.
+  assert.equal(onScreen({ x: -40, y: 400, r: 14 }, b), true,
+    'a big star just outside must keep drawing or its halo pops at the edge');
+  assert.equal(onScreen({ x: -14 * 6 - 20, y: 400, r: 14 }, b), false,
+    'but once its whole reach clears the edge it costs nothing to skip');
+});
+
+test('nothing hoverable is ever culled', () => {
+  // starAtWorld matches within max(r * 1.7, 14 / scale); the cull margin is
+  // r * 6 + 8, so the drawn set always contains the hittable set.
+  const b = bounds({ x: 0, y: 0, s: 1 });
+  for (const r of [4.5, 9, 13.8]) {
+    const justHittable = { x: -r * 1.7 + 0.5, y: 400, r };
+    assert.equal(onScreen(justHittable, b), true, `r=${r} was hittable but not drawn`);
+  }
 });

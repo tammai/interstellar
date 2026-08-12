@@ -21,6 +21,24 @@ import (
 // be a polite client.
 const ingestWorkers = 6
 
+// tooOld reports whether an item is archive rather than news.
+//
+// Feeds routinely serve their entire history — one seeded blog carries 212
+// posts, and some vendor feeds carry over a thousand. Without this, a first run
+// classifies years of writing, pays for all of it, and can render a 2017 post as
+// today's signal, because the pipeline keys off when we *fetched* an item rather
+// than when it was *written*.
+//
+// An item with no publication date is kept: plenty of feeds omit one, and
+// dropping those would silently lose real news. Better to classify a few extras
+// than to go blind.
+func tooOld(published time.Time, maxAgeDays int) bool {
+	if published.IsZero() || maxAgeDays <= 0 {
+		return false
+	}
+	return published.Before(time.Now().AddDate(0, 0, -maxAgeDays))
+}
+
 // SourceFailure records one source that didn't make it, for the status banner.
 type SourceFailure struct {
 	SourceID int64  `json:"source_id"`
@@ -30,11 +48,14 @@ type SourceFailure struct {
 
 // IngestResult summarizes a run.
 type IngestResult struct {
-	SourcesTried int             `json:"sources_tried"`
-	SourcesOK    int             `json:"sources_ok"`
-	ItemsNew     int             `json:"items_new"`
-	ItemsSeen    int             `json:"items_seen"`
-	Failures     []SourceFailure `json:"failures,omitempty"`
+	SourcesTried int `json:"sources_tried"`
+	SourcesOK    int `json:"sources_ok"`
+	ItemsNew     int `json:"items_new"`
+	ItemsSeen    int `json:"items_seen"`
+	// ItemsTooOld is archive content skipped as not-news. Reported rather than
+	// silently dropped, so a feed contributing nothing is visible.
+	ItemsTooOld int             `json:"items_too_old"`
+	Failures    []SourceFailure `json:"failures,omitempty"`
 }
 
 type fetchOutcome struct {
@@ -104,9 +125,10 @@ func Ingest(ctx context.Context, db *store.DB, cfg config.Runtime, log *slog.Log
 			continue
 		}
 
-		stored, seen := store_(db, out, log)
+		stored, seen, old := store_(db, out, cfg.MaxItemAgeDays, log)
 		result.ItemsNew += stored
 		result.ItemsSeen += seen
+		result.ItemsTooOld += old
 		result.SourcesOK++
 
 		if err := db.MarkSourceRun(out.source.ID, time.Now()); err != nil {
@@ -119,6 +141,7 @@ func Ingest(ctx context.Context, db *store.DB, cfg config.Runtime, log *slog.Log
 		"sources_failed", len(result.Failures),
 		"items_new", result.ItemsNew,
 		"items_seen", result.ItemsSeen,
+		"items_too_old", result.ItemsTooOld,
 	)
 	return result, ctx.Err()
 }
@@ -137,11 +160,16 @@ func fetch(ctx context.Context, src store.Source, opts sources.Options) fetchOut
 	return fetchOutcome{source: src, items: items, err: err}
 }
 
-// store_ writes one source's items, returning counts of new and already-seen.
-// A single malformed URL is skipped rather than failing the source: feeds are
-// full of one-off junk entries.
-func store_(db *store.DB, out fetchOutcome, log *slog.Logger) (newCount, seenCount int) {
+// store_ writes one source's items, returning counts of new, already-seen and
+// skipped-as-archive. A single malformed URL is skipped rather than failing the
+// source: feeds are full of one-off junk entries.
+func store_(db *store.DB, out fetchOutcome, maxAgeDays int, log *slog.Logger) (newCount, seenCount, tooOldCount int) {
 	for _, it := range out.items {
+		if tooOld(it.PublishedAt, maxAgeDays) {
+			tooOldCount++
+			continue
+		}
+
 		canonical, err := sources.Canonical(it.URL)
 		if err != nil {
 			log.Debug("skip unusable url", "source", out.source.Name, "url", it.URL, "err", err)
@@ -166,5 +194,5 @@ func store_(db *store.DB, out fetchOutcome, log *slog.Logger) (newCount, seenCou
 			seenCount++
 		}
 	}
-	return newCount, seenCount
+	return newCount, seenCount, tooOldCount
 }

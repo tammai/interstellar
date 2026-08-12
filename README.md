@@ -18,7 +18,10 @@ docker run -p 8422:8422 -v interstellar-data:/data \
   interstellar
 ```
 
-Open <http://localhost:8422>. No image is published yet, so build it first.
+Open <http://localhost:8422>. Build locally — there is deliberately no published
+image. Each instance is one person's container built from this repo, and a
+registry would add a release step and a stale-tag problem to a project whose whole
+deployment story is "one command on your own machine."
 
 Three things happen on first run: the database is created, seed sources and seven
 placeholder topics are added, and the gear icon gets a dot. Follow it — the sky

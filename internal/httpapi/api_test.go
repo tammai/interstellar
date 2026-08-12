@@ -279,6 +279,61 @@ func TestStatusReportsReadinessAndSetupHint(t *testing.T) {
 	}
 }
 
+// The settings popover lists Topics and Sources with a count beside each. It
+// used to render an em dash on both rows forever: the rows were hardcoded, and
+// the field the JS reached for was never in this payload to begin with.
+func TestStatusReportsTopicAndSourceCounts(t *testing.T) {
+	_, h, db := testServer(t)
+
+	topics, err := db.AllTopics()
+	if err != nil {
+		t.Fatal(err)
+	}
+	srcs, err := db.AllSources()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(topics) == 0 || len(srcs) == 0 {
+		t.Fatal("precondition: bootstrap should seed both topics and sources")
+	}
+
+	got := decode[statusResponse](t, do(t, h, "GET", "/api/status", ""))
+
+	if got.TopicsCount != len(topics) {
+		t.Errorf("topics_count = %d, want %d", got.TopicsCount, len(topics))
+	}
+	if got.SourcesCount != len(srcs) {
+		t.Errorf("sources_count = %d, want %d", got.SourcesCount, len(srcs))
+	}
+
+	// Zero has to survive serialization: an omitted field reads as unknown in
+	// the UI and renders as the same em dash this replaced.
+	raw := do(t, h, "GET", "/api/status", "").Body.String()
+	for _, key := range []string{`"topics_count"`, `"sources_count"`} {
+		if !strings.Contains(raw, key) {
+			t.Errorf("%s missing from the payload: %s", key, raw)
+		}
+	}
+}
+
+// A count that does not move when the underlying list does is worse than no
+// count, because it looks authoritative.
+func TestStatusCountsFollowTopicChanges(t *testing.T) {
+	_, h, _ := testServer(t)
+
+	before := decode[statusResponse](t, do(t, h, "GET", "/api/status", ""))
+
+	do(t, h, "POST", "/api/topics", `{"title":"Extra topic","definition":"something"}`)
+
+	after := decode[statusResponse](t, do(t, h, "GET", "/api/status", ""))
+	if after.TopicsCount != before.TopicsCount+1 {
+		t.Errorf("topics_count = %d after adding one to %d", after.TopicsCount, before.TopicsCount)
+	}
+	if after.SourcesCount != before.SourcesCount {
+		t.Errorf("sources_count moved on a topic change: %d -> %d", before.SourcesCount, after.SourcesCount)
+	}
+}
+
 // With the key set, the remaining blocker is topic definitions -- and the hint
 // should move on to that rather than repeat itself.
 func TestStatusHintAdvancesToTopics(t *testing.T) {

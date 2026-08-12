@@ -30,6 +30,13 @@ type statusResponse struct {
 	// visible afterwards.
 	Banner string `json:"banner,omitempty"`
 
+	// Counts for the settings popover, which lists Topics and Sources and wants
+	// to say how many of each without opening either screen. Not omitempty: zero
+	// is the honest answer on a fresh instance, and an absent field would render
+	// as an em dash that looks like a failed read.
+	TopicsCount  int `json:"topics_count"`
+	SourcesCount int `json:"sources_count"`
+
 	CallsToday int              `json:"calls_today"`
 	CallCapDay int              `json:"call_cap_day"`
 	Usage      []store.LLMUsage `json:"usage,omitempty"`
@@ -65,6 +72,16 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		out.Ready = llmCfg.Ready()
 	}
 
+	// Read the topics once and reuse them: the counts below and the setup hint
+	// both need them, and the pool is a single connection.
+	topics, topicsErr := s.DB.AllTopics()
+	if topicsErr == nil {
+		out.TopicsCount = len(topics)
+	}
+	if srcs, err := s.DB.AllSources(); err == nil {
+		out.SourcesCount = len(srcs)
+	}
+
 	runDate := store.RunDate(time.Now().In(s.Env.Location))
 	if n, err := s.DB.LLMCallsOn(runDate); err == nil {
 		out.CallsToday = n
@@ -76,7 +93,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	out.Banner = s.banner(out, cfg)
 
 	if out.SetupHint == "" {
-		out.SetupHint = s.setupHint(out)
+		out.SetupHint = s.setupHint(out, topics, topicsErr)
 	}
 
 	if s.Scheduler != nil {
@@ -102,14 +119,13 @@ func (s *Server) banner(st statusResponse, cfg config.Runtime) string {
 }
 
 // setupHint tells a fresh instance what to do next, one thing at a time.
-func (s *Server) setupHint(st statusResponse) string {
+func (s *Server) setupHint(st statusResponse, topics []store.Topic, err error) string {
 	for _, role := range st.Readiness {
 		if !role.Ready {
 			return fmt.Sprintf("Finish setup: the %s cannot run (%s).", role.Role, role.Problem)
 		}
 	}
 
-	topics, err := s.DB.AllTopics()
 	if err != nil {
 		return ""
 	}

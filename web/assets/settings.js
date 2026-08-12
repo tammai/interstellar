@@ -7,6 +7,14 @@
 
 const el = (id) => document.getElementById(id);
 
+// The three fetchers internal/sources registers. Shared by the add and edit forms
+// so they cannot drift.
+const SOURCE_KINDS = [
+  ['rss', 'RSS / Atom feed'],
+  ['hn_search', 'Hacker News search'],
+  ['youtube_rss', 'YouTube channel'],
+];
+
 export class Settings {
   constructor({ onChanged, onRefreshRequested }) {
     this.onChanged = onChanged;
@@ -14,6 +22,7 @@ export class Settings {
     this.status = null;
     this.settings = null;
     this.screen = null;
+    this.modelSig = null;   // signature of the last Model render, see refreshModel
 
     this.buildDOM();
     this.bindGlobal();
@@ -54,7 +63,36 @@ export class Settings {
   setStatus(status) {
     this.status = status;
     if (this.popover.classList.contains('open')) this.renderPopover();
-    if (this.screen === 'model') this.renderModel();
+    if (this.screen === 'model') this.refreshModel();
+  }
+
+  // The Model screen draws nothing from `status` -- it was re-rendered on every
+  // poll purely to keep the per-provider key badges live. But renderModel goes
+  // through sheetFrame, which replaceChildren()s the sheet and builds a fresh
+  // .sheet-body, and .sheet-body is the scroller. So every status poll threw
+  // away the scroll position: every 20s while idle, every 1.5s during a run.
+  //
+  // The badges still need to go green the moment a key resolves, so the refresh
+  // stays -- it just has to earn the rebuild.
+  async refreshModel() {
+    // Never rebuild under the user's hands. A poll landing mid-edit would take
+    // the field, its caret and whatever was typed into it.
+    const active = document.activeElement;
+    if (active && this.sheet.contains(active) && /^(INPUT|SELECT|TEXTAREA)$/.test(active.tagName)) {
+      return;
+    }
+
+    await this.loadSettings();
+    if (this.modelSignature() === this.modelSig) return;   // identical DOM; leave it alone
+
+    await this.rerenderCurrent();
+  }
+
+  // Everything renderModel draws. /api/settings carries no timestamp or other
+  // volatile field, so an unchanged signature really does mean an identical
+  // render.
+  modelSignature() {
+    return this.settings ? JSON.stringify(this.settings) : '';
   }
 
   toggle() {
@@ -86,16 +124,22 @@ export class Settings {
 
   renderPopover() {
     const s = this.settings;
-    const topics = this.status?.topics_count;
     this.popover.replaceChildren();
+
+    // Counts come from /api/status. Until the first status lands they are
+    // genuinely unknown, and an em dash says that honestly -- but it used to be
+    // hardcoded on both rows, so it never became a number no matter what the
+    // server said.
+    const count = (n, one, many) =>
+      n == null ? '—' : `${n} ${n === 1 ? one : many}`;
 
     const h = document.createElement('h3');
     h.textContent = 'Configuration';
     this.popover.append(h);
 
     const rows = [
-      { key: 'topics', label: 'Topics', value: '—' },
-      { key: 'sources', label: 'Sources', value: '—' },
+      { key: 'topics', label: 'Topics', value: count(this.status?.topics_count, 'topic', 'topics') },
+      { key: 'sources', label: 'Sources', value: count(this.status?.sources_count, 'source', 'sources') },
       {
         key: 'model', label: 'Model',
         value: s ? shortModel(s.classifier_model) + ' · ' + shortModel(s.synthesizer_model) : '—',
@@ -144,12 +188,35 @@ export class Settings {
     requestAnimationFrame(() => this.sheet.classList.add('open'));
     this.closePopover();
 
+    this.renderScreen(screen);
+  }
+
+  renderScreen(screen) {
     switch (screen) {
-      case 'topics': this.renderTopics(); break;
-      case 'sources': this.renderSources(); break;
-      case 'model': this.renderModel(); break;
-      case 'schedule': this.renderSchedule(); break;
+      case 'topics': return this.renderTopics();
+      case 'sources': return this.renderSources();
+      case 'model': return this.renderModel();
+      case 'schedule': return this.renderSchedule();
     }
+    return Promise.resolve();
+  }
+
+  // Re-render the open screen in place, keeping the reader where they were.
+  //
+  // Every render goes through sheetFrame, which replaceChildren()s the sheet and
+  // builds a fresh .sheet-body -- and .sheet-body is the scroller, so a rebuild
+  // always lands back at the top. Adding a topic to a list you had scrolled to
+  // the bottom of threw you back to the first one, which is precisely the moment
+  // you least want to lose your place.
+  //
+  // Restoring after the await matters: these renders fetch before they append,
+  // so scrollTop set any earlier lands on an empty element and does not stick.
+  async rerenderCurrent() {
+    if (!this.screen) return;
+    const prev = this.sheet.querySelector('.sheet-body')?.scrollTop ?? 0;
+    await this.renderScreen(this.screen);
+    const body = this.sheet.querySelector('.sheet-body');
+    if (body) body.scrollTop = prev;
   }
 
   closeSheet() {
@@ -158,8 +225,15 @@ export class Settings {
     setTimeout(() => { if (!this.screen) this.sheet.hidden = true }, 240);
   }
 
+  // Every screen gets the same frame: a sticky head carrying the title and the
+  // close button, and a scrolling body. The sheets are long \u2014 Model in particular
+  // \u2014 and losing the heading part-way down leaves you unsure which screen you are
+  // editing.
   sheetFrame(title, subtitle) {
     this.sheet.replaceChildren();
+
+    const head = document.createElement('div');
+    head.className = 'sheet-head';
 
     const close = document.createElement('button');
     close.className = 'p-close';
@@ -171,19 +245,71 @@ export class Settings {
     h.className = 'sheet-title';
     h.textContent = title;
 
-    this.sheet.append(close, h);
+    head.append(close, h);
+    this.sheet.append(head);
 
+    const body = document.createElement('div');
+    body.className = 'sheet-body';
+
+    // The subtitle scrolls with the body. It is orientation you read once, not
+    // something worth permanently occupying the top of a small screen.
     if (subtitle) {
       const p = document.createElement('p');
       p.className = 'sheet-sub';
       p.textContent = subtitle;
-      this.sheet.append(p);
+      body.append(p);
     }
 
-    const body = document.createElement('div');
-    body.className = 'sheet-body';
     this.sheet.append(body);
     return body;
+  }
+
+  // A labelled switch. Returns the element; the caller supplies what flipping it
+  // means. Kept here rather than duplicated per screen because topics and sources
+  // must not drift apart on something this visible.
+  switchControl(initial, label, onFlip) {
+    // Mutable, and deliberately so: the switch is not re-rendered after a flip,
+    // so its own idea of the current state is the only one there is.
+    let on = initial;
+
+    const btn = document.createElement('button');
+    btn.className = 'switch';
+    btn.setAttribute('role', 'switch');
+    btn.setAttribute('aria-checked', String(on));
+    btn.setAttribute('aria-label', label);
+
+    const track = document.createElement('span');
+    track.className = 'track';
+    const knob = document.createElement('span');
+    knob.className = 'knob';
+    track.append(knob);
+
+    const text = document.createElement('span');
+    text.className = 'lbl';
+    text.textContent = on ? 'Active' : 'Paused';
+
+    btn.append(track, text);
+    btn.onclick = async () => {
+      // Flip immediately, then reconcile. The switch is the one control where a
+      // network round-trip before any movement makes the UI feel broken.
+      const next = !on;
+      btn.setAttribute('aria-checked', String(next));
+      text.textContent = next ? 'Active' : 'Paused';
+      btn.disabled = true;
+      const ok = await onFlip(next);
+      btn.disabled = false;
+
+      if (ok) {
+        on = next;
+      } else {
+        // Snap back and say so. A switch that silently returns to where it was
+        // looks like a UI bug rather than a failed request.
+        btn.setAttribute('aria-checked', String(on));
+        text.textContent = 'Failed';
+        setTimeout(() => { text.textContent = on ? 'Active' : 'Paused' }, 1600);
+      }
+    };
+    return btn;
   }
 
   // ---------- topics ----------
@@ -206,7 +332,7 @@ export class Settings {
         method: 'POST',
         body: JSON.stringify({ title: 'New topic', definition: '' }),
       });
-      if (created) { this.renderTopics(); this.onChanged() }
+      if (created) { this.rerenderCurrent(); this.onChanged() }
     };
     body.append(add);
   }
@@ -238,15 +364,15 @@ export class Settings {
     const actions = document.createElement('div');
     actions.className = 'card-actions';
 
-    const toggle = document.createElement('button');
-    toggle.className = 'btn-quiet';
-    toggle.textContent = topic.active ? 'Active' : 'Paused';
-    toggle.onclick = async () => {
-      await fetchJSON(`/api/topics/${topic.id}`, {
-        method: 'PATCH', body: JSON.stringify({ active: !topic.active }),
+    // No re-render on flip: rebuilding the list would discard whatever the owner
+    // has typed into a sibling card's definition and reset the scroll position.
+    const toggle = this.switchControl(topic.active, `${topic.title} active`, async (next) => {
+      const ok = await fetchJSON(`/api/topics/${topic.id}`, {
+        method: 'PATCH', body: JSON.stringify({ active: next }),
       });
-      this.renderTopics(); this.onChanged();
-    };
+      if (ok) { topic.active = next; this.onChanged() }
+      return !!ok;
+    });
 
     const save = document.createElement('button');
     save.className = 'btn-primary';
@@ -270,7 +396,7 @@ export class Settings {
       // Deleting a topic drops its matches and signals with it, so confirm.
       if (!confirm(`Delete "${topic.title}"? Its signals go too.`)) return;
       await fetch(`/api/topics/${topic.id}`, { method: 'DELETE' });
-      this.renderTopics(); this.onChanged();
+      this.rerenderCurrent(); this.onChanged();
     };
 
     actions.append(toggle, save, del);
@@ -297,11 +423,7 @@ export class Settings {
     const kind = document.createElement('select');
     kind.className = 'field';
     kind.setAttribute('aria-label', 'Source kind');
-    for (const [value, label] of [
-      ['rss', 'RSS / Atom feed'],
-      ['hn_search', 'Hacker News search'],
-      ['youtube_rss', 'YouTube channel'],
-    ]) {
+    for (const [value, label] of SOURCE_KINDS) {
       const opt = document.createElement('option');
       opt.value = value; opt.textContent = label;
       kind.append(opt);
@@ -332,7 +454,7 @@ export class Settings {
         method: 'POST',
         body: JSON.stringify({ kind: kind.value, name: name.value, config }),
       });
-      if (ok) { this.renderSources(); this.onChanged() }
+      if (ok) { this.rerenderCurrent(); this.onChanged() }
     };
 
     add.append(kind, name, value, create);
@@ -366,15 +488,20 @@ export class Settings {
     const actions = document.createElement('div');
     actions.className = 'card-actions';
 
-    const toggle = document.createElement('button');
-    toggle.className = 'btn-quiet';
-    toggle.textContent = source.active ? 'Active' : 'Paused';
-    toggle.onclick = async () => {
-      await fetchJSON(`/api/sources/${source.id}`, {
-        method: 'PATCH', body: JSON.stringify({ active: !source.active }),
+    const toggle = this.switchControl(source.active, `${source.name} active`, async (next) => {
+      const ok = await fetchJSON(`/api/sources/${source.id}`, {
+        method: 'PATCH', body: JSON.stringify({ active: next }),
       });
-      this.renderSources();
-    };
+      if (ok) source.active = next;
+      return !!ok;
+    });
+
+    // Editing rather than delete-and-recreate. A source carries its item history
+    // through item_sources, so recreating one to fix a typo in its URL silently
+    // orphans every attribution it has ever contributed.
+    const editBtn = document.createElement('button');
+    editBtn.className = 'btn-quiet';
+    editBtn.textContent = 'Edit';
 
     const del = document.createElement('button');
     del.className = 'btn-danger';
@@ -382,12 +509,127 @@ export class Settings {
     del.onclick = async () => {
       if (!confirm(`Delete "${source.name}"?`)) return;
       await fetch(`/api/sources/${source.id}`, { method: 'DELETE' });
-      this.renderSources(); this.onChanged();
+      this.rerenderCurrent(); this.onChanged();
     };
 
-    actions.append(toggle, del);
+    actions.append(toggle, editBtn, del);
+    // The editor is built on first click, not here. Building one per card meant 68
+    // hidden forms and 272 form controls in a single scrolling sheet — controls are
+    // among the most expensive elements to lay out, and it was the sheet's scroll
+    // cost. Almost none of them are ever opened.
+    let editor = null;
+    editBtn.onclick = () => {
+      if (!editor) {
+        editor = this.sourceEditor(source, card, editBtn, name, detail);
+        card.append(editor.box);
+      }
+      const opening = !card.classList.contains('editing');
+      if (opening) editor.fill();
+      card.classList.toggle('editing', opening);
+      editBtn.textContent = opening ? 'Editing' : 'Edit';
+      if (opening) editor.focus();
+    };
+
     card.append(main, actions);
     return card;
+  }
+
+  // The edit form for one source. Built once and revealed in place, so opening it
+  // never costs a request and closing it never loses the card's position.
+  sourceEditor(source, card, editBtn, nameEl, detailEl) {
+    const box = document.createElement('div');
+    box.className = 'src-edit';
+
+    const pair = document.createElement('div');
+    pair.className = 'pair';
+
+    const name = document.createElement('input');
+    name.className = 'field';
+    name.setAttribute('aria-label', 'Source name');
+
+    const kind = document.createElement('select');
+    kind.className = 'field';
+    kind.setAttribute('aria-label', 'Source kind');
+    for (const [value, label] of SOURCE_KINDS) {
+      const opt = document.createElement('option');
+      opt.value = value; opt.textContent = label;
+      kind.append(opt);
+    }
+
+    const location = document.createElement('input');
+    location.className = 'field';
+    location.setAttribute('aria-label', 'Source location');
+
+    // hn_search carries a second knob: its own points floor, which overrides the
+    // global one so a broad query and a niche one can coexist.
+    const points = document.createElement('input');
+    points.className = 'field';
+    points.type = 'number';
+    points.min = '0';
+    points.placeholder = 'Min points';
+    points.setAttribute('aria-label', 'Minimum points for this query');
+
+    const syncKind = () => {
+      location.placeholder = kind.value === 'hn_search' ? 'Search query'
+        : kind.value === 'youtube_rss' ? 'Channel ID (UC...)' : 'Feed URL';
+      points.hidden = kind.value !== 'hn_search';
+    };
+    kind.onchange = syncKind;
+
+    const fill = () => {
+      const cfg = source.config || {};
+      name.value = source.name;
+      kind.value = source.kind;
+      location.value = cfg.url || cfg.query || cfg.channel_id || '';
+      points.value = cfg.min_points ?? '';
+      syncKind();
+    };
+
+    const rowActions = document.createElement('div');
+    rowActions.className = 'row-actions';
+
+    const cancel = document.createElement('button');
+    cancel.className = 'btn-quiet';
+    cancel.textContent = 'Cancel';
+    cancel.onclick = () => { card.classList.remove('editing'); editBtn.textContent = 'Edit' };
+
+    const save = document.createElement('button');
+    save.className = 'btn-primary';
+    save.textContent = 'Save';
+    save.onclick = async () => {
+      const value = location.value.trim();
+      const config = kind.value === 'hn_search' ? { query: value }
+        : kind.value === 'youtube_rss' ? { channel_id: value }
+        : { url: value };
+      // Only send min_points when it has one, so clearing the box falls back to
+      // the global setting rather than pinning the query at zero.
+      if (kind.value === 'hn_search' && points.value !== '') {
+        config.min_points = Number(points.value);
+      }
+
+      save.disabled = true;
+      const updated = await fetchJSON(`/api/sources/${source.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ kind: kind.value, name: name.value.trim(), config }),
+      });
+      save.disabled = false;
+
+      if (!updated) { save.textContent = 'Failed'; setTimeout(() => (save.textContent = 'Save'), 1600); return }
+
+      // Update the card from the server's answer, not from the form: the API
+      // trims names and could reject a config shape we guessed wrong.
+      Object.assign(source, updated);
+      nameEl.textContent = source.name;
+      detailEl.textContent = describeSource(source);
+      card.classList.remove('editing');
+      editBtn.textContent = 'Edit';
+      this.onChanged();
+    };
+
+    pair.append(name, kind);
+    rowActions.append(cancel, save);
+    box.append(pair, location, points, rowActions);
+    return { box, fill, focus: () => name.focus() };
   }
 
   // ---------- model ----------
@@ -396,6 +638,9 @@ export class Settings {
     await this.loadSettings();
     const s = this.settings;
     if (!s) return;
+    // What this render reflects, so refreshModel can tell when a rebuild would
+    // change nothing.
+    this.modelSig = this.modelSignature();
 
     const body = this.sheetFrame('Model',
       'Either role can run on any provider. Changes take effect on the next run — nothing to restart.');
@@ -486,6 +731,16 @@ export class Settings {
         if (res.ok) {
           result.textContent = 'Saved. It applies on the next run.';
           result.className = 'test-result ok';
+
+          // Adopt the saved state as what this screen already shows, before
+          // onChanged kicks off a status load. Otherwise the poll finds settings
+          // that differ from the last render, rebuilds the screen, and wipes the
+          // confirmation within milliseconds of the reader seeing it -- and the
+          // rebuild is redundant anyway, since the fields already hold exactly
+          // what was just saved.
+          await this.loadSettings();
+          this.modelSig = this.modelSignature();
+
           this.onChanged();
         } else {
           const err = await res.json().catch(() => ({}));
@@ -664,7 +919,10 @@ function shortModel(ref) {
 
 function describeSource(source) {
   const cfg = source.config || {};
-  if (source.kind === 'hn_search') return `Hacker News · "${cfg.query || ''}"`;
+  if (source.kind === 'hn_search') {
+    const floor = cfg.min_points ? ` · ${cfg.min_points}+ points` : '';
+    return `Hacker News · "${cfg.query || ''}"${floor}`;
+  }
   if (source.kind === 'youtube_rss') return `YouTube · ${cfg.channel_id || cfg.url || 'no channel set'}`;
   return cfg.url || '';
 }

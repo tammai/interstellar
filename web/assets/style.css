@@ -34,6 +34,9 @@
 
 * { margin: 0; padding: 0; box-sizing: border-box }
 html, body { height: 100% }
+/* No rubber-banding. The app is a fixed-viewport surface, so a bounce at the top
+   or bottom of a scroller drags the whole thing and exposes the page behind it. */
+html, body { overscroll-behavior: none }
 body {
   background: var(--space-0); color: var(--ink);
   font-family: 'Noto Sans', system-ui, -apple-system, sans-serif;
@@ -46,27 +49,53 @@ body {
 
 header {
   position: fixed; inset: 0 0 auto 0; z-index: 20;
-  display: flex; align-items: baseline; gap: 18px;
+  /* baseline, so the observation date sits on the wordmark's baseline rather than
+     floating beside it. The controls opt out with align-self: center — mixing the
+     two is why the view toggle and the icon buttons did not line up. */
+  display: flex; align-items: baseline; gap: 10px;
   padding: 20px 28px 14px;
-  background: linear-gradient(to bottom, rgba(6,10,24,.92), rgba(6,10,24,0));
   pointer-events: none;
 }
 header * { pointer-events: auto }
+
+/* The scrim is a pseudo-element rather than the header's own background so it can
+   extend past the header box. A gradient that ends exactly where the header ends
+   leaves scrolled list text legible right up to the boundary and then abruptly
+   half-hidden; overhanging it by 40px gives the text somewhere to fade out. */
+header::after {
+  content: ''; position: absolute; inset: 0 0 -40px 0; z-index: -1;
+  background: linear-gradient(to bottom,
+    rgba(6,10,24,.94) 0%, rgba(6,10,24,.88) 52%, rgba(6,10,24,0) 100%);
+}
+/* Over the canvas a translucent scrim is right — stars should still read through
+   it. Over the list it is not: list rows scroll underneath, and anything less
+   than opaque puts two lines of text in the same place. */
+body.list-view header::after {
+  background: linear-gradient(to bottom,
+    var(--space-0) 0%, var(--space-0) 68%, rgba(6,10,24,0) 100%);
+}
 
 .wordmark {
   font-family: 'Playfair Display', Georgia, serif; font-weight: 600;
   font-size: 26px; letter-spacing: .02em; color: var(--star-white);
   display: flex; align-items: baseline; gap: 10px;
 }
-.wordmark .glyph { color: var(--hot-gold); font-size: 20px }
-.obs-date { font-size: 12px; letter-spacing: .18em; text-transform: uppercase; color: var(--ink-dim) }
+.wordmark .glyph {
+  color: var(--hot-gold); font-size: 20px;
+  align-self: center; line-height: 1; margin-top: -.06em;
+}
+.obs-date { margin-left: 8px; font-size: 12px; letter-spacing: .18em; text-transform: uppercase; color: var(--ink-dim) }
 .spacer { flex: 1 }
 
-.view-toggle { display: flex; border: 1px solid var(--line); border-radius: 999px; overflow: hidden }
+.view-toggle {
+  display: flex; align-self: center; height: 34px; flex: none;
+  border: 1px solid var(--line); border-radius: 999px; overflow: hidden;
+}
 .view-toggle button {
+  display: flex; align-items: center;
   background: none; border: 0; color: var(--ink-dim); font: inherit;
   font-size: 12px; letter-spacing: .12em; text-transform: uppercase;
-  padding: 7px 16px; cursor: pointer;
+  padding: 0 16px; cursor: pointer;
 }
 .view-toggle button.active { background: var(--space-2); color: var(--star-white) }
 .view-toggle button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px }
@@ -128,19 +157,43 @@ header * { pointer-events: auto }
 }
 #empty p { font-size: 13.5px; color: var(--ink-dim); line-height: 1.65 }
 
+/* ---------- legend / filter ---------- */
+
 .legend {
   position: fixed; left: 28px; bottom: 22px; z-index: 20;
   font-size: 11.5px; color: var(--ink-dim); letter-spacing: .04em;
-  display: flex; flex-direction: column; gap: 7px;
-  background: rgba(6,10,24,.55); padding: 12px 14px;
-  border: 1px solid var(--grid); border-radius: 8px; backdrop-filter: blur(4px);
+  display: flex; flex-direction: column; gap: 2px;
+  background: rgba(6,10,24,.55); padding: 8px;
+  border: 1px solid var(--grid); border-radius: 10px; backdrop-filter: blur(4px);
 }
-.legend .row { display: flex; align-items: center; gap: 10px }
-.lg-dot { border-radius: 50%; background: var(--star-white); flex: none }
-.lg-dot.big { width: 11px; height: 11px; box-shadow: 0 0 10px 2px rgba(234,242,255,.7) }
-.lg-dot.small { width: 4px; height: 4px; opacity: .55 }
-.lg-dot.gold { width: 9px; height: 9px; background: var(--hot-gold); box-shadow: 0 0 12px 3px rgba(255,201,107,.65) }
-.lg-dot.faded { width: 6px; height: 6px; opacity: .3 }
+.legend .row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 5px 9px; border-radius: 7px;
+  background: none; border: 1px solid transparent;
+  font: inherit; color: inherit; letter-spacing: inherit; text-align: left;
+}
+.legend button.row { cursor: pointer }
+.legend button.row:hover { background: rgba(143,184,255,.07); color: var(--ink) }
+/* A pressed filter is a state, not a hover, so it carries a border as well as a
+   fill — colour alone would vanish for anyone who cannot separate these two
+   blues. */
+.legend button.row[aria-pressed="true"] {
+  background: rgba(143,184,255,.13);
+  border-color: rgba(143,184,255,.4);
+  color: var(--star-white);
+}
+.legend .row.note { color: var(--ink-faint); padding-top: 7px; margin-top: 3px; border-top: 1px solid var(--grid); border-radius: 0 }
+
+/* Four-pointed stars, echoing the diffraction spikes on the canvas, so the key
+   and the thing it describes are recognisably the same object. */
+.lg-star {
+  flex: none; background: var(--star-white);
+  clip-path: polygon(50% 0%, 59% 41%, 100% 50%, 59% 59%, 50% 100%, 41% 59%, 0% 50%, 41% 41%);
+}
+.lg-star.big { width: 18px; height: 18px; filter: drop-shadow(0 0 5px rgba(234,242,255,.85)) }
+.lg-star.gold { width: 15px; height: 15px; background: var(--hot-gold); filter: drop-shadow(0 0 6px rgba(255,201,107,.8)) }
+.lg-star.faded { width: 13px; height: 13px; opacity: .32 }
+.lg-star.tiny { width: 8px; height: 8px; opacity: .5 }
 
 .nav {
   position: fixed; right: 24px; bottom: 22px; z-index: 20;
@@ -167,13 +220,25 @@ header * { pointer-events: auto }
 
 /* ---------- detail panel ---------- */
 
+/* Below the header, not over it. The panel is z-40 against the header's z-20, so
+   at the prototype's top:16px it covered the whole top-right corner -- which is
+   exactly where Sky/List, Refresh and Settings live. Opening a signal made the
+   app's entire navigation unclickable, and the only way back was the panel's own
+   close button. The offset is measured from the real header at runtime (see
+   syncHeaderHeight in app.js) because the header wraps to two rows under 640px,
+   so no single hardcoded value is right at every width. */
 #panel {
-  position: fixed; top: 16px; right: 16px; bottom: 16px; z-index: 40;
+  position: fixed; top: calc(var(--header-h, 66px) + 10px); right: 16px; bottom: 16px; z-index: 40;
   width: min(430px, calc(100vw - 32px));
   background: linear-gradient(180deg, rgba(16,26,58,.78) 0%, rgba(9,15,36,.82) 100%);
   backdrop-filter: blur(18px) saturate(1.25); -webkit-backdrop-filter: blur(18px) saturate(1.25);
   border: 1px solid var(--glass-border); border-radius: 18px;
-  padding: 30px 30px 26px; overflow-y: auto;
+  /* The blurred surface must never be the thing that scrolls. A backdrop-filter is
+     re-composited whenever its element scrolls, which is why the list view (no
+     filter) was smooth and these were not. Scrolling moves to .p-body/.sheet-body,
+     so the glass is painted once and only its contents move. */
+  padding: 0; overflow: hidden;
+  display: flex; flex-direction: column;
   box-shadow:
     0 0 0 1px rgba(143,184,255,.08),
     0 0 34px rgba(143,184,255,.14),
@@ -237,9 +302,64 @@ header * { pointer-events: auto }
 .p-member:hover { color: var(--star-white) }
 .p-member .m-src { display: block; font-size: 11px; color: var(--ink-faint); margin-top: 2px }
 
+/* ---------- sticky headers on the glass surfaces ---------- */
+
+/* Both the detail panel and the settings sheets scroll their own content, and
+   both are tall enough to lose their heading. The heading is what tells you which
+   signal or which screen you are looking at, so it stays put.
+   
+   The scrim is near-opaque with a soft tail rather than a hard edge: these are
+   frosted surfaces, and a sharp line across one reads as a rendering seam.
+
+   No backdrop-filter here, deliberately. A sticky element with one re-blurs its
+   region on every scroll frame, and at 97% opacity there was nothing to see
+   through it anyway — it cost scroll smoothness for an invisible effect. */
+/* No longer sticky: as a flex child of a non-scrolling parent the head simply
+   stays put, which is cheaper than sticky and cannot drift. position:relative is
+   kept so the close button and the fade strip still anchor to it. */
+.p-head, .sheet-head {
+  position: relative; z-index: 3; flex: none;
+  padding: 26px 30px 14px;
+  /* Solid, not a gradient. A gradient inside the head can only fade across the
+     head's own height, so its transparent tail lands on the bottom padding —
+     14px, less than a line of text. Scrolled content showed straight through it
+     and collided with the title. */
+  background: rgba(13,21,49,.97);
+  border-radius: 18px 18px 0 0;
+}
+/* The fade lives below the head instead, where there is room for it: content
+   passing under the header dissolves rather than being cut off by a hard line. */
+.p-head::after, .sheet-head::after {
+  content: ''; position: absolute; top: 100%; left: 0; right: 0; height: 20px;
+  background: linear-gradient(180deg, rgba(13,21,49,.97), rgba(13,21,49,0));
+  pointer-events: none;
+}
+/* Top padding has to clear the head's 20px fade strip, or the first thing in the
+   body sits inside the gradient and reads as both cramped and washed out. 26px
+   leaves the fade to do its job on scrolled content only. */
+/* min-height:0 is required — without it a flex child refuses to shrink below its
+   content height and the overflow never engages. */
+.p-body, .sheet-body {
+  padding: 26px 30px 26px;
+  flex: 1 1 auto; min-height: 0;
+  overflow-y: auto; overscroll-behavior: none;
+}
+
+/* Close buttons anchor to the sticky header, so they ride along with it. */
+.p-head .p-close, .sheet-head .p-close { top: 22px; right: 22px }
+/* Leave room so a long title never runs under the close button. */
+.p-head .p-title, .sheet-head .sheet-title { padding-right: 40px }
+.p-head .p-title, .sheet-head .sheet-title { margin-bottom: 0 }
+.p-head .p-topic { margin-bottom: 10px; padding-right: 40px }
+
+@media (max-width: 640px) {
+  .p-head, .sheet-head { padding: 22px 20px 10px }
+  .p-body, .sheet-body { padding: 22px 20px 22px }
+}
+
 /* ---------- list view ---------- */
 
-#list { position: fixed; inset: 0; z-index: 15; overflow-y: auto; display: none; padding: 96px 28px 60px; background: var(--space-0) }
+#list { position: fixed; inset: 0; z-index: 15; overflow-y: auto; overscroll-behavior: none; display: none; padding: 96px 28px 60px; background: var(--space-0) }
 #list.on { display: block }
 .lc { max-width: 860px; margin: 0 auto }
 .l-topic { margin-bottom: 34px }
@@ -253,6 +373,52 @@ header * { pointer-events: auto }
 .l-none { font-size: 13px; color: var(--ink-faint); font-style: italic; padding: 6px 12px }
 .l-badge { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-faint); border: 1px solid var(--grid); border-radius: 999px; padding: 2px 8px; margin-left: 8px }
 
+/* ---------- toggle switch ---------- */
+
+/* Replaces a button that said "Active" — which read as *do this* rather than
+   *this is the state*, so nobody could tell whether they were looking at a status
+   or an instruction. A switch has a position, and a position cannot be misread as
+   a command. */
+.switch {
+  display: inline-flex; align-items: center; gap: 9px;
+  background: none; border: 0; padding: 0; cursor: pointer;
+  font: inherit; font-size: 11px; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--ink-faint); flex: none;
+}
+.switch .track {
+  position: relative; width: 34px; height: 19px; border-radius: 999px;
+  background: var(--space-2); border: 1px solid var(--line);
+  transition: background .16s ease, border-color .16s ease;
+  flex: none;
+}
+.switch .knob {
+  position: absolute; top: 2px; left: 2px; width: 13px; height: 13px;
+  border-radius: 50%; background: var(--ink-faint);
+  transition: transform .18s var(--ease-overshoot), background .16s ease;
+}
+.switch[aria-checked="true"] { color: var(--accent) }
+.switch[aria-checked="true"] .track { background: rgba(143,184,255,.24); border-color: rgba(143,184,255,.55) }
+.switch[aria-checked="true"] .knob { transform: translateX(15px); background: var(--star-white) }
+.switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px }
+.switch .lbl { min-width: 4.2em; text-align: left }
+
+@media (prefers-reduced-motion: reduce) {
+  .switch .track, .switch .knob { transition: none }
+}
+
+/* ---------- source edit ---------- */
+
+.card.editing { border-color: rgba(143,184,255,.34) }
+/* flex-basis 100% puts the form on its own line: .card.row is a flex row, and
+   without this the editor is laid out as a third column beside the name and the
+   buttons, which overflows the card on a phone. */
+.src-edit { display: none; gap: 8px; margin-top: 12px; flex-direction: column; flex: 1 0 100% }
+.card.editing .src-edit { display: flex }
+.card.editing .card-main .card-detail { display: none }
+.src-edit .pair { display: flex; gap: 8px; flex-wrap: wrap }
+.src-edit .pair .field { flex: 1 1 150px; min-width: 0 }
+.src-edit .row-actions { display: flex; gap: 8px; justify-content: flex-end }
+
 /* ---------- quality floor (§6) ---------- */
 
 @media (prefers-reduced-motion: reduce) {
@@ -265,29 +431,48 @@ header * { pointer-events: auto }
   .wordmark { font-size: 21px }
   .obs-date { display: none }
   .legend { left: 12px; bottom: 12px; font-size: 10.5px }
-  .legend .row:nth-child(n+3) { display: none }
+  /* The three filters stay — they are controls now, not decoration. Only the
+     explanatory note goes. */
+  .legend .row.note { display: none }
   .nav { right: 12px; bottom: 12px }
   #list { padding: 88px 14px 48px }
   #panel { top: auto; bottom: 0; right: 0; left: 0; width: 100%; max-height: 82vh; border-radius: 18px 18px 0 0; transform: translateY(22px) scale(.98); transform-origin: bottom center }
   #banner { top: 56px }
 }
 
-/* The legend and zoom controls describe the sky. In list view they are not
-   just redundant, they sit on top of the content. */
-body.list-view .legend,
+/* The zoom controls describe the sky; in list view they are not just redundant,
+   they sit on top of the content.
+
+   The legend stays. It was hidden here back when it was decorative, but it now
+   carries the only controls that can clear a filter -- and there is no "All"
+   button by design, switching the active filter off being the same statement.
+   Hiding it meant filtering in Sky view, switching to List, and finding a list
+   that had silently lost most of its rows with no way to get them back from the
+   view you were in. Its own rule already pins it clear of the content. */
 body.list-view .nav { display: none }
+/* Room for the last rows to scroll clear of the legend, which floats over the
+   list at bottom-left now that it stays visible there. */
+body.list-view #list { padding-bottom: 200px }
 
 @media (max-width: 460px) {
+  .card-actions { flex-wrap: wrap }
   /* At this width the wordmark, view toggle and two icon buttons stop fitting
      on one line. Shrink rather than wrap: a wrapped header eats a third of a
      small screen. */
   header { padding: 12px 12px 10px; gap: 8px }
   .wordmark { font-size: 18px; gap: 6px }
   .wordmark .glyph { font-size: 14px }
-  .view-toggle button { padding: 6px 11px; font-size: 11px; letter-spacing: .08em }
+  .view-toggle { height: 30px }
+  .view-toggle button { padding: 0 11px; font-size: 11px; letter-spacing: .08em }
   .icon-btn { width: 30px; height: 30px }
   .icon-btn svg { width: 15px; height: 15px }
-  .legend { display: none }
+  .legend {
+    flex-direction: row; gap: 2px; padding: 5px;
+    left: 12px; bottom: 12px; right: auto;
+  }
+  .legend .row { padding: 8px }
+  .legend .row .txt { display: none }
+  .legend .row.note { display: none }
   #list { padding: 74px 12px 40px }
   .l-item { padding: 10px 6px; gap: 10px }
   .l-meta { display: none }
@@ -326,12 +511,30 @@ body.list-view .nav { display: none }
   background: var(--glass);
   backdrop-filter: blur(18px) saturate(1.25); -webkit-backdrop-filter: blur(18px) saturate(1.25);
   border: 1px solid var(--glass-border); border-radius: 18px;
-  padding: 30px 30px 26px; overflow-y: auto;
+  /* The blurred surface must never be the thing that scrolls. A backdrop-filter is
+     re-composited whenever its element scrolls, which is why the list view (no
+     filter) was smooth and these were not. Scrolling moves to .p-body/.sheet-body,
+     so the glass is painted once and only its contents move. */
+  padding: 0; overflow: hidden;
+  display: flex; flex-direction: column;
   box-shadow: 0 0 34px rgba(143,184,255,.14), 0 26px 70px rgba(0,0,0,.55);
   opacity: 0; transform: translateX(22px) scale(.955); transform-origin: right center;
   transition: opacity .24s ease, transform .3s var(--ease-overshoot);
 }
 #sheet.open { opacity: 1; transform: none }
+/* Author `display` beats the user-agent `[hidden] { display: none }` rule -- origin
+   wins over specificity -- so the `display: flex` above silently un-hid the sheet.
+   Settings.buildDOM only ever sets `.hidden`, so a closed sheet stayed laid out:
+   a transparent, hit-testable 560px column at z-50 down the right of the viewport,
+   eating every click on the header controls, the zoom buttons and anything under
+   it, and swallowing wheel events so the list would not scroll. Restoring the rule
+   in the author origin is the fix; visibility and pointer-events make the closed
+   state unreachable even if some other rule resurrects `display` later. */
+#sheet[hidden] { display: none; visibility: hidden; pointer-events: none }
+/* Same trap, same fix: `.field { display: block }` was overriding `[hidden]` on the
+   min-points input, so an inert "Min points" box showed up when editing RSS and
+   YouTube sources and silently discarded whatever was typed into it. */
+.field[hidden] { display: none }
 #sheet::before {
   content: ''; position: absolute; inset: 0 0 auto 0; height: 1px; border-radius: 18px 18px 0 0;
   background: linear-gradient(90deg, transparent, rgba(234,242,255,.35), transparent);
@@ -342,7 +545,7 @@ body.list-view .nav { display: none }
 .sheet-section h3 { font-size: 11px; letter-spacing: .16em; text-transform: uppercase; color: var(--accent); font-weight: 500; margin-bottom: 12px }
 
 .card { background: rgba(6,10,24,.4); border: 1px solid var(--grid); border-radius: 12px; padding: 14px; margin-bottom: 12px }
-.card.row { display: flex; align-items: flex-start; gap: 14px; justify-content: space-between }
+.card.row { display: flex; align-items: flex-start; gap: 14px; justify-content: space-between; flex-wrap: wrap }
 .card-main { min-width: 0; flex: 1 }
 .card-name { font-size: 14px; color: var(--star-white); margin-bottom: 3px }
 .card-detail { font-size: 11.5px; color: var(--ink-dim); overflow-wrap: anywhere; line-height: 1.5 }
