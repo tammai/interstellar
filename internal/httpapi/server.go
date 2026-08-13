@@ -78,6 +78,9 @@ func (s *Server) Routes() http.Handler {
 	// literals, so ServeMux does not have to choose between them.
 	mux.HandleFunc("GET /api/topics/stats", s.handleTopicStats)
 
+	// Constellation history: read-only over signals, no model, free to poll.
+	mux.HandleFunc("GET /api/trending", s.handleTrending)
+
 	mux.HandleFunc("GET /api/topics", s.handleListTopics)
 	mux.HandleFunc("POST /api/topics", s.handleCreateTopic)
 	mux.HandleFunc("PATCH /api/topics/{id}", s.handleUpdateTopic)

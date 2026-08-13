@@ -623,3 +623,6 @@ select.field { appearance: none }
 .transfer { margin-top: 26px; padding-top: 20px; border-top: 1px solid var(--grid) }
 /* The export is an <a download>, not a button, so it needs the button's box. */
 .transfer a.btn-quiet { display: inline-flex; align-items: center; text-decoration: none }
+.qt-rate.quiet { color: var(--ink-faint) }
+/* Recurring stories are three columns, not five. */
+.qt-row.recurring { grid-template-columns: minmax(0, 1fr) 40px 96px }

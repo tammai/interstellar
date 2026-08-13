@@ -108,6 +108,31 @@ Two things to get right:
   model runs at single-digit tokens/second, and the classifier generates
   thousands of tokens per batch. Use `:cloud` models there instead.
 
+### Shadow-mode: comparing a local model before you trust it
+
+There is no shadow-mode feature, and there deliberately isn't one. The provider
+registry already does the job, so comparing a local model against your current one
+takes no code and no restart:
+
+1. Add the Ollama entry if it isn't there (it ships as a preset, keyless).
+2. **Export your current settings first** — note what `classifier_model` says. This
+   is the value you are going back to.
+3. Point the classifier at `ollama/<model>` and save. It takes effect on the next
+   run.
+4. Let it run for a few days. Then compare, using what the app already records:
+   - **Settings → Signal quality** for the hit rate per topic. A local model that
+     matches 40% of everything where DeepSeek matched 12% is not being cleverer,
+     it is being indiscriminate.
+   - `make verify-classifier` for the JSON gate, which is the hard bar. A model that
+     cannot return parseable JSON on 200 real items is disqualified regardless of
+     how good its verdicts look.
+   - The cost log in the settings popover, for what you are actually saving.
+5. Keep it or put the old value back. Both are one settings change.
+
+Run it on the **classifier**, not the synthesizer. The classifier is where the
+volume and the cost are, its output is checkable mechanically, and a bad verdict
+costs one missed article — while a bad synthesis is what you actually read.
+
 ## Verifying a model swap
 
 Before trusting a model you just switched to:
@@ -170,6 +195,25 @@ opening than any click count.
 signals and articles, with `topic_id`, `from`, `to`, `kind` and `limit` filters.
 Free, instant, and diacritic-insensitive, so `tieng viet` finds `Tiếng Việt`.
 
+## What changed over a month
+
+The sky shows one day. **Settings → Signal quality** also carries the last 30 days:
+signals per topic, how many were hot, and a one-word direction per topic.
+
+Two rows are worth looking for:
+
+- **stopped** — this topic produced signals earlier in the window and none lately.
+  Sometimes the news dried up; sometimes a source broke. The Sources screen says
+  which.
+- **quiet** — nothing at all in 30 days. Either the definition is too tight or
+  nothing is watching this subject.
+
+**Kept coming back** lists stories the synthesizer composed on several separate
+days. This is the one thing a daily sky structurally cannot show: each day the story
+is just one star among many, and only the history reveals it never went away.
+Matching is on the normalized title, because the synthesizer rewords its titles
+every run.
+
 ## Tuning your topics
 
 A topic is only as good as its definition, and the sky alone will not tell you
@@ -192,6 +236,33 @@ Only rates with at least 50 items behind them are flagged; below that the sample
 is too small to mean anything. `Read` counts only the batches a model actually
 answered, so a provider having a bad afternoon does not show up as a badly defined
 topic.
+
+## Keeping two instances in step
+
+Each instance is one person's container, so two people accumulate two different
+source lists. **Settings → Sources → Move this list** exports yours as JSON and
+imports someone else's.
+
+Import only ever adds. It will not delete the feeds you have pruned, because an
+export goes stale the moment either side edits theirs, and losing your pruning to
+someone else's older file is not a trade worth making. Removing a source stays a
+deliberate act.
+
+Every new feed is fetched once before it is accepted, and anything that does not
+return items is added **paused** with the reason next to it. That is not caution for
+its own sake: a feed can answer 200 in a browser and carry nothing, and a YouTube
+channel id copied from page HTML can quietly serve a different channel. A paused row
+with an explanation is visible; a silently dropped one is not.
+
+## Saving a link by hand
+
+**Settings → Sources → Save a link** takes any URL, reads its title and description,
+and files it as an item. It is classified on the next run like anything else.
+
+This is the way in for the places no feed reaches — LinkedIn scraping is out on ToS
+grounds and the X API on pricing, but pasting a link you are already reading breaks
+neither. Pasted links are attributed to a "Saved links" row in Sources, which is
+paused because it has no feed to fetch.
 
 ## Backup
 

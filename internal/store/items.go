@@ -182,3 +182,60 @@ func (db *DB) ItemCountsBySource() (map[int64]int, error) {
 	}
 	return out, rows.Err()
 }
+
+// TitleRef is an item's id and title, for fuzzy duplicate detection.
+type TitleRef struct {
+	ID    int64
+	Title string
+}
+
+// RecentTitles returns items fetched in the last `days` days, newest first.
+//
+// Loaded once per run and compared in memory, never queried per candidate item.
+// The pool is a single connection: a lookup inside the ingest loop would be one
+// query per feed entry, and the loop is already holding the connection to write
+// with.
+func (db *DB) RecentTitles(days, limit int) ([]TitleRef, error) {
+	if days < 1 {
+		days = 1
+	}
+	rows, err := db.Query(
+		`SELECT id, title FROM items
+		  WHERE fetched_at >= datetime('now', ?)
+		  ORDER BY id DESC
+		  LIMIT ?`,
+		fmt.Sprintf("-%d days", days), limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("recent titles: %w", err)
+	}
+	defer rows.Close()
+
+	var out []TitleRef
+	for rows.Next() {
+		var t TitleRef
+		if err := rows.Scan(&t.ID, &t.Title); err != nil {
+			return nil, fmt.Errorf("scan title: %w", err)
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// AttributeItem records that a source also carried an existing item.
+//
+// This is what a fuzzy duplicate becomes. Not a discard: two outlets carrying the
+// same story is exactly the signal source_count exists to measure, and it drives
+// the gold hot flag (§6). Dropping the second copy silently would throw that away.
+func (db *DB) AttributeItem(itemID, sourceID int64, detail string) error {
+	_, err := db.Exec(
+		`INSERT INTO item_sources (item_id, source_id, detail)
+		 VALUES (?, ?, ?)
+		 ON CONFLICT(item_id, source_id) DO UPDATE SET detail = excluded.detail`,
+		itemID, sourceID, nullIfEmpty(detail),
+	)
+	if err != nil {
+		return fmt.Errorf("attribute item %d to source %d: %w", itemID, sourceID, err)
+	}
+	return nil
+}

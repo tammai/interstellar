@@ -1146,6 +1146,102 @@ export class Settings {
       'Read counts only the batches a model answered, so a provider having a bad afternoon does not show up as a badly defined topic. ' +
       'Matches are raw verdicts; signals are what the synthesizer composed from them and what the sky actually shows.';
     body.append(note);
+
+    await this.renderHistory(body);
+  }
+
+  // Constellation history, on the same screen as the hit rate.
+  //
+  // Its own screen would be a fifth sheet for two tables that answer the same
+  // question — is this topic working — from opposite ends: the hit rate says what
+  // the classifier is doing now, the history says what came of it over weeks.
+  async renderHistory(body) {
+    // The window here is a month regardless of the hit-rate picker above: a trend
+    // over one day is not a trend, and the two questions want different spans.
+    const data = await fetchJSON('/api/trending?days=30');
+    if (!data) return;
+
+    const wrap = section(body, 'Last 30 days');
+
+    if (!data.total_signals) {
+      const none = document.createElement('p');
+      none.className = 'note';
+      none.textContent = 'No signals in the last 30 days yet. This fills in as runs accumulate.';
+      wrap.append(none);
+      return;
+    }
+
+    const summary = document.createElement('div');
+    summary.className = 'quality-summary';
+    summary.append(
+      statTile(String(data.total_signals), 'signals'),
+      statTile(String(data.total_hot), 'hot (3+ sources)'),
+      // The number that makes the other two readable: six signals over two days and
+      // over three weeks are different situations.
+      statTile(String(data.days_with_signals), 'days with signals'),
+    );
+    wrap.append(summary);
+
+    const table = document.createElement('div');
+    table.className = 'quality-table';
+    table.setAttribute('role', 'table');
+    table.setAttribute('aria-label', 'Topic history over 30 days');
+
+    const head = document.createElement('div');
+    head.className = 'qt-row qt-head';
+    head.setAttribute('role', 'row');
+    for (const [label, cls] of [['Topic', 'qt-topic'], ['Signals', 'qt-n'],
+                                ['Hot', 'qt-n'], ['Trend', 'qt-rate'], ['Days', 'qt-n']]) {
+      const cell = document.createElement('span');
+      cell.className = cls;
+      cell.setAttribute('role', 'columnheader');
+      cell.textContent = label;
+      head.append(cell);
+    }
+    table.append(head);
+
+    for (const t of data.topics || []) {
+      table.append(trendRow(t));
+    }
+    wrap.append(table);
+
+    if ((data.recurring || []).length) {
+      const sub = document.createElement('h3');
+      sub.textContent = 'Kept coming back';
+      sub.style.marginTop = '22px';
+      wrap.append(sub);
+
+      const hint = document.createElement('p');
+      hint.className = 'note';
+      hint.style.marginTop = '0';
+      hint.textContent = 'Stories the synthesizer composed on several separate days. ' +
+        'The sky shows one day at a time, so this is the only place a story that never went away is visible.';
+      wrap.append(hint);
+
+      const list = document.createElement('div');
+      list.className = 'quality-table';
+      for (const story of data.recurring) {
+        const row = document.createElement('div');
+        row.className = 'qt-row recurring';
+
+        const title = document.createElement('span');
+        title.className = 'qt-topic';
+        title.textContent = story.title;
+        title.append(quietTag(story.topic_title));
+
+        const days = document.createElement('span');
+        days.className = 'qt-n';
+        days.textContent = `${story.days}d`;
+
+        const span = document.createElement('span');
+        span.className = 'qt-rate';
+        span.textContent = `${story.first_seen.slice(5)} → ${story.last_seen.slice(5)}`;
+
+        row.append(title, days, span);
+        list.append(row);
+      }
+      wrap.append(list);
+    }
   }
 
   qualityWindowPicker() {
@@ -1269,6 +1365,48 @@ function qualityRow(row) {
       verdict.classList.add('loose');
       verdict.title = 'More than half of everything read matches. The definition is probably too broad to be useful.';
     }
+  }
+  return tr;
+}
+
+// trendRow is one topic's month. Direction comes from the server so the two
+// cannot disagree about what "rising" means.
+function trendRow(t) {
+  const tr = document.createElement('div');
+  tr.className = 'qt-row';
+  tr.setAttribute('role', 'row');
+
+  const name = document.createElement('span');
+  name.className = 'qt-topic';
+  name.setAttribute('role', 'cell');
+  name.textContent = t.title;
+  if (!t.active) name.append(quietTag('paused'));
+
+  const cells = [
+    [String(t.signals || '—'), 'qt-n'],
+    [String(t.hot || (t.signals ? '0' : '—')), 'qt-n'],
+    [t.direction, 'qt-rate'],
+    [String(t.days_with_signals || '—'), 'qt-n'],
+  ];
+
+  tr.append(name);
+  for (const [text, cls] of cells) {
+    const cell = document.createElement('span');
+    cell.className = cls;
+    cell.setAttribute('role', 'cell');
+    cell.textContent = text;
+    tr.append(cell);
+  }
+
+  // Only the two directions worth acting on are coloured. "rising" is not a
+  // problem and does not need flagging.
+  const verdict = tr.querySelector('.qt-rate');
+  if (t.direction === 'stopped') {
+    verdict.classList.add('bad');
+    verdict.title = 'This topic produced signals earlier in the window and none recently. Either the news dried up or a source stopped working.';
+  } else if (t.direction === 'quiet') {
+    verdict.classList.add('quiet');
+    verdict.title = 'Nothing at all in this window.';
   }
   return tr;
 }

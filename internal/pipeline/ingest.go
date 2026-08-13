@@ -54,7 +54,12 @@ type IngestResult struct {
 	ItemsSeen    int `json:"items_seen"`
 	// ItemsTooOld is archive content skipped as not-news. Reported rather than
 	// silently dropped, so a feed contributing nothing is visible.
-	ItemsTooOld int             `json:"items_too_old"`
+	ItemsTooOld int `json:"items_too_old"`
+	// ItemsMerged is fuzzy duplicates folded into an existing item: the same
+	// article at a different URL. Counted separately from ItemsSeen because it is
+	// the one dedup level that could be wrong, and a number that jumps is the only
+	// way anyone would notice.
+	ItemsMerged int             `json:"items_merged"`
 	Failures    []SourceFailure `json:"failures,omitempty"`
 }
 
@@ -94,6 +99,13 @@ func Ingest(ctx context.Context, db *store.DB, cfg config.Runtime, log *slog.Log
 	}
 
 	opts := sources.Options{HNMinPoints: cfg.HNMinPoints}
+
+	// The fuzzy-dedup index, read once. A lookup per feed entry would be a query
+	// inside the write loop, which already holds the only connection.
+	known, err := db.RecentTitles(fuzzyWindowDays, fuzzyIndexLimit)
+	if err != nil {
+		return result, err
+	}
 
 	jobs := make(chan store.Source)
 	outcomes := make(chan fetchOutcome)
@@ -138,10 +150,11 @@ func Ingest(ctx context.Context, db *store.DB, cfg config.Runtime, log *slog.Log
 			continue
 		}
 
-		stored, seen, old := store_(db, out, cfg.MaxItemAgeDays, log)
+		stored, seen, old, merged := store_(db, out, cfg.MaxItemAgeDays, &known, log)
 		result.ItemsNew += stored
 		result.ItemsSeen += seen
 		result.ItemsTooOld += old
+		result.ItemsMerged += merged
 		result.SourcesOK++
 
 		if err := db.MarkSourceRun(out.source.ID, time.Now()); err != nil {
@@ -173,10 +186,20 @@ func fetch(ctx context.Context, src store.Source, opts sources.Options) fetchOut
 	return fetchOutcome{source: src, items: items, err: err}
 }
 
-// store_ writes one source's items, returning counts of new, already-seen and
-// skipped-as-archive. A single malformed URL is skipped rather than failing the
-// source: feeds are full of one-off junk entries.
-func store_(db *store.DB, out fetchOutcome, maxAgeDays int, log *slog.Logger) (newCount, seenCount, tooOldCount int) {
+// store_ writes one source's items, returning counts of new, already-seen,
+// skipped-as-archive and fuzzy-merged. A single malformed URL is skipped rather
+// than failing the source: feeds are full of one-off junk entries.
+//
+// known is the fuzzy-dedup index, read once per run and grown in place as new
+// items land -- so two feeds carrying the same republish in the same run collapse
+// too, not just a republish of something ingested yesterday.
+func store_(
+	db *store.DB,
+	out fetchOutcome,
+	maxAgeDays int,
+	known *[]store.TitleRef,
+	log *slog.Logger,
+) (newCount, seenCount, tooOldCount, mergedCount int) {
 	for _, it := range out.items {
 		if tooOld(it.PublishedAt, maxAgeDays) {
 			tooOldCount++
@@ -189,7 +212,22 @@ func store_(db *store.DB, out fetchOutcome, maxAgeDays int, log *slog.Logger) (n
 			continue
 		}
 
-		_, isNew, err := db.UpsertItem(store.NewItem{
+		// Level three of deduplication, after URL canonicalization and before the
+		// synthesizer's clustering: the same article at a different URL. Attribution
+		// rather than a discard, because two outlets carrying one story is precisely
+		// what source_count measures and what makes a signal gold (§6).
+		if dup, ok := findDuplicate(*known, it.Title); ok {
+			if err := db.AttributeItem(dup.ID, out.source.ID, it.Detail); err != nil {
+				log.Warn("attribute fuzzy duplicate", "source", out.source.Name, "err", err)
+				continue
+			}
+			log.Debug("merged fuzzy duplicate",
+				"source", out.source.Name, "title", it.Title, "into", dup.Title)
+			mergedCount++
+			continue
+		}
+
+		id, isNew, err := db.UpsertItem(store.NewItem{
 			SourceID:     out.source.ID,
 			CanonicalURL: canonical,
 			Title:        it.Title,
@@ -203,9 +241,34 @@ func store_(db *store.DB, out fetchOutcome, maxAgeDays int, log *slog.Logger) (n
 		}
 		if isNew {
 			newCount++
+			*known = append(*known, store.TitleRef{ID: id, Title: it.Title})
 		} else {
 			seenCount++
 		}
 	}
-	return newCount, seenCount, tooOldCount
+	return newCount, seenCount, tooOldCount, mergedCount
+}
+
+// fuzzyWindowDays bounds how far back a republish is looked for. A week: syndication
+// is fast, and a title matching something from a month ago is far more likely to be
+// an unrelated story that reuses a phrase.
+const fuzzyWindowDays = 7
+
+// fuzzyIndexLimit bounds the in-memory index. At ~250 items/day a week is ~1750,
+// so this is headroom rather than a real ceiling -- and it keeps the comparison
+// O(index) per item instead of O(all items ever).
+const fuzzyIndexLimit = 4000
+
+// findDuplicate looks for an existing item that is the same article.
+//
+// Linear, which is fine: a few thousand normalized titles against a few hundred new
+// items per run is microseconds, and the alternative -- an inverted index -- would
+// be real machinery guarding a cost nobody has measured as a problem.
+func findDuplicate(known []store.TitleRef, title string) (store.TitleRef, bool) {
+	for _, k := range known {
+		if sources.SameArticle(k.Title, title) {
+			return k, true
+		}
+	}
+	return store.TitleRef{}, false
 }

@@ -101,6 +101,7 @@ func TestNoEndpointEverLeaksAKey(t *testing.T) {
 		{"GET", "/api/sky", ""},
 		{"GET", "/api/topics", ""},
 		{"GET", "/api/topics/stats", ""},
+		{"GET", "/api/trending", ""},
 		{"GET", "/api/search?q=agents", ""},
 		{"GET", "/api/chat/history", ""},
 		{"POST", "/api/ask", `{"question":"anything?"}`},
@@ -1390,5 +1391,96 @@ func TestInboxValidatesAndReportsFailures(t *testing.T) {
 	defer dead.Close()
 	if w := do(t, h, "POST", "/api/inbox", fmt.Sprintf(`{"url":%q}`, dead.URL)); w.Code != http.StatusBadGateway {
 		t.Errorf("dead page: status %d, want 502", w.Code)
+	}
+}
+
+// --- trending ---
+
+func TestTrendingReportsHistoryAndDirection(t *testing.T) {
+	_, h, db := testServer(t)
+
+	topics, _ := db.AllTopics()
+	topic := topics[0].ID
+	for _, back := range []int{1, 2, 3} {
+		if _, err := db.Exec(
+			`INSERT INTO signals (run_date, topic_id, title, reason, score, source_count, primary_url)
+			 VALUES (date('now','localtime',?), ?, 'Agent harness patterns converge', 'Because.', 5, 4, 'https://x.test/a')`,
+			fmt.Sprintf("-%d days", back), topic,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got := decode[trendResponse](t, do(t, h, "GET", "/api/trending", ""))
+
+	if got.Days != 30 {
+		t.Errorf("days = %d, want the 30-day default", got.Days)
+	}
+	if got.TotalSignals != 3 {
+		t.Errorf("total signals = %d, want 3", got.TotalSignals)
+	}
+	if got.TotalHot != 3 {
+		t.Errorf("total hot = %d, want 3 (source_count 4 is over the threshold)", got.TotalHot)
+	}
+	if got.DaysWithSignals != 3 {
+		t.Errorf("days with signals = %d, want 3 — this is what makes the totals readable", got.DaysWithSignals)
+	}
+	if len(got.Topics) != len(topics) {
+		t.Errorf("got %d topic rows, want %d — silent topics must still appear",
+			len(got.Topics), len(topics))
+	}
+	if len(got.Daily) != 3 {
+		t.Errorf("got %d daily rows, want 3", len(got.Daily))
+	}
+	// The same story on three days is the thing a daily sky cannot show.
+	if len(got.Recurring) != 1 {
+		t.Errorf("got %d recurring stories, want 1: %+v", len(got.Recurring), got.Recurring)
+	}
+
+	// Direction is served, so the UI cannot derive a different answer.
+	var seen bool
+	for _, tr := range got.Topics {
+		if tr.Direction == "" {
+			t.Errorf("topic %d has no direction", tr.TopicID)
+		}
+		if tr.TopicID == topic && tr.Signals == 3 {
+			seen = true
+		}
+	}
+	if !seen {
+		t.Error("the seeded topic is missing its counts")
+	}
+}
+
+func TestTrendingValidatesTheWindow(t *testing.T) {
+	_, h, _ := testServer(t)
+
+	for _, bad := range []string{"0", "1", "-4", "400", "thirty"} {
+		if w := do(t, h, "GET", "/api/trending?days="+bad, ""); w.Code != http.StatusBadRequest {
+			t.Errorf("days=%s returned %d, want 400", bad, w.Code)
+		}
+	}
+	for _, ok := range []string{"2", "7", "365"} {
+		if w := do(t, h, "GET", "/api/trending?days="+ok, ""); w.Code != http.StatusOK {
+			t.Errorf("days=%s returned %d, want 200", ok, w.Code)
+		}
+	}
+}
+
+// A fresh instance has no history. The endpoint must answer, not fail.
+func TestTrendingOnAFreshInstance(t *testing.T) {
+	_, h, _ := testServer(t)
+
+	got := decode[trendResponse](t, do(t, h, "GET", "/api/trending", ""))
+	if got.TotalSignals != 0 || got.DaysWithSignals != 0 {
+		t.Errorf("fresh instance reports signals: %+v", got)
+	}
+	if len(got.Topics) == 0 {
+		t.Error("seeded topics should still be listed with zero counts")
+	}
+	for _, tr := range got.Topics {
+		if tr.Direction != "quiet" {
+			t.Errorf("topic %d reports %q on a fresh instance, want quiet", tr.TopicID, tr.Direction)
+		}
 	}
 }

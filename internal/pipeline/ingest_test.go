@@ -335,3 +335,124 @@ func TestIngestAgeFilterCanBeDisabled(t *testing.T) {
 		t.Errorf("filter still applied with maxAge=0: %+v", result)
 	}
 }
+
+// --- fuzzy dedup ---
+
+// A republish at a different URL must fold into the existing item AND credit the
+// second source. Two outlets carrying one story is exactly what source_count
+// measures, and it is what makes a signal gold (§6) — so a silent discard would
+// throw away the signal this feature exists to sharpen.
+func TestIngestMergesRepublishesAndCreditsBothSources(t *testing.T) {
+	db := testDB(t)
+
+	const title = "Agent harness patterns are converging on tool loops"
+	origin := feedServer(t, title, "https://origin.test/harness-patterns")
+	// Same headline, different URL, plus the syndicating outlet's suffix.
+	mirror := feedServer(t, title+" | Mirror Outlet", "https://mirror.test/syndicated/harness")
+
+	originID := addSource(t, db, "Origin", origin.URL)
+	mirrorID := addSource(t, db, "Mirror", mirror.URL)
+
+	result, err := Ingest(context.Background(), db, testConfig(), quietLogger())
+	if err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+
+	if result.ItemsNew != 1 {
+		t.Errorf("ItemsNew = %d, want 1 — the republish should not be a second item", result.ItemsNew)
+	}
+	if result.ItemsMerged != 1 {
+		t.Errorf("ItemsMerged = %d, want 1", result.ItemsMerged)
+	}
+	if n := countRows(t, db, "SELECT count(*) FROM items"); n != 1 {
+		t.Errorf("%d item rows, want 1", n)
+	}
+
+	// The point of the whole exercise: both sources are credited.
+	if n := countRows(t, db, "SELECT count(*) FROM item_sources"); n != 2 {
+		t.Errorf("%d attributions, want 2 — the second outlet was not credited", n)
+	}
+	for _, id := range []int64{originID, mirrorID} {
+		if n := countRows(t, db, "SELECT count(*) FROM item_sources WHERE source_id = ?", id); n != 1 {
+			t.Errorf("source %d has %d attributions, want 1", id, n)
+		}
+	}
+}
+
+// Two genuinely different stories must stay two items, however alike the headlines.
+func TestIngestKeepsDistinctStoriesApart(t *testing.T) {
+	db := testDB(t)
+
+	a := feedServer(t, "OpenAI releases GPT-5 to all paid tiers", "https://a.test/gpt5")
+	b := feedServer(t, "OpenAI releases GPT-5.1 to all paid tiers", "https://b.test/gpt51")
+	addSource(t, db, "A", a.URL)
+	addSource(t, db, "B", b.URL)
+
+	result, err := Ingest(context.Background(), db, testConfig(), quietLogger())
+	if err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+
+	if result.ItemsMerged != 0 {
+		t.Errorf("ItemsMerged = %d: two different releases were merged", result.ItemsMerged)
+	}
+	if n := countRows(t, db, "SELECT count(*) FROM items"); n != 2 {
+		t.Errorf("%d item rows, want 2", n)
+	}
+}
+
+// The in-memory index grows as items land, so two feeds carrying the same
+// republish within one run collapse too — not only against yesterday's items.
+func TestIngestMergesWithinASingleRun(t *testing.T) {
+	db := testDB(t)
+
+	const title = "Retrieval quietly replaced the context window as the bottleneck"
+	for i, host := range []string{"one", "two", "three"} {
+		srv := feedServer(t, title, "https://"+host+".test/story")
+		addSource(t, db, fmt.Sprintf("Feed %d", i), srv.URL)
+	}
+
+	result, err := Ingest(context.Background(), db, testConfig(), quietLogger())
+	if err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+
+	if result.ItemsNew != 1 || result.ItemsMerged != 2 {
+		t.Errorf("new = %d, merged = %d; want 1 and 2", result.ItemsNew, result.ItemsMerged)
+	}
+	if n := countRows(t, db, "SELECT count(*) FROM item_sources"); n != 3 {
+		t.Errorf("%d attributions, want 3 — all three outlets carried it", n)
+	}
+}
+
+// Re-ingesting must still add nothing, which is §10's requirement, and the merge
+// path must not quietly break it.
+func TestIngestMergeIsIdempotentAcrossRuns(t *testing.T) {
+	db := testDB(t)
+
+	const title = "Agent harness patterns are converging on tool loops"
+	origin := feedServer(t, title, "https://origin.test/a")
+	mirror := feedServer(t, title, "https://mirror.test/b")
+	addSource(t, db, "Origin", origin.URL)
+	addSource(t, db, "Mirror", mirror.URL)
+
+	if _, err := Ingest(context.Background(), db, testConfig(), quietLogger()); err != nil {
+		t.Fatal(err)
+	}
+	itemsAfterFirst := countRows(t, db, "SELECT count(*) FROM items")
+	attrsAfterFirst := countRows(t, db, "SELECT count(*) FROM item_sources")
+
+	second, err := Ingest(context.Background(), db, testConfig(), quietLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.ItemsNew != 0 {
+		t.Errorf("second run created %d items", second.ItemsNew)
+	}
+	if n := countRows(t, db, "SELECT count(*) FROM items"); n != itemsAfterFirst {
+		t.Errorf("items went from %d to %d across runs", itemsAfterFirst, n)
+	}
+	if n := countRows(t, db, "SELECT count(*) FROM item_sources"); n != attrsAfterFirst {
+		t.Errorf("attributions went from %d to %d across runs", attrsAfterFirst, n)
+	}
+}
