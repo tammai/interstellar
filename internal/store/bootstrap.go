@@ -22,6 +22,11 @@ const (
 	// to spend the budget tomorrow morning's run needs.
 	KeyMaxChatCallsPerDay = "max_chat_calls_per_day"
 
+	// Videos to transcribe per run, and the caption language to prefer. Zero
+	// switches the stage off entirely.
+	KeyTranscriptsPerRun = "transcripts_per_run"
+	KeyTranscriptLang    = "transcript_lang"
+
 	KeyHNMinPoints = "hn_min_points"
 	// Items published longer ago than this are not news and are skipped at
 	// ingest. Feeds routinely serve their whole archive.
@@ -84,6 +89,12 @@ func defaultSettings() map[string]string {
 		// questions a day -- far more than a habit needs, and small enough that it
 		// cannot eat the 1000 the pipeline shares with it.
 		KeyMaxChatCallsPerDay: "100",
+
+		// Eight seeded YouTube channels post a handful of videos a day between
+		// them, so six per run clears the backlog within a couple of days and
+		// costs six cheap calls. Set to 0 to switch transcripts off.
+		KeyTranscriptsPerRun: "6",
+		KeyTranscriptLang:    "en",
 
 		KeyHNMinPoints:       "25", // decision #4
 		KeyMaxItemAgeDays:    "30",

@@ -151,6 +151,30 @@ It also reports how many items went unscored. Valid JSON that silently drops a
 third of its input is not a model worth shipping, and nothing else would show you
 that.
 
+## Video sources
+
+A YouTube source gives the classifier a title and the channel's blurb, which is
+almost nothing — a talk about exactly your topic and one about nothing you care
+about look identical from the outside.
+
+So each run fetches captions for a few new videos, has a cheap model condense them
+to two or three sentences, and puts that in front of the channel's description where
+the classifier reads it. `transcripts_per_run` on the Schedule screen controls how
+many; **0 turns it off**.
+
+Things worth knowing:
+
+- **There is no supported API for this.** Captions are read from the watch page, the
+  way a browser does. It works today and may stop without notice, so every failure
+  is per-video and never breaks a run. If it does break, videos quietly go back to
+  being judged on their titles.
+- **Plenty of videos have no captions at all.** That is recorded as a permanent
+  answer, not retried forever. Settings shows the counts.
+- **Automatic captions mishear names.** When a track is auto-generated the
+  summarizer is told so and asked not to repeat a name it cannot make sense of.
+- Summaries run on the **classifier's** model (condensing is mechanical work) but are
+  logged under their own `transcript` role, so you can see what they cost.
+
 ## Ask
 
 `/chat/` is a second screen — a text box that answers questions from what this

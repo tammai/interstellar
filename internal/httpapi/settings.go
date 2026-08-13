@@ -43,6 +43,8 @@ type settingsResponse struct {
 	MaxCallsPerDay     int `json:"max_calls_per_day"`
 	MaxChatCallsPerDay int `json:"max_chat_calls_per_day"`
 
+	TranscriptsPerRun int     `json:"transcripts_per_run"`
+	TranscriptLang    string  `json:"transcript_lang"`
 	HNMinPoints       int     `json:"hn_min_points"`
 	SkyDays           int     `json:"sky_days"`
 	ClassifyBatchSize int     `json:"classify_batch_size"`
@@ -73,6 +75,8 @@ type settingsRequest struct {
 	MaxCallsPerDay     *int `json:"max_calls_per_day"`
 	MaxChatCallsPerDay *int `json:"max_chat_calls_per_day"`
 
+	TranscriptsPerRun *int     `json:"transcripts_per_run"`
+	TranscriptLang    *string  `json:"transcript_lang"`
 	HNMinPoints       *int     `json:"hn_min_points"`
 	SkyDays           *int     `json:"sky_days"`
 	ClassifyBatchSize *int     `json:"classify_batch_size"`
@@ -100,6 +104,8 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		MaxCallsPerRun:      intOf(settings[store.KeyMaxCallsPerRun], 200),
 		MaxCallsPerDay:      intOf(settings[store.KeyMaxCallsPerDay], 500),
 		MaxChatCallsPerDay:  intOf(settings[store.KeyMaxChatCallsPerDay], 100),
+		TranscriptsPerRun:   intOf(settings[store.KeyTranscriptsPerRun], 6),
+		TranscriptLang:      settings[store.KeyTranscriptLang],
 		HNMinPoints:         intOf(settings[store.KeyHNMinPoints], 25),
 		SkyDays:             intOf(settings[store.KeySkyDays], 7),
 		ClassifyBatchSize:   intOf(settings[store.KeyClassifyBatchSize], 30),
@@ -184,6 +190,8 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	setInt(store.KeyMaxCallsPerRun, req.MaxCallsPerRun)
 	setInt(store.KeyMaxCallsPerDay, req.MaxCallsPerDay)
 	setInt(store.KeyMaxChatCallsPerDay, req.MaxChatCallsPerDay)
+	setInt(store.KeyTranscriptsPerRun, req.TranscriptsPerRun)
+	setStr(store.KeyTranscriptLang, req.TranscriptLang)
 	setInt(store.KeyHNMinPoints, req.HNMinPoints)
 	setInt(store.KeySkyDays, req.SkyDays)
 	setInt(store.KeyClassifyBatchSize, req.ClassifyBatchSize)

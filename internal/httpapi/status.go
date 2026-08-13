@@ -41,6 +41,10 @@ type statusResponse struct {
 	CallCapDay int              `json:"call_cap_day"`
 	Usage      []store.LLMUsage `json:"usage,omitempty"`
 
+	// Transcripts by status, so a caption path that has quietly stopped working is
+	// visible rather than showing up only as videos that never match anything.
+	Transcripts map[string]int `json:"transcripts,omitempty"`
+
 	NextRuns []time.Time `json:"next_runs,omitempty"`
 }
 
@@ -88,6 +92,9 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	if usage, err := s.DB.LLMUsageOn(runDate); err == nil {
 		out.Usage = usage
+	}
+	if counts, err := s.DB.TranscriptCounts(); err == nil && len(counts) > 0 {
+		out.Transcripts = counts
 	}
 
 	out.Banner = s.banner(out, cfg)

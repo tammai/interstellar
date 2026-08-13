@@ -988,6 +988,8 @@ export class Settings {
       ['max_calls_per_day', 'Max LLM calls per day', s.max_calls_per_day, 'number', 'Survives a restart.'],
       ['sky_days', 'Days of sky', s.sky_days, 'number', 'How far back the star map reaches.'],
       ['hn_min_points', 'HN minimum points', s.hn_min_points, 'number', 'Below this, Hacker News is noise.'],
+      ['transcripts_per_run', 'Videos transcribed per run', s.transcripts_per_run, 'number',
+        'Captions fetched and summarized so the classifier can judge a video on what was said, not its title. 0 turns it off.'],
     ];
 
     for (const [key, label, value, type, help] of fields) {

@@ -16,10 +16,11 @@ import (
 type Stage string
 
 const (
-	StageIdle        Stage = "idle"
-	StageIngesting   Stage = "ingesting"
-	StageClassifying Stage = "classifying"
-	StageComposing   Stage = "composing"
+	StageIdle         Stage = "idle"
+	StageIngesting    Stage = "ingesting"
+	StageTranscribing Stage = "transcribing"
+	StageClassifying  Stage = "classifying"
+	StageComposing    Stage = "composing"
 )
 
 // State is a snapshot of the runner, safe to serialize straight to the API.
@@ -34,6 +35,7 @@ type State struct {
 	Banner string `json:"banner,omitempty"`
 
 	Ingest     *IngestResult     `json:"ingest,omitempty"`
+	Transcribe *TranscribeResult `json:"transcribe,omitempty"`
 	Classify   *ClassifyResult   `json:"classify,omitempty"`
 	Synthesize *SynthesizeResult `json:"synthesize,omitempty"`
 	LLMCalls   int               `json:"llm_calls"`
@@ -180,6 +182,29 @@ func (r *Runner) execute(ctx context.Context) {
 	runDate := store.RunDate(time.Now().In(r.env.Location))
 	client := llm.NewClient(llmCfg, r.db, runDate, r.log)
 
+	// --- transcripts ---
+	//
+	// Before classify, not after: the summary is written into items.summary, and the
+	// classifier reads that. A run late is a run wasted.
+	//
+	// A failure here is never fatal. The caption path is undocumented and will break
+	// eventually; when it does, this degrades to contributing nothing, the same way a
+	// dead feed does in ingest.
+	r.setStage(StageTranscribing)
+	transcribe, transcribeErr := Transcribe(ctx, r.db, client, cfg, r.log)
+	r.mu.Lock()
+	r.state.Transcribe = &transcribe
+	r.state.LLMCalls = client.Guard().UsedThisRun()
+	r.mu.Unlock()
+	if transcribeErr != nil {
+		if errors.Is(transcribeErr, llm.ErrCapReached) || errors.Is(transcribeErr, context.Canceled) {
+			r.stopReason(client, "transcripts stopped", transcribeErr)
+			return
+		}
+		// Anything else: log it and carry on to the part that matters.
+		r.log.Warn("transcripts incomplete", "err", transcribeErr)
+	}
+
 	r.setStage(StageClassifying)
 	classify, err := Classify(ctx, r.db, client, cfg, runDate, r.log)
 	r.mu.Lock()
@@ -204,6 +229,7 @@ func (r *Runner) execute(ctx context.Context) {
 
 	r.log.Info("run complete",
 		"items_new", ingest.ItemsNew,
+		"transcripts", transcribe.Summarized,
 		"matches", classify.MatchesKept,
 		"signals", synth.SignalsWritten,
 		"llm_calls", client.Guard().UsedThisRun(),

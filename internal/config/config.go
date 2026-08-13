@@ -59,6 +59,9 @@ type Runtime struct {
 	ScheduleIngest     string // "HH:MM" local
 	ScheduleSynthesize string // "HH:MM" local
 
+	TranscriptsPerRun int
+	TranscriptLang    string
+
 	MaxCallsPerRun int
 	MaxCallsPerDay int
 
@@ -87,6 +90,9 @@ func Load(db *store.DB) (Runtime, error) {
 		// These fall back only when the row is missing, but they still have to
 		// agree with what bootstrap seeds -- a fallback quietly stricter than the
 		// seed would abort a run that the seeded instance next door completes.
+		TranscriptsPerRun: integer(s, store.KeyTranscriptsPerRun, 6),
+		TranscriptLang:    str(s, store.KeyTranscriptLang, "en"),
+
 		MaxCallsPerRun: integer(s, store.KeyMaxCallsPerRun, 400),
 		MaxCallsPerDay: integer(s, store.KeyMaxCallsPerDay, 1000),
 

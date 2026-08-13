@@ -24,6 +24,11 @@ const (
 	// RoleChat answers questions on the chat screen. Logged like any other call,
 	// but budgeted separately: see Guard.
 	RoleChat Role = "chat"
+	// RoleTranscript summarizes video captions. It runs on the classifier's chain
+	// -- condensing a transcript is mechanical work, which is what the cheap-first
+	// role is for -- but is logged under its own name so the cost is visible rather
+	// than blended into classification.
+	RoleTranscript Role = "transcript"
 )
 
 // attemptsPerRef bounds retries against a single provider before moving down the

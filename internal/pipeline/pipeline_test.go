@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/tammai/interstellar/internal/config"
 	"github.com/tammai/interstellar/internal/llm"
+	"github.com/tammai/interstellar/internal/sources"
 	"github.com/tammai/interstellar/internal/store"
 )
 
@@ -910,4 +912,66 @@ func clientForChatCapped(t *testing.T, db *store.DB, srv *fakeModel, runCap, cha
 		t.Fatalf("LoadConfig: %v", err)
 	}
 	return llm.NewClient(cfg, db, store.RunDate(time.Now()), quietLogger())
+}
+
+// captionStub redirects the sources package's HTTP client at a local server that
+// impersonates YouTube's watch page and caption endpoint.
+//
+// Swapping the shared client is heavy-handed, but it is the only seam: the caption
+// path builds its own youtube.com URLs by design, because the video id is all the
+// caller has. The alternative is a test that reaches the real YouTube, which would
+// break the rule that the suite never makes live calls.
+type captionStub struct {
+	srv  *httptest.Server
+	prev http.RoundTripper
+}
+
+func newCaptionStub(t *testing.T) *captionStub {
+	t.Helper()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/watch", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprintf(w, `<html><script>var x = {"captionTracks":[`+
+			`{"baseUrl":"%s/track","languageCode":"en","kind":""}]};</script></html>`,
+			"http://"+r.Host)
+	})
+	mux.HandleFunc("/track", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"events":[
+			{"segs":[{"utf8":"So the claim is that "}]},
+			{"segs":[{"utf8":"retrieval beats a bigger window"}]},
+			{"segs":[{"utf8":" for long documents."}]}
+		]}`)
+	})
+	srv := httptest.NewServer(mux)
+
+	stub := &captionStub{srv: srv, prev: sources.DefaultClient.Transport}
+	// Rewrite youtube.com to the stub, leaving every other host alone so this cannot
+	// silently swallow an unrelated request.
+	sources.DefaultClient.Transport = rewriteHost{to: srv.Listener.Addr().String(), base: stub.prev}
+	return stub
+}
+
+func (c *captionStub) restore() {
+	sources.DefaultClient.Transport = c.prev
+	c.srv.Close()
+}
+
+type rewriteHost struct {
+	to   string
+	base http.RoundTripper
+}
+
+func (r rewriteHost) RoundTrip(req *http.Request) (*http.Response, error) {
+	if strings.HasSuffix(req.URL.Host, "youtube.com") {
+		req = req.Clone(req.Context())
+		req.URL.Scheme = "http"
+		req.URL.Host = r.to
+	}
+	base := r.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	return base.RoundTrip(req)
 }
