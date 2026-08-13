@@ -21,24 +21,35 @@ var ErrCapReached = errors.New("llm call cap reached")
 // derived from llm_calls on every reservation, so it survives a restart -- a
 // crash loop cannot spend the day's budget several times over.
 type Guard struct {
-	mu          sync.Mutex
-	maxPerRun   int
-	maxPerDay   int
-	usedThisRun int
-	stoppedFor  string
+	mu            sync.Mutex
+	maxPerRun     int
+	maxPerDay     int
+	maxChatPerDay int
+	usedThisRun   int
+	stoppedFor    string
 }
 
 // NewGuard builds a guard. A cap of zero or less means unlimited, which is what
 // an owner who clears the field is asking for.
-func NewGuard(maxPerRun, maxPerDay int) *Guard {
-	return &Guard{maxPerRun: maxPerRun, maxPerDay: maxPerDay}
+func NewGuard(maxPerRun, maxPerDay, maxChatPerDay int) *Guard {
+	return &Guard{maxPerRun: maxPerRun, maxPerDay: maxPerDay, maxChatPerDay: maxChatPerDay}
+}
+
+// offRunBudget reports whether a role spends from something other than a run's
+// budget. Both of these are things a person does while sitting in the UI, and
+// neither is a run: blocking them on a run's allowance would mean a refresh that
+// hit its cap also broke the Settings test button and the chat screen.
+func offRunBudget(role Role) bool {
+	return role == RoleTest || role == RoleChat
 }
 
 // Reserve accounts for one upcoming call, or refuses it.
 //
-// spentToday is the count already recorded for this run date, read fresh from
-// the database by the caller.
-func (g *Guard) Reserve(role Role, spentToday int) error {
+// spentToday is the total count already recorded for this run date, and
+// roleSpentToday the count for this role alone. Both are read fresh from the
+// database by the caller rather than tracked in memory, so a crash loop cannot
+// spend the same budget several times over.
+func (g *Guard) Reserve(role Role, spentToday, roleSpentToday int) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -47,16 +58,25 @@ func (g *Guard) Reserve(role Role, spentToday int) error {
 		return fmt.Errorf("%w: %s", ErrCapReached, g.stoppedFor)
 	}
 
-	// The Settings test-call button is exempt from the per-run cap: verifying a
-	// provider swap must not be blocked by, or able to consume, a run's budget.
-	// The daily cap above still applies, so it cannot be used to spend without
-	// limit.
-	if role != RoleTest && g.maxPerRun > 0 && g.usedThisRun >= g.maxPerRun {
+	// Chat's own daily allowance, checked on top of the global one. Without it,
+	// chat and the pipeline share a single budget and an evening of questions
+	// leaves tomorrow morning's run with nothing to spend -- the sky is the
+	// product, and chat is a lens on it.
+	if role == RoleChat && g.maxChatPerDay > 0 && roleSpentToday >= g.maxChatPerDay {
+		g.stoppedFor = fmt.Sprintf("daily chat cap of %d calls reached", g.maxChatPerDay)
+		return fmt.Errorf("%w: %s", ErrCapReached, g.stoppedFor)
+	}
+
+	// The Settings test-call button and the chat screen are exempt from the
+	// per-run cap: verifying a provider swap, or asking a question, must not be
+	// blocked by -- or able to consume -- a run's budget. The daily caps above
+	// still apply, so neither can spend without limit.
+	if !offRunBudget(role) && g.maxPerRun > 0 && g.usedThisRun >= g.maxPerRun {
 		g.stoppedFor = fmt.Sprintf("per-run cap of %d LLM calls reached", g.maxPerRun)
 		return fmt.Errorf("%w: %s", ErrCapReached, g.stoppedFor)
 	}
 
-	if role != RoleTest {
+	if !offRunBudget(role) {
 		g.usedThisRun++
 	}
 	return nil

@@ -54,6 +54,13 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/sky", s.handleSky)
 	mux.HandleFunc("GET /api/signals/{id}", s.handleSignal)
 
+	// Search: no model, no run. Local and fast enough to type into.
+	mux.HandleFunc("GET /api/search", s.handleSearch)
+
+	// Chat. Its own screen at /chat/, served statically like the rest of the UI.
+	mux.HandleFunc("POST /api/ask", s.handleAsk)
+	mux.HandleFunc("GET /api/chat/history", s.handleChatHistory)
+
 	// Run control and progress.
 	mux.HandleFunc("POST /api/refresh", s.handleRefresh)
 	mux.HandleFunc("GET /api/status", s.handleStatus)

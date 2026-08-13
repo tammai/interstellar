@@ -1,36 +1,9 @@
 /* Interstellar — visual language locked by specs/interstellar-starmap-prototype.html (§6).
    Values here are carried over from the approved prototype; treat changes as a
-   design decision, not a tidy-up. */
+   design decision, not a tidy-up.
 
-/* Fonts are bundled, never hotlinked: §6 requires the UI to render offline.
-   Noto Sans ships as one variable file covering 400-600. */
-@font-face {
-  font-family: 'Noto Sans';
-  src: url('fonts/NotoSans-variable.woff2') format('woff2-variations');
-  font-weight: 100 900;
-  font-style: normal;
-  font-display: swap;
-}
-@font-face {
-  font-family: 'Playfair Display';
-  src: url('fonts/PlayfairDisplay-600.woff2') format('woff2');
-  font-weight: 600;
-  font-style: normal;
-  font-display: swap;
-}
-
-:root {
-  --space-0: #060A18; --space-1: #0B1128; --space-2: #101838;
-  --star-white: #EAF2FF; --hot-gold: #FFC96B; --hot-core: #FFE9C4;
-  --line: #26355E; --grid: #141E3F;
-  --ink: #C7D3EE; --ink-dim: #7787AE; --ink-faint: #4A567C;
-  --accent: #8FB8FF; --panel: #0D142ECC;
-  --danger: #FF8B7B;
-
-  --glass: linear-gradient(180deg, rgba(16,26,58,.82) 0%, rgba(9,15,36,.86) 100%);
-  --glass-border: rgba(143,184,255,.28);
-  --ease-overshoot: cubic-bezier(.2,.75,.25,1.05);
-}
+   Palette tokens and @font-face live in tokens.css, which every screen links
+   first. This file is the sky, the list, the detail panel and Settings. */
 
 * { margin: 0; padding: 0; box-sizing: border-box }
 html, body { height: 100% }

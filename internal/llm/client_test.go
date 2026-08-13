@@ -21,7 +21,9 @@ type fakeRecorder struct {
 	calls []store.LLMCall
 	// spentToday is what the daily cap sees.
 	spentToday int
-	failWrites bool
+	// roleSpentToday is what a per-role daily cap sees, keyed by role name.
+	roleSpentToday map[string]int
+	failWrites     bool
 }
 
 func (f *fakeRecorder) RecordLLMCall(rec store.LLMCall) error {
@@ -38,6 +40,12 @@ func (f *fakeRecorder) LLMCallsOn(string) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.spentToday, nil
+}
+
+func (f *fakeRecorder) LLMCallsByRoleOn(_, role string) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.roleSpentToday[role], nil
 }
 
 func (f *fakeRecorder) recorded() []store.LLMCall {

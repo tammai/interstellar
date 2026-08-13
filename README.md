@@ -126,6 +126,50 @@ It also reports how many items went unscored. Valid JSON that silently drops a
 third of its input is not a model worth shipping, and nothing else would show you
 that.
 
+## Ask
+
+`/chat/` is a second screen — a text box that answers questions from what this
+instance has collected, and nothing else. Reach it from the speech-bubble icon on
+the star map.
+
+It loads none of the star map: no canvas, no animation loop, no `sky.js`. That is
+deliberate and measured — the page pulls only its own stylesheet and script, and
+never calls `requestAnimationFrame`. If you are on a slow machine or a phone, this
+is the cheap door.
+
+How a question is answered:
+
+1. **Plan.** A cheap model call turns your question into a *typed* search — keywords,
+   optional topic, optional date window. Never SQL: a model that can only fill in
+   those fields cannot quietly answer a different question than the one you asked.
+2. **Retrieve.** SQLite FTS5, locally, in milliseconds. The page shows what it found
+   before the answer arrives, because the search is free and the answer is not.
+3. **Answer.** A second call writes prose from the retrieved rows only, citing each
+   claim as `[1]`, `[2]`. The citations are links; click them.
+
+The line under each question tells you what was actually searched. Read it when an
+answer looks wrong — a wrong answer here is almost always a wrong plan, and a plan
+that only looked at last week explains itself.
+
+Two things worth knowing:
+
+- **Chat has its own daily budget** (`max_chat_calls_per_day`, default 100 — about
+  fifty questions). It is separate from the pipeline's cap on purpose: an evening of
+  curiosity must not leave tomorrow morning's run with nothing to spend.
+- **The chat model is its own role**, switchable in Settings like the others. It
+  defaults to the same model as the synthesizer. If it is unset, chat says so and
+  the pipeline is unaffected — an unconfigured chat screen never stops your ingest.
+
+Questions and answers are kept in the database. They are the only record of what you
+actually wanted to know, which is better evidence of whether this thing is worth
+opening than any click count.
+
+### Search without a model
+
+`GET /api/search?q=…` is the same retrieval with no model attached — full-text over
+signals and articles, with `topic_id`, `from`, `to`, `kind` and `limit` filters.
+Free, instant, and diacritic-insensitive, so `tieng viet` finds `Tiếng Việt`.
+
 ## Tuning your topics
 
 A topic is only as good as its definition, and the sky alone will not tell you

@@ -69,6 +69,7 @@ func clientFor(t *testing.T, db *store.DB, srv *fakeModel) *llm.Client {
 		store.KeyProviders:        fmt.Sprintf(`[{"name":"fake","base_url":%q,"api_key_env":""}]`, srv.URL),
 		store.KeyClassifierModel:  "fake/classifier-model",
 		store.KeySynthesizerModel: "fake/synth-model",
+		store.KeyChatModel:        "fake/chat-model",
 	})
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
@@ -888,4 +889,25 @@ func TestClassifyStatsAccumulateAcrossPassesInADay(t *testing.T) {
 	if s.RunDays != 1 {
 		t.Errorf("run days = %d, want 1: both passes ran on the same date", s.RunDays)
 	}
+}
+
+// clientForChatCapped builds a client with a chat-specific daily cap, for testing
+// that chat's allowance is separate from the pipeline's.
+func clientForChatCapped(t *testing.T, db *store.DB, srv *fakeModel, runCap, chatDayCap int) *llm.Client {
+	t.Helper()
+	settings := map[string]string{
+		store.KeyProviders:          fmt.Sprintf(`[{"name":"fake","base_url":%q,"api_key_env":""}]`, srv.URL),
+		store.KeyClassifierModel:    "fake/classifier-model",
+		store.KeySynthesizerModel:   "fake/synth-model",
+		store.KeyChatModel:          "fake/chat-model",
+		store.KeyMaxChatCallsPerDay: fmt.Sprint(chatDayCap),
+	}
+	if runCap > 0 {
+		settings[store.KeyMaxCallsPerRun] = fmt.Sprint(runCap)
+	}
+	cfg, err := llm.LoadConfig(settings)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	return llm.NewClient(cfg, db, store.RunDate(time.Now()), quietLogger())
 }

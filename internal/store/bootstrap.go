@@ -10,12 +10,17 @@ const (
 	KeySynthesizerModel   = "synthesizer_model"    // "provider/model"
 	KeyClassifierFallback = "classifier_fallback"  // JSON array of "provider/model"
 	KeySynthFallback      = "synthesizer_fallback" // JSON array of "provider/model"
+	KeyChatModel          = "chat_model"           // "provider/model", the chat screen
+	KeyChatFallback       = "chat_fallback"        // JSON array of "provider/model"
 
 	KeyScheduleIngest    = "schedule_ingest"     // "HH:MM" local
 	KeyScheduleSynthesis = "schedule_synthesize" // "HH:MM" local
 
 	KeyMaxCallsPerRun = "max_calls_per_run"
 	KeyMaxCallsPerDay = "max_calls_per_day"
+	// Chat's own daily allowance, on top of the global one. Chat must not be able
+	// to spend the budget tomorrow morning's run needs.
+	KeyMaxChatCallsPerDay = "max_chat_calls_per_day"
 
 	KeyHNMinPoints = "hn_min_points"
 	// Items published longer ago than this are not news and are skipped at
@@ -57,6 +62,10 @@ func defaultSettings() map[string]string {
 		KeySynthesizerModel:   "deepseek/deepseek-chat",
 		KeyClassifierFallback: `[]`,
 		KeySynthFallback:      `[]`,
+		// Chat answers in prose a person reads, which is the synthesizer's kind of
+		// work rather than the classifier's, so it starts on the same model.
+		KeyChatModel:    "deepseek/deepseek-chat",
+		KeyChatFallback: `[]`,
 
 		KeyScheduleIngest:    "09:30",
 		KeyScheduleSynthesis: "10:30",
@@ -71,6 +80,10 @@ func defaultSettings() map[string]string {
 		// sit far below this; the cap is still a ceiling, not a budget.
 		KeyMaxCallsPerRun: "400",
 		KeyMaxCallsPerDay: "1000",
+		// Two calls per question (plan, then answer), so 100 is roughly fifty
+		// questions a day -- far more than a habit needs, and small enough that it
+		// cannot eat the 1000 the pipeline shares with it.
+		KeyMaxChatCallsPerDay: "100",
 
 		KeyHNMinPoints:       "25", // decision #4
 		KeyMaxItemAgeDays:    "30",

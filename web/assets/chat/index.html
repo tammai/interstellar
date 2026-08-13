@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>Interstellar — Ask</title>
+<!-- Two stylesheets, no canvas, no sky.js. This document deliberately shares
+     nothing with the star map except the palette and the wordmark: sky.js is 56KB
+     that runs a requestAnimationFrame loop, and a page for reading answers has no
+     use for either. Measured: this page loads neither app.js, sky.js, panel.js,
+     list.js, settings.js nor style.css, creates no canvas, and never calls
+     requestAnimationFrame.
+
+     Both bundled fonts do load. Playfair is 23KB and carries the wordmark and the
+     intro heading -- §6 locks that as the visual language, and a chat screen that
+     dropped it would read as a different product. -->
+<link rel="stylesheet" href="../tokens.css">
+<link rel="stylesheet" href="chat.css">
+<link rel="preload" href="../fonts/NotoSans-variable.woff2" as="font" type="font/woff2" crossorigin>
+</head>
+<body>
+
+<header>
+  <a class="back" href="../" aria-label="Back to the star map">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M15 18l-6-6 6-6"/>
+    </svg>
+    <span class="wordmark"><span class="glyph" aria-hidden="true">✦</span>Ask</span>
+  </a>
+  <div class="spacer"></div>
+  <div class="budget" id="budget" aria-live="polite"></div>
+</header>
+
+<main id="thread" aria-live="polite" aria-label="Questions and answers">
+  <div id="intro">
+    <h2>Ask your own feed</h2>
+    <p>Questions are answered from the signals and articles this instance has
+       collected — nothing else. Every claim is cited, and the citations are links.</p>
+    <div class="examples" id="examples" role="group" aria-label="Example questions"></div>
+  </div>
+</main>
+
+<form id="composer" autocomplete="off">
+  <div class="field-row">
+    <!-- A textarea rather than an input: questions wrap, and Enter submits while
+         Shift+Enter makes a new line. -->
+    <textarea id="q" rows="1" placeholder="Ask about your signals…"
+              aria-label="Your question" maxlength="2000"></textarea>
+    <button type="submit" id="send" aria-label="Send question">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M5 12h14M13 6l6 6-6 6"/>
+      </svg>
+    </button>
+  </div>
+  <div class="hint" id="hint"></div>
+</form>
+
+<script type="module" src="chat.js"></script>
+</body>
+</html>

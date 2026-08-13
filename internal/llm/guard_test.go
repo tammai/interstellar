@@ -10,14 +10,14 @@ import (
 )
 
 func TestGuardPerRunCap(t *testing.T) {
-	g := NewGuard(2, 0)
+	g := NewGuard(2, 0, 0)
 
 	for i := 0; i < 2; i++ {
-		if err := g.Reserve(RoleClassifier, 0); err != nil {
+		if err := g.Reserve(RoleClassifier, 0, 0); err != nil {
 			t.Fatalf("reservation %d refused: %v", i+1, err)
 		}
 	}
-	err := g.Reserve(RoleClassifier, 0)
+	err := g.Reserve(RoleClassifier, 0, 0)
 	if !errors.Is(err, ErrCapReached) {
 		t.Fatalf("third reservation err = %v, want ErrCapReached", err)
 	}
@@ -29,12 +29,12 @@ func TestGuardPerRunCap(t *testing.T) {
 // The daily cap is derived from the database, so a crash loop cannot spend the
 // day's budget several times over.
 func TestGuardDailyCapUsesPersistedCount(t *testing.T) {
-	g := NewGuard(1000, 50)
+	g := NewGuard(1000, 50, 0)
 
-	if err := g.Reserve(RoleClassifier, 49); err != nil {
+	if err := g.Reserve(RoleClassifier, 49, 0); err != nil {
 		t.Fatalf("reservation under the daily cap refused: %v", err)
 	}
-	err := g.Reserve(RoleClassifier, 50)
+	err := g.Reserve(RoleClassifier, 50, 0)
 	if !errors.Is(err, ErrCapReached) {
 		t.Fatalf("err = %v, want ErrCapReached at the daily cap", err)
 	}
@@ -44,9 +44,9 @@ func TestGuardDailyCapUsesPersistedCount(t *testing.T) {
 }
 
 func TestGuardZeroMeansUnlimited(t *testing.T) {
-	g := NewGuard(0, 0)
+	g := NewGuard(0, 0, 0)
 	for i := 0; i < 1000; i++ {
-		if err := g.Reserve(RoleClassifier, i); err != nil {
+		if err := g.Reserve(RoleClassifier, i, 0); err != nil {
 			t.Fatalf("unlimited guard refused at %d: %v", i, err)
 		}
 	}
@@ -56,17 +56,17 @@ func TestGuardZeroMeansUnlimited(t *testing.T) {
 // it -- otherwise the §10 "test call verifies in-UI" criterion fails exactly when
 // you need it, on an instance that just hit its cap.
 func TestGuardExemptsTestCallsFromRunCap(t *testing.T) {
-	g := NewGuard(1, 100)
+	g := NewGuard(1, 100, 0)
 
-	if err := g.Reserve(RoleClassifier, 0); err != nil {
+	if err := g.Reserve(RoleClassifier, 0, 0); err != nil {
 		t.Fatalf("first run call refused: %v", err)
 	}
-	if err := g.Reserve(RoleClassifier, 1); !errors.Is(err, ErrCapReached) {
+	if err := g.Reserve(RoleClassifier, 1, 0); !errors.Is(err, ErrCapReached) {
 		t.Fatalf("run cap not enforced: %v", err)
 	}
 
 	// Still allowed at the run cap.
-	if err := g.Reserve(RoleTest, 1); err != nil {
+	if err := g.Reserve(RoleTest, 1, 0); err != nil {
 		t.Errorf("test call blocked by the per-run cap: %v", err)
 	}
 	if g.UsedThisRun() != 1 {
@@ -74,7 +74,7 @@ func TestGuardExemptsTestCallsFromRunCap(t *testing.T) {
 	}
 
 	// But the daily cap still binds, so this is not an unlimited side door.
-	if err := g.Reserve(RoleTest, 100); !errors.Is(err, ErrCapReached) {
+	if err := g.Reserve(RoleTest, 100, 0); !errors.Is(err, ErrCapReached) {
 		t.Errorf("test call ignored the daily cap: %v", err)
 	}
 }

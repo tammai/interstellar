@@ -47,6 +47,28 @@ func ExtractArray(raw string) ([]json.RawMessage, error) {
 	return elems, nil
 }
 
+// ExtractObject recovers a JSON object from model output.
+//
+// The object-shaped sibling of ExtractArray, for prompts that ask for one record
+// rather than a list -- the chat planner's search plan. Same tolerance, same
+// reasons: fences and a sentence of preamble arrive regardless of instructions.
+func ExtractObject(raw string) (json.RawMessage, error) {
+	text := stripFences(raw)
+
+	candidate, ok := firstBalanced(text, '{', '}')
+	if !ok {
+		return nil, fmt.Errorf("no JSON object in model output: %s", snippetOf(raw))
+	}
+	candidate = dropTrailingCommas(candidate)
+
+	// Round-trip it so a caller never has to handle syntactically broken JSON.
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(candidate), &probe); err != nil {
+		return nil, fmt.Errorf("model output is not a JSON object: %w", err)
+	}
+	return json.RawMessage(candidate), nil
+}
+
 // DecodeElements decodes each element independently, dropping the ones that
 // don't survive.
 //

@@ -32,13 +32,16 @@ type settingsResponse struct {
 	SynthesizerModel    string   `json:"synthesizer_model"`
 	ClassifierFallback  []string `json:"classifier_fallback"`
 	SynthesizerFallback []string `json:"synthesizer_fallback"`
+	ChatModel           string   `json:"chat_model"`
+	ChatFallback        []string `json:"chat_fallback"`
 
 	ScheduleIngest     string `json:"schedule_ingest"`
 	ScheduleSynthesize string `json:"schedule_synthesize"`
 	Timezone           string `json:"timezone"`
 
-	MaxCallsPerRun int `json:"max_calls_per_run"`
-	MaxCallsPerDay int `json:"max_calls_per_day"`
+	MaxCallsPerRun     int `json:"max_calls_per_run"`
+	MaxCallsPerDay     int `json:"max_calls_per_day"`
+	MaxChatCallsPerDay int `json:"max_chat_calls_per_day"`
 
 	HNMinPoints       int     `json:"hn_min_points"`
 	SkyDays           int     `json:"sky_days"`
@@ -60,12 +63,15 @@ type settingsRequest struct {
 	SynthesizerModel    *string   `json:"synthesizer_model"`
 	ClassifierFallback  *[]string `json:"classifier_fallback"`
 	SynthesizerFallback *[]string `json:"synthesizer_fallback"`
+	ChatModel           *string   `json:"chat_model"`
+	ChatFallback        *[]string `json:"chat_fallback"`
 
 	ScheduleIngest     *string `json:"schedule_ingest"`
 	ScheduleSynthesize *string `json:"schedule_synthesize"`
 
-	MaxCallsPerRun *int `json:"max_calls_per_run"`
-	MaxCallsPerDay *int `json:"max_calls_per_day"`
+	MaxCallsPerRun     *int `json:"max_calls_per_run"`
+	MaxCallsPerDay     *int `json:"max_calls_per_day"`
+	MaxChatCallsPerDay *int `json:"max_chat_calls_per_day"`
 
 	HNMinPoints       *int     `json:"hn_min_points"`
 	SkyDays           *int     `json:"sky_days"`
@@ -86,11 +92,14 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		SynthesizerModel:    settings[store.KeySynthesizerModel],
 		ClassifierFallback:  stringList(settings[store.KeyClassifierFallback]),
 		SynthesizerFallback: stringList(settings[store.KeySynthFallback]),
+		ChatModel:           settings[store.KeyChatModel],
+		ChatFallback:        stringList(settings[store.KeyChatFallback]),
 		ScheduleIngest:      settings[store.KeyScheduleIngest],
 		ScheduleSynthesize:  settings[store.KeyScheduleSynthesis],
 		Timezone:            s.Env.Location.String(),
 		MaxCallsPerRun:      intOf(settings[store.KeyMaxCallsPerRun], 200),
 		MaxCallsPerDay:      intOf(settings[store.KeyMaxCallsPerDay], 500),
+		MaxChatCallsPerDay:  intOf(settings[store.KeyMaxChatCallsPerDay], 100),
 		HNMinPoints:         intOf(settings[store.KeyHNMinPoints], 25),
 		SkyDays:             intOf(settings[store.KeySkyDays], 7),
 		ClassifyBatchSize:   intOf(settings[store.KeyClassifyBatchSize], 30),
@@ -158,6 +167,7 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 
 	setStr(store.KeyClassifierModel, req.ClassifierModel)
 	setStr(store.KeySynthesizerModel, req.SynthesizerModel)
+	setStr(store.KeyChatModel, req.ChatModel)
 	setStr(store.KeyScheduleIngest, req.ScheduleIngest)
 	setStr(store.KeyScheduleSynthesis, req.ScheduleSynthesize)
 
@@ -167,9 +177,13 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	if req.SynthesizerFallback != nil {
 		updates[store.KeySynthFallback] = mustJSON(*req.SynthesizerFallback)
 	}
+	if req.ChatFallback != nil {
+		updates[store.KeyChatFallback] = mustJSON(*req.ChatFallback)
+	}
 
 	setInt(store.KeyMaxCallsPerRun, req.MaxCallsPerRun)
 	setInt(store.KeyMaxCallsPerDay, req.MaxCallsPerDay)
+	setInt(store.KeyMaxChatCallsPerDay, req.MaxChatCallsPerDay)
 	setInt(store.KeyHNMinPoints, req.HNMinPoints)
 	setInt(store.KeySkyDays, req.SkyDays)
 	setInt(store.KeyClassifyBatchSize, req.ClassifyBatchSize)
@@ -293,8 +307,8 @@ func (s *Server) handleModelTest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	role := llm.Role(strings.TrimSpace(req.Role))
-	if role != llm.RoleClassifier && role != llm.RoleSynthesizer {
-		s.error(w, http.StatusBadRequest, "role must be classifier or synthesizer", nil)
+	if role != llm.RoleClassifier && role != llm.RoleSynthesizer && role != llm.RoleChat {
+		s.error(w, http.StatusBadRequest, "role must be classifier, synthesizer, or chat", nil)
 		return
 	}
 

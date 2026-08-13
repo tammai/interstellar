@@ -45,6 +45,21 @@ func (db *DB) LLMCallsOn(runDate string) (int, error) {
 	return n, nil
 }
 
+// LLMCallsByRoleOn counts one role's calls on a run date.
+//
+// Chat has a daily allowance of its own, and the guard reads it here on every
+// reservation for the same reason it reads the global count that way: a restart or
+// a crash loop must not hand back a fresh budget.
+func (db *DB) LLMCallsByRoleOn(runDate, role string) (int, error) {
+	var n int
+	err := db.QueryRow(
+		`SELECT count(*) FROM llm_calls WHERE run_date = ? AND role = ?`, runDate, role).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count %s calls on %s: %w", role, runDate, err)
+	}
+	return n, nil
+}
+
 // LLMUsage summarizes spend for a day, per provider and model.
 type LLMUsage struct {
 	Provider  string `json:"provider"`

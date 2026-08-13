@@ -21,6 +21,9 @@ const (
 	// its cost is visible, but exempt from the per-run cap -- a run's budget
 	// should not be consumable by clicking a button.
 	RoleTest Role = "test"
+	// RoleChat answers questions on the chat screen. Logged like any other call,
+	// but budgeted separately: see Guard.
+	RoleChat Role = "chat"
 )
 
 // attemptsPerRef bounds retries against a single provider before moving down the
@@ -51,6 +54,7 @@ func (c Chain) Refs() []ModelRef {
 type Recorder interface {
 	RecordLLMCall(rec store.LLMCall) error
 	LLMCallsOn(runDate string) (int, error)
+	LLMCallsByRoleOn(runDate, role string) (int, error)
 }
 
 // Config is the LLM layer's view of settings, resolved fresh per run.
@@ -59,6 +63,13 @@ type Config struct {
 	Roles          map[Role]Chain
 	MaxCallsPerRun int
 	MaxCallsPerDay int
+	// MaxChatCallsPerDay budgets the chat screen on its own.
+	//
+	// Chat shares llm_calls and the global daily cap with the pipeline, and that
+	// alone would let a curious evening of questions eat the budget tomorrow
+	// morning's run needs. The sky is the product; chat is a lens on it, so chat
+	// gets a smaller allowance of its own and cannot starve the runs.
+	MaxChatCallsPerDay int
 }
 
 // LoadConfig builds Config from the settings map.
@@ -88,15 +99,25 @@ func LoadConfig(settings map[string]string) (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("synthesizer fallback: %w", err)
 	}
+	chat, err := ParseModelRef(settings[store.KeyChatModel])
+	if err != nil {
+		return Config{}, fmt.Errorf("chat: %w", err)
+	}
+	chatFallback, err := ParseModelRefs(settings[store.KeyChatFallback])
+	if err != nil {
+		return Config{}, fmt.Errorf("chat fallback: %w", err)
+	}
 
 	return Config{
 		Registry: registry,
 		Roles: map[Role]Chain{
 			RoleClassifier:  {Primary: classifier, Fallback: classifierFallback},
 			RoleSynthesizer: {Primary: synthesizer, Fallback: synthFallback},
+			RoleChat:        {Primary: chat, Fallback: chatFallback},
 		},
-		MaxCallsPerRun: atoiDefault(settings[store.KeyMaxCallsPerRun], 200),
-		MaxCallsPerDay: atoiDefault(settings[store.KeyMaxCallsPerDay], 500),
+		MaxCallsPerRun:     atoiDefault(settings[store.KeyMaxCallsPerRun], 200),
+		MaxCallsPerDay:     atoiDefault(settings[store.KeyMaxCallsPerDay], 500),
+		MaxChatCallsPerDay: atoiDefault(settings[store.KeyMaxChatCallsPerDay], 100),
 	}, nil
 }
 
@@ -119,7 +140,7 @@ func NewClient(cfg Config, rec Recorder, runDate string, log *slog.Logger) *Clie
 		http:     &http.Client{Timeout: CallTimeout + 15*time.Second},
 		log:      log,
 		runDate:  runDate,
-		guard:    NewGuard(cfg.MaxCallsPerRun, cfg.MaxCallsPerDay),
+		guard:    NewGuard(cfg.MaxCallsPerRun, cfg.MaxCallsPerDay, cfg.MaxChatCallsPerDay),
 	}
 }
 
@@ -216,7 +237,16 @@ func (c *Client) reserve(role Role) error {
 	if err != nil {
 		return fmt.Errorf("spend guard: %w", err)
 	}
-	return c.guard.Reserve(role, spentToday)
+
+	// Only chat has a per-role cap, so only chat pays for the extra read.
+	var roleSpentToday int
+	if role == RoleChat {
+		roleSpentToday, err = c.recorder.LLMCallsByRoleOn(c.runDate, string(role))
+		if err != nil {
+			return fmt.Errorf("spend guard: %w", err)
+		}
+	}
+	return c.guard.Reserve(role, spentToday, roleSpentToday)
 }
 
 // record writes one attempt to llm_calls. A failure to record is logged, never
@@ -251,37 +281,45 @@ type RoleStatus struct {
 // Readiness checks each role end to end: model assigned, provider known, key
 // present. This is what turns "the run failed" into "DEEPSEEK_API_KEY is not
 // set", which is the difference between a usable setup screen and a mystery.
+//
+// It covers the two roles a RUN needs, and deliberately not chat. run.go refuses
+// to start when Ready() is false, so folding chat in here would mean an owner who
+// cleared chat_model -- a screen they may never open -- silently stopped their
+// morning pipeline. Chat readiness is asked for separately, by the screen that
+// actually needs it.
 func (cfg Config) Readiness() []RoleStatus {
-	out := make([]RoleStatus, 0, len(cfg.Roles))
+	out := make([]RoleStatus, 0, 2)
 	for _, role := range []Role{RoleClassifier, RoleSynthesizer} {
-		chain := cfg.Roles[role]
-		st := RoleStatus{Role: string(role)}
-
-		if chain.Primary.IsZero() {
-			st.Problem = "no model configured"
-			out = append(out, st)
-			continue
-		}
-
-		st.Ref = chain.Primary.String()
-		st.Provider = chain.Primary.Provider
-
-		provider, err := cfg.Registry.Resolve(chain.Primary)
-		if err != nil {
-			st.Problem = err.Error()
-			out = append(out, st)
-			continue
-		}
-		if _, ok := provider.APIKey(); !ok {
-			st.Problem = fmt.Sprintf("environment variable %s is not set", provider.APIKeyEnv)
-			out = append(out, st)
-			continue
-		}
-
-		st.Ready = true
-		out = append(out, st)
+		out = append(out, cfg.RoleReadiness(role))
 	}
 	return out
+}
+
+// RoleReadiness checks one role end to end.
+func (cfg Config) RoleReadiness(role Role) RoleStatus {
+	chain := cfg.Roles[role]
+	st := RoleStatus{Role: string(role)}
+
+	if chain.Primary.IsZero() {
+		st.Problem = "no model configured"
+		return st
+	}
+
+	st.Ref = chain.Primary.String()
+	st.Provider = chain.Primary.Provider
+
+	provider, err := cfg.Registry.Resolve(chain.Primary)
+	if err != nil {
+		st.Problem = err.Error()
+		return st
+	}
+	if _, ok := provider.APIKey(); !ok {
+		st.Problem = fmt.Sprintf("environment variable %s is not set", provider.APIKeyEnv)
+		return st
+	}
+
+	st.Ready = true
+	return st
 }
 
 // Ready reports whether every role can run.

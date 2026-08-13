@@ -1,0 +1,179 @@
+/* The Ask screen. Palette and fonts come from ../tokens.css.
+   Nothing here draws a star: the background is one static gradient rather than a
+   canvas, which is what makes this page cost nothing to render. */
+
+* { margin: 0; padding: 0; box-sizing: border-box }
+html, body { height: 100% }
+html, body { overscroll-behavior: none }
+
+/* An author `display` declaration beats the user-agent `[hidden] { display: none }`
+   rule -- origin wins over specificity -- so anything this file gives a `display`
+   stays laid out even after JS sets `.hidden = true`. That trap has already shipped
+   twice in this project (see web/css.test.js) and it bites here: chat.js hides
+   .sources, .plan, .a, .status and .meta, and .sources declares display: flex.
+   One blanket rule instead of a per-selector guard that the next element added to
+   this page would silently miss. */
+[hidden] { display: none !important }
+
+body {
+  /* A hint of the sky, painted once by the compositor. The star map's graticule
+     and twinkle are a canvas and a frame loop; this is a gradient. */
+  background:
+    radial-gradient(1100px 700px at 78% -8%, rgba(29,44,92,.55) 0%, rgba(6,10,24,0) 62%),
+    radial-gradient(900px 620px at 8% 108%, rgba(21,33,72,.45) 0%, rgba(6,10,24,0) 60%),
+    var(--space-0);
+  color: var(--ink);
+  font-family: 'Noto Sans', system-ui, -apple-system, sans-serif;
+  display: flex; flex-direction: column;
+}
+
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px }
+
+/* ---------- header ---------- */
+
+header {
+  flex: none; display: flex; align-items: center; gap: 12px;
+  padding: 16px 24px 14px;
+  border-bottom: 1px solid var(--grid);
+  background: rgba(6,10,24,.72); backdrop-filter: blur(10px);
+}
+.back {
+  display: flex; align-items: center; gap: 8px;
+  color: var(--ink-dim); text-decoration: none;
+}
+.back:hover { color: var(--star-white) }
+.back svg { width: 18px; height: 18px; flex: none }
+.wordmark {
+  font-family: 'Playfair Display', Georgia, serif; font-weight: 600;
+  font-size: 22px; letter-spacing: .02em; color: var(--star-white);
+  display: flex; align-items: baseline; gap: 9px;
+}
+.wordmark .glyph { color: var(--hot-gold); font-size: 17px; align-self: center; line-height: 1 }
+.spacer { flex: 1 }
+
+.budget { font-size: 11.5px; letter-spacing: .06em; color: var(--ink-faint); white-space: nowrap }
+.budget.low { color: var(--hot-gold) }
+
+/* ---------- thread ---------- */
+
+#thread {
+  flex: 1; overflow-y: auto; padding: 26px 24px 8px;
+  display: flex; flex-direction: column; gap: 26px;
+}
+
+#intro { max-width: 56ch; margin: 6vh auto 0; text-align: center }
+#intro h2 {
+  font-family: 'Playfair Display', Georgia, serif; font-weight: 600;
+  font-size: 24px; color: var(--star-white); margin-bottom: 12px;
+}
+#intro p { font-size: 13.5px; color: var(--ink-dim); line-height: 1.7 }
+
+.examples { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 22px }
+.example {
+  background: none; border: 1px solid var(--line); border-radius: 999px;
+  color: var(--ink); font: inherit; font-size: 12.5px;
+  padding: 7px 14px; cursor: pointer;
+}
+.example:hover { border-color: var(--accent); color: var(--star-white) }
+
+.turn { max-width: 74ch; width: 100%; margin: 0 auto; display: flex; flex-direction: column; gap: 10px }
+
+.q {
+  font-size: 15px; color: var(--star-white); line-height: 1.5;
+  padding-left: 14px; border-left: 2px solid var(--accent);
+  overflow-wrap: anywhere;
+}
+
+.status { font-size: 12.5px; color: var(--ink-faint) }
+
+.plan {
+  font-size: 11.5px; color: var(--ink-faint); letter-spacing: .02em;
+  overflow-wrap: anywhere;
+}
+
+.a { font-size: 14px; line-height: 1.75; color: var(--ink); white-space: pre-wrap; overflow-wrap: anywhere }
+.a.failed { color: var(--hot-gold) }
+
+/* A citation is a superscript link. Small, but a real target: 18px minimum so it
+   is tappable, which a bare superscript number is not. */
+.cite {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 18px; height: 18px; padding: 0 4px; margin: 0 2px;
+  vertical-align: super; font-size: 10px; line-height: 1;
+  color: var(--accent); text-decoration: none;
+  border: 1px solid rgba(143,184,255,.35); border-radius: 5px;
+}
+.cite:hover { background: rgba(143,184,255,.16); color: var(--star-white) }
+
+.sources { list-style: none; display: flex; flex-direction: column; gap: 7px; margin-top: 2px }
+/* The provisional list is what came back from the local search before the answer
+   landed. Dimmed, because it may still be replaced by the planned one. */
+.sources.provisional { opacity: .55 }
+.sources li {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 8px 11px; border: 1px solid var(--grid); border-radius: 9px;
+  background: rgba(6,10,24,.4);
+}
+.sources li::marker { content: none }
+.sources a { font-size: 12.5px; color: var(--ink); text-decoration: none; overflow-wrap: anywhere }
+.sources a:hover { color: var(--star-white); text-decoration: underline }
+.src-meta { font-size: 11px; color: var(--ink-faint) }
+
+.meta { font-size: 11px; color: var(--ink-faint); letter-spacing: .04em }
+
+.turn.past .q { border-left-color: var(--line) }
+
+/* ---------- composer ---------- */
+
+#composer {
+  flex: none; padding: 12px 24px 18px;
+  border-top: 1px solid var(--grid);
+  background: rgba(6,10,24,.82); backdrop-filter: blur(10px);
+}
+.field-row {
+  max-width: 74ch; margin: 0 auto;
+  display: flex; align-items: flex-end; gap: 10px;
+}
+#q {
+  flex: 1; resize: none; overflow-y: auto; max-height: 160px;
+  background: rgba(6,10,24,.6); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 12px;
+  font: inherit; font-size: 14px; line-height: 1.55;
+  padding: 11px 14px;
+}
+#q::placeholder { color: var(--ink-faint) }
+#q:focus { border-color: var(--glass-border); outline: none }
+#q:disabled { opacity: .5 }
+
+#send {
+  flex: none; width: 40px; height: 40px; border-radius: 12px;
+  border: 1px solid var(--line); background: rgba(143,184,255,.1);
+  color: var(--accent); cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+}
+#send:hover:not(:disabled) { color: var(--star-white); border-color: var(--accent) }
+#send:disabled { opacity: .4; cursor: default }
+#send svg { width: 18px; height: 18px }
+
+.hint {
+  max-width: 74ch; margin: 8px auto 0;
+  font-size: 11px; color: var(--ink-faint); line-height: 1.6;
+}
+.hint.warn { color: var(--hot-gold) }
+
+/* §10 requires the layout to work to ~380px. */
+@media (max-width: 560px) {
+  header { padding: 13px 15px 12px }
+  .wordmark { font-size: 19px }
+  .budget { font-size: 10.5px; white-space: normal; text-align: right }
+  #thread { padding: 20px 15px 6px; gap: 22px }
+  #composer { padding: 10px 15px 14px }
+  #intro { margin-top: 4vh }
+  #intro h2 { font-size: 21px }
+}
+
+/* Nothing here animates on a timer, so reduced motion only has to flatten the two
+   hover transitions the browser would otherwise smooth. */
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important }
+}

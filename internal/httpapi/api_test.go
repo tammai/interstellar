@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -100,6 +101,9 @@ func TestNoEndpointEverLeaksAKey(t *testing.T) {
 		{"GET", "/api/sky", ""},
 		{"GET", "/api/topics", ""},
 		{"GET", "/api/topics/stats", ""},
+		{"GET", "/api/search?q=agents", ""},
+		{"GET", "/api/chat/history", ""},
+		{"POST", "/api/ask", `{"question":"anything?"}`},
 		{"GET", "/api/sources", ""},
 		{"PUT", "/api/settings", `{"classifier_model":"deepseek/deepseek-chat"}`},
 	}
@@ -669,5 +673,354 @@ func TestTopicStatsWindowIsSelectableAndValidated(t *testing.T) {
 		if w.Code != http.StatusBadRequest {
 			t.Errorf("days=%s returned %d, want 400", bad, w.Code)
 		}
+	}
+}
+
+// --- search ---
+
+// seedSearchable gives the test server something to find. Signals go in directly
+// rather than through the pipeline: this endpoint has nothing to do with models,
+// and a fixture that needed one would be testing the wrong thing.
+func seedSearchable(t *testing.T, db *store.DB) int64 {
+	t.Helper()
+	topics, err := db.AllTopics()
+	if err != nil || len(topics) == 0 {
+		t.Fatalf("need seeded topics: %v", err)
+	}
+	topic := topics[0].ID
+	for _, s := range []struct{ date, title, reason string }{
+		{"2026-08-01", "Agent harness patterns converge", "Three outlets described the same shift."},
+		{"2026-08-02", "Tiếng Việt trong bản ghi", "Bản ghi có dấu."},
+	} {
+		if _, err := db.Exec(
+			`INSERT INTO signals (run_date, topic_id, title, reason, score, source_count, primary_url)
+			 VALUES (?, ?, ?, ?, 5, 3, 'https://x.test/a')`, s.date, topic, s.title, s.reason,
+		); err != nil {
+			t.Fatalf("seed signal: %v", err)
+		}
+	}
+	return topic
+}
+
+func TestSearchFindsSignalsWithSnippets(t *testing.T) {
+	_, h, db := testServer(t)
+	seedSearchable(t, db)
+
+	got := decode[searchResponse](t, do(t, h, "GET", "/api/search?q=harness&kind=signals", ""))
+	if got.Count == 0 {
+		t.Fatal("no hits for a term that is present")
+	}
+	if got.Hits[0].Kind != "signal" {
+		t.Errorf("kind = %q", got.Hits[0].Kind)
+	}
+	if got.Hits[0].Snippet == "" {
+		t.Error("no snippet on a text match")
+	}
+	if got.Hits[0].TopicTitle == "" {
+		t.Error("hit is missing its topic title")
+	}
+}
+
+// The endpoint takes free prose straight from a text box, so the FTS5 operator
+// grammar must never reach the query planner.
+func TestSearchSurvivesHostileQueryStrings(t *testing.T) {
+	_, h, db := testServer(t)
+	seedSearchable(t, db)
+
+	for _, q := range []string{
+		"what's+happening+with+agents%3F", "AND+OR+NOT", "%22unterminated", "harness*",
+		"NEAR(a+b%2C+3)", "%5Eanchored", "c%2B%2B", "'%3B+DROP+TABLE+signals%3B+--", "",
+	} {
+		w := do(t, h, "GET", "/api/search?q="+q, "")
+		if w.Code != http.StatusOK {
+			t.Errorf("q=%q returned %d: %s", q, w.Code, w.Body.String())
+		}
+	}
+
+	// And the data is still there.
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM signals`).Scan(&n); err != nil || n == 0 {
+		t.Errorf("signals table damaged: n=%d err=%v", n, err)
+	}
+}
+
+func TestSearchValidatesItsParameters(t *testing.T) {
+	_, h, _ := testServer(t)
+
+	for name, path := range map[string]string{
+		"bad kind":   "/api/search?kind=everything",
+		"zero limit": "/api/search?limit=0",
+		"neg limit":  "/api/search?limit=-5",
+		"word limit": "/api/search?limit=ten",
+		"bad from":   "/api/search?from=2026-8-1",
+		"bad to":     "/api/search?to=yesterday",
+		"bad topic":  "/api/search?topic_id=abc",
+	} {
+		w := do(t, h, "GET", path, "")
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("%s (%s): status %d, want 400", name, path, w.Code)
+		}
+	}
+}
+
+func TestSearchFiltersAndDiacritics(t *testing.T) {
+	_, h, db := testServer(t)
+	topic := seedSearchable(t, db)
+
+	// Plain-keyboard query against accented text.
+	viet := decode[searchResponse](t, do(t, h, "GET", "/api/search?q=tieng+viet&kind=signals", ""))
+	if viet.Count == 0 {
+		t.Error("diacritic-insensitive search found nothing")
+	}
+
+	// Date window.
+	day := decode[searchResponse](t, do(t, h, "GET", "/api/search?kind=signals&from=2026-08-02&to=2026-08-02", ""))
+	if day.Count == 0 {
+		t.Fatal("date-filtered search found nothing")
+	}
+	for _, hit := range day.Hits {
+		if hit.Date != "2026-08-02" {
+			t.Errorf("date filter leaked %s", hit.Date)
+		}
+	}
+
+	// Topic filter.
+	byTopic := decode[searchResponse](t, do(t, h, "GET",
+		fmt.Sprintf("/api/search?kind=signals&topic_id=%d", topic), ""))
+	if byTopic.Count == 0 {
+		t.Fatal("topic-filtered search found nothing")
+	}
+	for _, hit := range byTopic.Hits {
+		if hit.TopicID != topic {
+			t.Errorf("topic filter leaked topic %d", hit.TopicID)
+		}
+	}
+}
+
+// --- chat ---
+
+// chatModelServer plays both prompts a question makes.
+func chatModelServer(t *testing.T, plan, answer string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Messages []struct{ Content string } `json:"messages"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		var prompt string
+		for _, m := range body.Messages {
+			prompt += m.Content
+		}
+		reply := answer
+		if strings.Contains(prompt, "search plan") {
+			reply = plan
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{"message": map[string]string{"content": reply}}},
+			"usage":   map[string]int{"prompt_tokens": 40, "completion_tokens": 15},
+		})
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// useFakeChatModel points every role at a local fake, so nothing real is called.
+func useFakeChatModel(t *testing.T, db *store.DB, srv *httptest.Server) {
+	t.Helper()
+	if err := db.SetSettings(map[string]string{
+		store.KeyProviders:        fmt.Sprintf(`[{"name":"fake","base_url":%q,"api_key_env":""}]`, srv.URL),
+		store.KeyClassifierModel:  "fake/classifier",
+		store.KeySynthesizerModel: "fake/synth",
+		store.KeyChatModel:        "fake/chat",
+	}); err != nil {
+		t.Fatalf("settings: %v", err)
+	}
+}
+
+func TestAskAnswersAndPersistsTheTurn(t *testing.T) {
+	_, h, db := testServer(t)
+	seedSearchable(t, db)
+	useFakeChatModel(t, db, chatModelServer(t,
+		`{"text":"agent harness","kind":"signals","rationale":"the harness signal"}`,
+		"Harness patterns converged across three outlets [1]."))
+
+	w := do(t, h, "POST", "/api/ask", `{"question":"what happened with agent harnesses?"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s", w.Code, w.Body.String())
+	}
+	got := decode[askResponse](t, w)
+
+	if got.Answer == "" {
+		t.Error("no answer")
+	}
+	if len(got.Hits) == 0 {
+		t.Error("no hits returned; the page has nothing to cite")
+	}
+	if !got.Planned {
+		t.Error("planned is false despite a good plan")
+	}
+	if got.Query.Text != "agent harness" {
+		t.Errorf("plan not echoed back: %+v", got.Query)
+	}
+	if got.Calls != 2 {
+		t.Errorf("calls = %d, want 2", got.Calls)
+	}
+	if got.TurnID == 0 {
+		t.Error("turn was not persisted")
+	}
+	if got.ChatCapDay == 0 {
+		t.Error("chat cap not reported; the screen cannot show what is left")
+	}
+	if got.ChatCallsToday != 2 {
+		t.Errorf("chat calls today = %d, want 2", got.ChatCallsToday)
+	}
+
+	// And it comes back in history.
+	hist := decode[chatHistoryResponse](t, do(t, h, "GET", "/api/chat/history", ""))
+	if len(hist.Turns) != 1 {
+		t.Fatalf("history has %d turns, want 1", len(hist.Turns))
+	}
+	if hist.Turns[0].Question != "what happened with agent harnesses?" {
+		t.Errorf("history question = %q", hist.Turns[0].Question)
+	}
+	if hist.Turns[0].HitCount == 0 {
+		t.Error("history turn records no hits")
+	}
+	if !hist.Ready {
+		t.Error("history reports chat as not ready despite a configured model")
+	}
+}
+
+// The single most important interaction between chat and the rest of the app: a
+// chat role that cannot run must not stop the pipeline. run.go refuses to start a
+// run when Ready() is false, so folding chat into it would mean an owner who
+// cleared chat_model silently broke their morning ingest.
+func TestUnreadyChatDoesNotBlockThePipeline(t *testing.T) {
+	_, h, db := testServer(t)
+	if err := db.SetSettings(map[string]string{store.KeyChatModel: ""}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DEEPSEEK_API_KEY", "sk-present") // after testServer; the pipeline roles resolve
+
+	st := decode[statusResponse](t, do(t, h, "GET", "/api/status", ""))
+	if !st.Ready {
+		t.Errorf("instance reports not ready with only chat unconfigured; readiness = %+v", st.Readiness)
+	}
+	for _, role := range st.Readiness {
+		if role.Role == "chat" {
+			t.Error("chat appears in the pipeline's readiness list, which gates runs")
+		}
+	}
+}
+
+func TestAskRefusesWhenTheChatModelIsUnset(t *testing.T) {
+	_, h, db := testServer(t)
+	if err := db.SetSettings(map[string]string{store.KeyChatModel: ""}); err != nil {
+		t.Fatal(err)
+	}
+
+	w := do(t, h, "POST", "/api/ask", `{"question":"anything?"}`)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503 when chat has no model", w.Code)
+	}
+
+	// And history says why, so the page can show a hint instead of failing blind.
+	hist := decode[chatHistoryResponse](t, do(t, h, "GET", "/api/chat/history", ""))
+	if hist.Ready {
+		t.Error("history claims chat is ready with no model set")
+	}
+	if hist.Problem == "" {
+		t.Error("history gives no reason chat cannot run")
+	}
+}
+
+func TestAskValidatesTheQuestion(t *testing.T) {
+	_, h, db := testServer(t)
+	useFakeChatModel(t, db, chatModelServer(t, `{"text":"x"}`, "answer"))
+
+	for name, body := range map[string]string{
+		"empty":     `{"question":""}`,
+		"missing":   `{}`,
+		"not json":  `not json`,
+		"bad field": `{"questoin":"typo"}`,
+	} {
+		w := do(t, h, "POST", "/api/ask", body)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("%s: status %d, want 400", name, w.Code)
+		}
+	}
+}
+
+// The cap is the guard working, not a server fault, and the message has to say
+// what to do about it.
+func TestAskReportsTheChatCapAsARateLimit(t *testing.T) {
+	_, h, db := testServer(t)
+	seedSearchable(t, db)
+	useFakeChatModel(t, db, chatModelServer(t, `{"text":"harness"}`, "answer [1]"))
+	if err := db.SetSettings(map[string]string{store.KeyMaxChatCallsPerDay: "1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Spend the allowance.
+	if err := db.RecordLLMCall(store.LLMCall{
+		RunDate: store.RunDate(time.Now().UTC()), Role: "chat", Model: "m", OK: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	w := do(t, h, "POST", "/api/ask", `{"question":"anything?"}`)
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "chat") || !strings.Contains(body, "Settings") {
+		t.Errorf("message should name the chat cap and where to change it: %s", body)
+	}
+}
+
+// Chat's cap must not be reachable by the pipeline's spending, and vice versa.
+func TestChatCapIsSeparateFromTheRunCap(t *testing.T) {
+	_, h, db := testServer(t)
+	seedSearchable(t, db)
+	useFakeChatModel(t, db, chatModelServer(t, `{"text":"harness"}`, "answer [1]"))
+
+	// A run's worth of classifier calls, well past a small per-run cap.
+	if err := db.SetSettings(map[string]string{store.KeyMaxCallsPerRun: "1"}); err != nil {
+		t.Fatal(err)
+	}
+	for range 5 {
+		if err := db.RecordLLMCall(store.LLMCall{
+			RunDate: store.RunDate(time.Now().UTC()), Role: "classifier", Model: "m", OK: true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	w := do(t, h, "POST", "/api/ask", `{"question":"harness?"}`)
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d; a spent run budget must not block a question: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestSettingsCarriesTheChatRole(t *testing.T) {
+	_, h, _ := testServer(t)
+
+	got := decode[settingsResponse](t, do(t, h, "GET", "/api/settings", ""))
+	if got.ChatModel == "" {
+		t.Error("chat_model is not seeded; a fresh instance cannot chat")
+	}
+	if got.MaxChatCallsPerDay == 0 {
+		t.Error("max_chat_calls_per_day is not exposed")
+	}
+
+	// It is switchable without a restart, like every other role (§3.1).
+	saved := decode[settingsResponse](t, do(t, h, "PUT", "/api/settings", `{"chat_model":"ollama/llama3"}`))
+	if saved.ChatModel != "ollama/llama3" {
+		t.Errorf("chat_model = %q after save", saved.ChatModel)
+	}
+
+	// And a malformed ref is refused rather than breaking the next question.
+	if w := do(t, h, "PUT", "/api/settings", `{"chat_model":"no-slash"}`); w.Code != http.StatusBadRequest {
+		t.Errorf("malformed chat_model accepted: status %d", w.Code)
 	}
 }

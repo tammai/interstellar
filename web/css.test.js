@@ -18,12 +18,30 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const css = readFileSync(join(here, 'assets/style.css'), 'utf8');
 
-const js = readdirSync(join(here, 'assets'))
-  .filter((f) => f.endsWith('.js'))
-  .map((f) => readFileSync(join(here, 'assets', f), 'utf8'))
-  .join('\n');
+// Every stylesheet and every script, including the ones in subdirectories. The
+// chat screen lives in assets/chat/, and a guard that only looked at the top level
+// would silently stop covering the newest code -- which is exactly when this trap
+// gets re-introduced.
+function collect(ext) {
+  const out = [];
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === 'fonts') continue;
+        walk(path);
+      } else if (entry.name.endsWith(ext)) {
+        out.push(readFileSync(path, 'utf8'));
+      }
+    }
+  };
+  walk(join(here, 'assets'));
+  return out;
+}
+
+const css = collect('.css').join('\n');
+const js = collect('.js').join('\n');
 
 // Strip comments so a selector mentioned in prose is not mistaken for a rule.
 const rules = css.replace(/\/\*[\s\S]*?\*\//g, '');
@@ -66,6 +84,17 @@ test('the settings sheet is actually hidden when hidden', () => {
 test('the min-points field is actually hidden when hidden', () => {
   assert.match(rules, /\.field\[hidden\][^{]*\{[^}]*display\s*:\s*none/,
     '.field declares display:block, so syncKind setting .hidden cannot hide it');
+});
+
+// The chat screen hides elements by class, not by id — sources, plan, answer,
+// status, meta are all local variables in chat.js — so the id-based cross-reference
+// below cannot see them. A blanket rule covers the whole page at once, including
+// whatever gets added to it next, and this pins that the rule is still there.
+test('the chat stylesheet neutralises [hidden] for every element on the page', () => {
+  const chat = readFileSync(join(here, 'assets/chat/chat.css'), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '');
+  assert.match(chat, /\[hidden\]\s*\{[^}]*display\s*:\s*none\s*!important/,
+    'chat.css declares display on .sources and chat.js hides it via .hidden; without a blanket [hidden] rule the empty list is still laid out');
 });
 
 test('nothing the JS hides via .hidden declares a display without a [hidden] guard', () => {
