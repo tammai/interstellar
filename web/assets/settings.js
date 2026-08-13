@@ -473,6 +473,169 @@ export class Settings {
 
     add.append(kind, name, value, create);
     body.append(add);
+
+    body.append(this.pasteLink());
+    body.append(this.sourceTransfer());
+  }
+
+  // Paste a link. The sanctioned route for the places the spec puts permanently
+  // out of reach — LinkedIn on ToS grounds, X on pricing — since pasting a URL you
+  // are already looking at breaks neither.
+  pasteLink() {
+    const section = document.createElement('section');
+    section.className = 'sheet-section transfer';
+
+    const h = document.createElement('h3');
+    h.textContent = 'Save a link';
+    section.append(h);
+
+    const note = document.createElement('p');
+    note.className = 'note';
+    note.textContent = 'Paste anything worth keeping — including from places no feed can reach. ' +
+      'It is fetched now for its title, and classified on the next run.';
+    section.append(note);
+
+    const row = document.createElement('div');
+    row.className = 'card add-source';
+
+    const url = document.createElement('input');
+    url.className = 'field';
+    url.type = 'url';
+    url.placeholder = 'https://…';
+    url.setAttribute('aria-label', 'Link to save');
+
+    const result = document.createElement('div');
+    result.className = 'test-result';
+
+    const save = document.createElement('button');
+    save.className = 'btn-primary';
+    save.textContent = 'Save';
+
+    const submit = async () => {
+      const value = url.value.trim();
+      if (!value) return;
+
+      save.disabled = true;
+      result.className = 'test-result';
+      result.textContent = 'Reading the page…';
+
+      const res = await fetch('/api/inbox', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: value }),
+      });
+      const data = await res.json().catch(() => ({}));
+      save.disabled = false;
+
+      if (!res.ok) {
+        result.className = 'test-result bad';
+        result.textContent = data.error || 'Could not save that link.';
+        return;
+      }
+
+      result.className = 'test-result ok';
+      // The title is the confirmation that matters: it proves the page was really
+      // read, rather than a URL having been written down.
+      result.textContent = `${data.new ? 'Saved' : 'Already saved'}: ${data.title}`;
+      url.value = '';
+      this.onChanged();
+    };
+
+    save.onclick = submit;
+    url.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); submit() } };
+
+    row.append(url, save);
+    section.append(row, result);
+    return section;
+  }
+
+  // Export and import, for keeping two instances' lists in step.
+  //
+  // Import is additive and verifies by default: a bundle is a pile of URLs nobody
+  // has fetched here, and CLAUDE.md's rule about that exists because a feed can
+  // answer 200 and carry nothing. Anything that fails lands paused, with the
+  // reason, rather than live or silently dropped.
+  sourceTransfer() {
+    const section = document.createElement('section');
+    section.className = 'sheet-section transfer';
+
+    const h = document.createElement('h3');
+    h.textContent = 'Move this list';
+    section.append(h);
+
+    const note = document.createElement('p');
+    note.className = 'note';
+    note.textContent = 'Export writes a file you can diff against another instance. ' +
+      'Import only adds — it never deletes what you have pruned here — and each new ' +
+      'feed is fetched once to check it actually returns items.';
+    section.append(note);
+
+    const result = document.createElement('div');
+    result.className = 'test-result';
+
+    const actions = document.createElement('div');
+    actions.className = 'card-actions wide';
+
+    const exportBtn = document.createElement('a');
+    exportBtn.className = 'btn-quiet';
+    exportBtn.textContent = 'Export';
+    exportBtn.href = '/api/sources/export';
+    // download rather than a fetch-and-blob dance: the endpoint already sends
+    // Content-Disposition, so the browser does the right thing on its own.
+    exportBtn.setAttribute('download', 'interstellar-sources.json');
+
+    const file = document.createElement('input');
+    file.type = 'file';
+    file.accept = 'application/json,.json';
+    file.hidden = true;
+    file.onchange = async () => {
+      const chosen = file.files?.[0];
+      if (!chosen) return;
+
+      result.className = 'test-result';
+      result.textContent = 'Checking each feed…';
+
+      let bundle;
+      try {
+        bundle = JSON.parse(await chosen.text());
+      } catch {
+        result.className = 'test-result bad';
+        result.textContent = 'That file is not JSON.';
+        return;
+      }
+
+      const res = await fetchJSON('/api/sources/import', {
+        method: 'POST',
+        body: JSON.stringify({ ...bundle, verify: true }),
+      });
+      // Reset, or choosing the same file twice does nothing.
+      file.value = '';
+
+      if (!res) {
+        result.className = 'test-result bad';
+        result.textContent = 'Import failed. Check the file version.';
+        return;
+      }
+
+      result.className = 'test-result ok';
+      const parts = [`${res.added} added`, `${res.skipped} already here`];
+      if (res.rejected) parts.push(`${res.rejected} rejected`);
+      const paused = (res.results || []).filter((r) => r.status === 'added_inactive');
+      if (paused.length) parts.push(`${paused.length} paused (did not verify)`);
+      result.textContent = parts.join(' · ');
+
+      this.rerenderCurrent();
+      this.onChanged();
+    };
+
+    const importBtn = document.createElement('button');
+    importBtn.className = 'btn-quiet';
+    importBtn.textContent = 'Import…';
+    importBtn.onclick = () => file.click();
+
+    actions.append(exportBtn, importBtn, file);
+    section.append(actions, result);
+    return section;
   }
 
   sourceCard(source) {

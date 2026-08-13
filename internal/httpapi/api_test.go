@@ -105,6 +105,7 @@ func TestNoEndpointEverLeaksAKey(t *testing.T) {
 		{"GET", "/api/chat/history", ""},
 		{"POST", "/api/ask", `{"question":"anything?"}`},
 		{"GET", "/api/sources", ""},
+		{"GET", "/api/sources/export", ""},
 		{"PUT", "/api/settings", `{"classifier_model":"deepseek/deepseek-chat"}`},
 	}
 
@@ -1022,5 +1023,372 @@ func TestSettingsCarriesTheChatRole(t *testing.T) {
 	// And a malformed ref is refused rather than breaking the next question.
 	if w := do(t, h, "PUT", "/api/settings", `{"chat_model":"no-slash"}`); w.Code != http.StatusBadRequest {
 		t.Errorf("malformed chat_model accepted: status %d", w.Code)
+	}
+}
+
+// --- source import / export ---
+
+func TestExportSourcesRoundTripsThroughImport(t *testing.T) {
+	_, h, db := testServer(t)
+
+	before, err := db.AllSources()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	w := do(t, h, "GET", "/api/sources/export", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	if cd := w.Header().Get("Content-Disposition"); !strings.Contains(cd, "attachment") {
+		t.Errorf("Content-Disposition = %q; an export is a file to keep", cd)
+	}
+	bundle := decode[store.SourceBundle](t, w)
+	if bundle.Version != store.SourceBundleVersion {
+		t.Errorf("version = %d", bundle.Version)
+	}
+	if len(bundle.Sources) != len(before) {
+		t.Errorf("exported %d sources, have %d", len(bundle.Sources), len(before))
+	}
+	// Instance-local state must not travel.
+	raw := w.Body.String()
+	for _, field := range []string{`"id"`, `"last_run_at"`} {
+		if strings.Contains(raw, field) {
+			t.Errorf("export carries %s, which means nothing on another instance", field)
+		}
+	}
+
+	// Re-importing its own export must be a no-op, not a duplication.
+	body, _ := json.Marshal(map[string]any{
+		"version": bundle.Version, "sources": bundle.Sources, "verify": false,
+	})
+	res := decode[importResponse](t, do(t, h, "POST", "/api/sources/import", string(body)))
+	if res.Added != 0 {
+		t.Errorf("re-importing its own export added %d sources", res.Added)
+	}
+	if res.Skipped != len(bundle.Sources) {
+		t.Errorf("skipped %d of %d", res.Skipped, len(bundle.Sources))
+	}
+
+	after, _ := db.AllSources()
+	if len(after) != len(before) {
+		t.Errorf("source count changed from %d to %d", len(before), len(after))
+	}
+}
+
+// A renamed feed is still that feed. Matching on name would import it again and
+// inflate every source_count that touches it.
+func TestImportMatchesOnTargetNotName(t *testing.T) {
+	_, h, db := testServer(t)
+
+	before, _ := db.AllSources()
+	var existing store.Source
+	for _, s := range before {
+		if s.Kind == "rss" {
+			existing = s
+			break
+		}
+	}
+	if existing.ID == 0 {
+		t.Fatal("no seeded rss source to work with")
+	}
+
+	body, _ := json.Marshal(map[string]any{
+		"version": store.SourceBundleVersion,
+		"verify":  false,
+		"sources": []any{map[string]any{
+			"kind": existing.Kind, "name": "Totally Different Name",
+			"config": json.RawMessage(existing.Config), "active": true,
+		}},
+	})
+	res := decode[importResponse](t, do(t, h, "POST", "/api/sources/import", string(body)))
+	if res.Added != 0 {
+		t.Errorf("added %d: a renamed feed pointing at the same URL is the same source", res.Added)
+	}
+	if res.Skipped != 1 {
+		t.Errorf("skipped %d, want 1", res.Skipped)
+	}
+}
+
+// Import is additive. A stale export must not delete the pruning done since.
+func TestImportNeverDeletesExistingSources(t *testing.T) {
+	_, h, db := testServer(t)
+	before, _ := db.AllSources()
+
+	body, _ := json.Marshal(map[string]any{
+		"version": store.SourceBundleVersion, "verify": false,
+		"sources": []any{map[string]any{
+			"kind": "rss", "name": "Something New",
+			"config": json.RawMessage(`{"url":"https://brand-new.test/feed"}`), "active": true,
+		}},
+	})
+	if w := do(t, h, "POST", "/api/sources/import", string(body)); w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+
+	after, _ := db.AllSources()
+	if len(after) != len(before)+1 {
+		t.Errorf("have %d sources, want %d: import must only add", len(after), len(before)+1)
+	}
+}
+
+func TestImportValidatesTheBundle(t *testing.T) {
+	_, h, _ := testServer(t)
+
+	for name, body := range map[string]string{
+		"wrong version": `{"version":99,"sources":[{"kind":"rss","name":"x","config":{}}]}`,
+		"no sources":    `{"version":1,"sources":[]}`,
+		"not json":      `nope`,
+	} {
+		if w := do(t, h, "POST", "/api/sources/import", body); w.Code != http.StatusBadRequest {
+			t.Errorf("%s: status %d, want 400", name, w.Code)
+		}
+	}
+}
+
+func TestImportRejectsBadRowsButKeepsGoing(t *testing.T) {
+	_, h, db := testServer(t)
+	before, _ := db.AllSources()
+
+	body, _ := json.Marshal(map[string]any{
+		"version": store.SourceBundleVersion, "verify": false,
+		"sources": []any{
+			map[string]any{"kind": "carrier_pigeon", "name": "Nope", "config": json.RawMessage(`{"url":"x"}`)},
+			map[string]any{"kind": "rss", "name": "", "config": json.RawMessage(`{"url":"y"}`)},
+			map[string]any{"kind": "rss", "name": "Good One",
+				"config": json.RawMessage(`{"url":"https://good.test/feed"}`), "active": true},
+		},
+	})
+	res := decode[importResponse](t, do(t, h, "POST", "/api/sources/import", string(body)))
+
+	if res.Rejected != 2 {
+		t.Errorf("rejected %d, want 2", res.Rejected)
+	}
+	if res.Added != 1 {
+		t.Errorf("added %d, want 1 — one bad row must not abort the file", res.Added)
+	}
+	if len(res.Results) != 3 {
+		t.Fatalf("got %d results, want one per row", len(res.Results))
+	}
+	for _, r := range res.Results {
+		if r.Status == "rejected" && r.Reason == "" {
+			t.Error("a rejected row gives no reason")
+		}
+	}
+
+	after, _ := db.AllSources()
+	if len(after) != len(before)+1 {
+		t.Errorf("have %d sources, want %d", len(after), len(before)+1)
+	}
+}
+
+// The convention in CLAUDE.md: a source URL that has not been through the real
+// fetcher is not trusted. A feed that answers but carries nothing is the exact
+// failure it exists for, so it lands inactive rather than live -- and rather than
+// being silently dropped, which would lose part of the owner's list.
+func TestImportVerifiesThroughTheRealFetcher(t *testing.T) {
+	_, h, db := testServer(t)
+
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/rss+xml")
+		io.WriteString(w, `<?xml version="1.0"?><rss version="2.0"><channel><title>F</title>
+		  <item><title>A real post</title><link>https://good.test/a</link></item>
+		</channel></rss>`)
+	}))
+	defer good.Close()
+
+	// 200, well-formed, and zero items. This is the trap.
+	empty := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/rss+xml")
+		io.WriteString(w, `<?xml version="1.0"?><rss version="2.0"><channel><title>F</title></channel></rss>`)
+	}))
+	defer empty.Close()
+
+	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer dead.Close()
+
+	body, _ := json.Marshal(map[string]any{
+		"version": store.SourceBundleVersion, "verify": true,
+		"sources": []any{
+			map[string]any{"kind": "rss", "name": "Good", "active": true,
+				"config": json.RawMessage(fmt.Sprintf(`{"url":%q}`, good.URL))},
+			map[string]any{"kind": "rss", "name": "Answers But Empty", "active": true,
+				"config": json.RawMessage(fmt.Sprintf(`{"url":%q}`, empty.URL))},
+			map[string]any{"kind": "rss", "name": "Dead", "active": true,
+				"config": json.RawMessage(fmt.Sprintf(`{"url":%q}`, dead.URL))},
+		},
+	})
+	res := decode[importResponse](t, do(t, h, "POST", "/api/sources/import", string(body)))
+
+	if !res.Verified {
+		t.Error("response does not report that verification ran")
+	}
+	byName := map[string]store.ImportOutcome{}
+	for _, r := range res.Results {
+		byName[r.Name] = r
+	}
+
+	if got := byName["Good"]; got.Status != "added" || got.Items == 0 {
+		t.Errorf("Good: %+v — a working feed should be added active with an item count", got)
+	}
+	if got := byName["Answers But Empty"]; got.Status != "added_inactive" {
+		t.Errorf("Answers But Empty: status %q, want added_inactive — 200 is not evidence", got.Status)
+	}
+	if got := byName["Dead"]; got.Status != "added_inactive" {
+		t.Errorf("Dead: status %q, want added_inactive", got.Status)
+	}
+
+	// And the database agrees: only the verified one is live.
+	all, _ := db.AllSources()
+	for _, s := range all {
+		switch s.Name {
+		case "Good":
+			if !s.Active {
+				t.Error("the verified feed was saved inactive")
+			}
+		case "Answers But Empty", "Dead":
+			if s.Active {
+				t.Errorf("%s was saved active despite failing verification", s.Name)
+			}
+		}
+	}
+}
+
+// --- manual-forward inbox ---
+
+func pageServer(t *testing.T, title, desc string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprintf(w, `<html><head><title>%s</title>
+			<meta property="og:description" content="%s"></head></html>`, title, desc)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestInboxSavesAPastedLink(t *testing.T) {
+	_, h, db := testServer(t)
+	page := pageServer(t, "A post worth keeping", "Why it matters.")
+
+	got := decode[inboxResponse](t, do(t, h, "POST", "/api/inbox",
+		fmt.Sprintf(`{"url":%q}`, page.URL)))
+
+	if got.Title != "A post worth keeping" {
+		t.Errorf("title = %q — the page was not really read", got.Title)
+	}
+	if !got.New {
+		t.Error("first save reports not-new")
+	}
+	if got.Note == "" {
+		t.Error("no note; the reader is not told when it gets classified")
+	}
+
+	// It must be a real item, reachable by the classifier.
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM items WHERE title = ?`, got.Title).Scan(&n); err != nil || n != 1 {
+		t.Errorf("item rows = %d, err = %v", n, err)
+	}
+	items, err := db.ItemsSince("", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, it := range items {
+		if it.Title == got.Title {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("the saved link is not in the classifier's work queue")
+	}
+}
+
+// Pasting the same thing twice is normal. It is "already saved", not an error.
+func TestInboxIsIdempotent(t *testing.T) {
+	_, h, db := testServer(t)
+	page := pageServer(t, "Same link", "Body.")
+	body := fmt.Sprintf(`{"url":%q}`, page.URL)
+
+	first := decode[inboxResponse](t, do(t, h, "POST", "/api/inbox", body))
+	second := decode[inboxResponse](t, do(t, h, "POST", "/api/inbox", body))
+
+	if !first.New {
+		t.Error("first save should be new")
+	}
+	if second.New {
+		t.Error("second save of the same link reports new")
+	}
+	var n int
+	db.QueryRow(`SELECT count(*) FROM items WHERE title = 'Same link'`).Scan(&n)
+	if n != 1 {
+		t.Errorf("%d item rows for one link", n)
+	}
+}
+
+// The inbox source exists to attribute items to and has no feed. It must be
+// created paused, or ingest would try to fetch it on every run.
+func TestInboxSourceIsPausedAndSkippedByIngest(t *testing.T) {
+	_, h, db := testServer(t)
+	page := pageServer(t, "Anything", "Body.")
+	do(t, h, "POST", "/api/inbox", fmt.Sprintf(`{"url":%q}`, page.URL))
+
+	sources, err := db.AllSources()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manual *store.Source
+	for i := range sources {
+		if store.IsManualSource(sources[i]) {
+			manual = &sources[i]
+		}
+	}
+	if manual == nil {
+		t.Fatal("no manual source was created")
+	}
+	if manual.Active {
+		t.Error("the manual source is active; ingest would try to fetch a feed that does not exist")
+	}
+	if manual.Name != store.ManualSourceName {
+		t.Errorf("name = %q", manual.Name)
+	}
+
+	// And only one, however many links are saved.
+	do(t, h, "POST", "/api/inbox", fmt.Sprintf(`{"url":%q}`, pageServer(t, "Second", "b").URL))
+	after, _ := db.AllSources()
+	count := 0
+	for _, s := range after {
+		if store.IsManualSource(s) {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("%d manual sources, want exactly 1", count)
+	}
+}
+
+func TestInboxValidatesAndReportsFailures(t *testing.T) {
+	_, h, _ := testServer(t)
+
+	for name, body := range map[string]string{
+		"no url":   `{"url":""}`,
+		"missing":  `{}`,
+		"not json": `nope`,
+		"garbage":  `{"url":"::::"}`,
+	} {
+		if w := do(t, h, "POST", "/api/inbox", body); w.Code != http.StatusBadRequest {
+			t.Errorf("%s: status %d, want 400", name, w.Code)
+		}
+	}
+
+	// A page that cannot be read is a 502: the request was fine, the page was not.
+	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer dead.Close()
+	if w := do(t, h, "POST", "/api/inbox", fmt.Sprintf(`{"url":%q}`, dead.URL)); w.Code != http.StatusBadGateway {
+		t.Errorf("dead page: status %d, want 502", w.Code)
 	}
 }

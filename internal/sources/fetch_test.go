@@ -3,6 +3,7 @@ package sources
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -269,4 +270,123 @@ func indexOf(s, sub string) int {
 		}
 	}
 	return -1
+}
+
+// --- page fetch (the manual-forward inbox) ---
+
+func TestFetchPagePrefersOpenGraph(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		io.WriteString(w, `<html><head>
+			<title>Site Name | The Real Headline</title>
+			<meta property="og:title" content="The Real Headline">
+			<meta property="og:description" content="A clean summary of the piece.">
+		</head><body>ignored</body></html>`)
+	}))
+	defer srv.Close()
+
+	item, err := FetchPage(context.Background(), srv.URL)
+	if err != nil {
+		t.Fatalf("FetchPage: %v", err)
+	}
+	// og:title is what the author chose for sharing; <title> carries the site name.
+	if item.Title != "The Real Headline" {
+		t.Errorf("title = %q, want the og:title", item.Title)
+	}
+	if item.Summary != "A clean summary of the piece." {
+		t.Errorf("summary = %q", item.Summary)
+	}
+}
+
+// Attribute order is not fixed in real HTML, and content-before-property is common.
+func TestFetchPageHandlesEitherAttributeOrder(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		io.WriteString(w, `<html><head>
+			<meta content="Reversed Order Works" property="og:title">
+			<meta content="So does the description." property="og:description">
+		</head></html>`)
+	}))
+	defer srv.Close()
+
+	item, err := FetchPage(context.Background(), srv.URL)
+	if err != nil {
+		t.Fatalf("FetchPage: %v", err)
+	}
+	if item.Title != "Reversed Order Works" {
+		t.Errorf("title = %q", item.Title)
+	}
+	if item.Summary != "So does the description." {
+		t.Errorf("summary = %q", item.Summary)
+	}
+}
+
+func TestFetchPageFallsBackToTitleAndMetaDescription(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		io.WriteString(w, `<html><head>
+			<title>Plain  &amp;  Escaped   Title</title>
+			<meta name="description" content="Old-school description.">
+		</head></html>`)
+	}))
+	defer srv.Close()
+
+	item, err := FetchPage(context.Background(), srv.URL)
+	if err != nil {
+		t.Fatalf("FetchPage: %v", err)
+	}
+	// Entities unescaped and whitespace collapsed, via rss.go's cleanText.
+	if item.Title != "Plain & Escaped Title" {
+		t.Errorf("title = %q, want entities decoded and spaces collapsed", item.Title)
+	}
+	if item.Summary != "Old-school description." {
+		t.Errorf("summary = %q", item.Summary)
+	}
+}
+
+// A page with no title is an error. An item with neither title nor summary can
+// never match anything and would sit in the database forever.
+func TestFetchPageRefusesAPageWithNoTitle(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/pdf")
+		io.WriteString(w, "%PDF-1.4 not html at all")
+	}))
+	defer srv.Close()
+
+	if _, err := FetchPage(context.Background(), srv.URL); err == nil {
+		t.Error("a page with no title should be an error, not an empty item")
+	}
+}
+
+func TestFetchPageReportsWhereRedirectsLanded(t *testing.T) {
+	final := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		io.WriteString(w, `<html><head><title>Destination</title></head></html>`)
+	}))
+	defer final.Close()
+
+	shortener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, final.URL, http.StatusFound)
+	}))
+	defer shortener.Close()
+
+	item, err := FetchPage(context.Background(), shortener.URL)
+	if err != nil {
+		t.Fatalf("FetchPage: %v", err)
+	}
+	// The destination is what must be deduplicated against, not the shortener.
+	if item.URL != final.URL {
+		t.Errorf("URL = %q, want the redirect destination %q", item.URL, final.URL)
+	}
+}
+
+func TestFetchPageReportsANon200(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	if _, err := FetchPage(context.Background(), srv.URL); err == nil {
+		t.Error("a 403 should be reported, not treated as an empty page")
+	}
 }

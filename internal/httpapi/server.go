@@ -57,6 +57,10 @@ func (s *Server) Routes() http.Handler {
 	// Search: no model, no run. Local and fast enough to type into.
 	mux.HandleFunc("GET /api/search", s.handleSearch)
 
+	// The manual-forward inbox: the sanctioned path for sources the spec puts out
+	// of reach (LinkedIn on ToS grounds, X on pricing).
+	mux.HandleFunc("POST /api/inbox", s.handleInbox)
+
 	// Chat. Its own screen at /chat/, served statically like the rest of the UI.
 	mux.HandleFunc("POST /api/ask", s.handleAsk)
 	mux.HandleFunc("GET /api/chat/history", s.handleChatHistory)
@@ -78,6 +82,10 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/topics", s.handleCreateTopic)
 	mux.HandleFunc("PATCH /api/topics/{id}", s.handleUpdateTopic)
 	mux.HandleFunc("DELETE /api/topics/{id}", s.handleDeleteTopic)
+
+	// Ahead of the {id} routes for readability; distinct literals, so no ambiguity.
+	mux.HandleFunc("GET /api/sources/export", s.handleExportSources)
+	mux.HandleFunc("POST /api/sources/import", s.handleImportSources)
 
 	mux.HandleFunc("GET /api/sources", s.handleListSources)
 	mux.HandleFunc("POST /api/sources", s.handleCreateSource)

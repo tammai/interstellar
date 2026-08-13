@@ -70,9 +70,22 @@ type fetchOutcome struct {
 // doesn't break ingest"). The only errors returned are ones that make the whole
 // stage meaningless, like being unable to read the source list at all.
 func Ingest(ctx context.Context, db *store.DB, cfg config.Runtime, log *slog.Logger) (IngestResult, error) {
-	srcs, err := db.ActiveSources()
+	all, err := db.ActiveSources()
 	if err != nil {
 		return IngestResult{}, err
+	}
+
+	// The paste-a-link inbox is a source row that exists only to attribute items
+	// to; it has no feed to fetch. It is created paused, so it should never reach
+	// here -- this guard is for the day someone activates it in Settings, where it
+	// would otherwise fail on every run and clutter the one list a genuinely broken
+	// feed needs to stand out in.
+	srcs := make([]store.Source, 0, len(all))
+	for _, src := range all {
+		if store.IsManualSource(src) {
+			continue
+		}
+		srcs = append(srcs, src)
 	}
 
 	result := IngestResult{SourcesTried: len(srcs)}
