@@ -221,3 +221,42 @@ func TestSchedulerReloadKeepsPreviousScheduleOnError(t *testing.T) {
 		}
 	}
 }
+
+// Changing the weekly day must take effect without a restart, like every other
+// schedule change (§3.1). The settings handler decides whether to reload, so this
+// pins the scheduler half: a Reload really does pick the new day up.
+func TestSchedulerReloadPicksUpANewWeeklyDay(t *testing.T) {
+	db := testDB(t)
+	if err := db.Bootstrap(); err != nil {
+		t.Fatal(err)
+	}
+
+	env := config.Env{Port: "8422", Location: time.UTC}
+	s := NewScheduler(db, env, NewRunner(db, env, quietLogger()), quietLogger())
+	if err := s.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer s.Stop()
+
+	weeklyDay := func() time.Weekday {
+		for _, n := range s.NextRuns() {
+			if local := n.In(time.UTC); local.Hour() == 11 {
+				return local.Weekday()
+			}
+		}
+		return time.Weekday(-1)
+	}
+	if got := weeklyDay(); got != time.Monday {
+		t.Fatalf("weekly day = %v, want Monday", got)
+	}
+
+	if err := db.SetSetting(store.KeyScheduleWeeklyDay, "thu"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if got := weeklyDay(); got != time.Thursday {
+		t.Errorf("weekly day = %v after reload, want Thursday", got)
+	}
+}

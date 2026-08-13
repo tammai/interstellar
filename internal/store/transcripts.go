@@ -1,6 +1,9 @@
 package store
 
-import "fmt"
+import (
+	"fmt"
+	"unicode/utf8"
+)
 
 // Transcript statuses. `none` and `error` are deliberately different: no captions
 // is a permanent fact about a video, while an error may be worth another attempt
@@ -104,7 +107,7 @@ func (db *DB) SaveTranscript(rec TranscriptRecord) error {
 		        summary = excluded.summary, error = excluded.error,
 		        fetched_at = datetime('now')`,
 		rec.ItemID, rec.Status, nullIfEmpty(rec.Text), nullIfEmpty(rec.Lang),
-		boolToInt(rec.Generated), len(rec.Text), nullIfEmpty(rec.Summary),
+		boolToInt(rec.Generated), utf8.RuneCountInString(rec.Text), nullIfEmpty(rec.Summary),
 		rec.ItemID, nullIfEmpty(rec.Err),
 	); err != nil {
 		return fmt.Errorf("save transcript for item %d: %w", rec.ItemID, err)

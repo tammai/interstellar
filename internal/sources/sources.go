@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -75,12 +76,10 @@ func Truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	for n > 0 && !utf8Start(s[n]) {
-		n--
-	}
-	return s[:n]
+	// strings.ToValidUTF8 drops the partial rune the cut may have created. Stdlib
+	// rather than walking backwards by hand: this project had four hand-rolled
+	// copies of that walk, which is three too many.
+	return strings.ToValidUTF8(s[:n], "")
 }
 
 func truncate(s string, n int) string { return Truncate(s, n) }
-
-func utf8Start(b byte) bool { return b&0xC0 != 0x80 }

@@ -33,10 +33,16 @@ const classifyWorkers = 6
 
 // ClassifyResult summarizes a pass.
 type ClassifyResult struct {
-	ItemsConsidered int      `json:"items_considered"`
-	TopicsRun       int      `json:"topics_run"`
-	Batches         int      `json:"batches"`
-	MatchesKept     int      `json:"matches_kept"`
+	ItemsConsidered int `json:"items_considered"`
+	TopicsRun       int `json:"topics_run"`
+	Batches         int `json:"batches"`
+	MatchesKept     int `json:"matches_kept"`
+	// RangesCommitted/RangesTotal say how much of the window the watermark could
+	// claim. Anything short of the total means a topic failed and those items will
+	// be offered again next run -- worth surfacing, because it is also the shape of
+	// a stalled watermark.
+	RangesCommitted int      `json:"ranges_committed"`
+	RangesTotal     int      `json:"ranges_total"`
 	VerdictsDropped int      `json:"verdicts_dropped"`
 	Repairs         int      `json:"repairs"`
 	Problems        []string `json:"problems,omitempty"`
@@ -110,16 +116,25 @@ func Classify(
 	// trips end to end -- measured at ~25s each against a real provider, which
 	// blows §10's three-minute budget several times over before the day's second
 	// topic is finished.
+	// Item ranges are identical for every topic, so a range index identifies "this
+	// slice of items" across all of them. That is what makes it possible to tell
+	// whether a slice has been judged by everyone, which the watermark depends on.
+	type itemRange struct{ start, end int }
+	var ranges []itemRange
+	for start := 0; start < len(items); start += batchSize {
+		ranges = append(ranges, itemRange{start: start, end: min(start+batchSize, len(items))})
+	}
+
 	type work struct {
-		topic store.Topic
-		batch []store.ClassifiableItem
+		topic    store.Topic
+		batch    []store.ClassifiableItem
+		rangeIdx int
 	}
 	var queue []work
 	for _, topic := range ready {
 		result.TopicsRun++
-		for start := 0; start < len(items); start += batchSize {
-			end := min(start+batchSize, len(items))
-			queue = append(queue, work{topic: topic, batch: items[start:end]})
+		for i, r := range ranges {
+			queue = append(queue, work{topic: topic, batch: items[r.start:r.end], rangeIdx: i})
 		}
 	}
 	result.Batches = len(queue)
@@ -133,6 +148,7 @@ func Classify(
 		// considered is the batch size, carried so per-topic stats can count only
 		// the batches that actually came back parseable.
 		considered int
+		rangeIdx   int
 		err        error
 	}
 
@@ -152,6 +168,7 @@ func Classify(
 					topic:      w.topic.Title,
 					topicID:    w.topic.ID,
 					considered: len(w.batch),
+					rangeIdx:   w.rangeIdx,
 				}
 				if err == nil {
 					known := itemIDSet(w.batch)
@@ -197,11 +214,19 @@ func Classify(
 
 	// All database writes happen here, on one goroutine.
 	//
-	// stats accrue per topic as batches land, so a topic's denominator counts the
-	// batches that succeeded and nothing else. Keyed by id rather than title
-	// because two topics may share a name.
-	stats := map[int64]*store.TopicStat{}
-	statOrder := make([]int64, 0, len(ready))
+	// Successful batches are buffered rather than folded into stats immediately,
+	// because whether their work counts depends on something not known until every
+	// batch has landed: how far the watermark can move. See the prefix calculation
+	// below.
+	type success struct {
+		topicID    int64
+		rangeIdx   int
+		considered int
+		matches    int
+	}
+	var successes []success
+	// judged[rangeIdx] counts how many topics returned a verdict for that slice.
+	judged := make([]int, len(ranges))
 
 	var fatal error
 	for out := range results {
@@ -231,15 +256,11 @@ func Classify(
 		}
 		result.MatchesKept += len(out.matches)
 
-		st := stats[out.topicID]
-		if st == nil {
-			st = &store.TopicStat{TopicID: out.topicID}
-			stats[out.topicID] = st
-			statOrder = append(statOrder, out.topicID)
-		}
-		st.ItemsConsidered += out.considered
-		st.MatchesKept += len(out.matches)
-		st.Batches++
+		successes = append(successes, success{
+			topicID: out.topicID, rangeIdx: out.rangeIdx,
+			considered: out.considered, matches: len(out.matches),
+		})
+		judged[out.rangeIdx]++
 	}
 	if fatal != nil {
 		// Deliberately no stats and no watermark. An aborted pass leaves its items
@@ -248,9 +269,35 @@ func Classify(
 		return result, fatal
 	}
 
-	for _, it := range items {
-		if it.FetchedAt > highWater {
-			highWater = it.FetchedAt
+	// The watermark may only pass items EVERY ready topic has judged.
+	//
+	// It is a single high-water mark, so it can only move over an unbroken prefix:
+	// if the first slice went unjudged by one topic, nothing behind it can be
+	// claimed either. Advancing regardless -- which is what this did before -- left
+	// a permanent hole in that topic's coverage, visible only as a topic that
+	// mysteriously matches nothing.
+	//
+	// The cost of the honest version is that a topic failing persistently on the
+	// first slice stalls the watermark and re-classifies the same items every run.
+	// That is the right way round: it is bounded by the per-run call cap, it is
+	// loud (a problem reported every run, and a zero in the hit-rate view), and §10
+	// gates the classifier on 100% JSON parsing precisely so this path stays rare.
+	// Silent data loss is neither bounded nor visible.
+	prefix := len(ranges)
+	for i, n := range judged {
+		if n < len(ready) {
+			prefix = i
+			break
+		}
+	}
+	result.RangesCommitted = prefix
+	result.RangesTotal = len(ranges)
+
+	if prefix > 0 {
+		for _, it := range items[:ranges[prefix-1].end] {
+			if it.FetchedAt > highWater {
+				highWater = it.FetchedAt
+			}
 		}
 	}
 
@@ -258,6 +305,35 @@ func Classify(
 	if highWater != cfg.ClassifyWatermark {
 		watermark = highWater
 	}
+
+	// Stats cover EVERY successful batch, including ones behind an unadvanced
+	// watermark -- deliberately unlike the aborted-pass path, which records nothing.
+	//
+	// The distinction is what can be attributed. An aborted pass has no idea how much
+	// of the window it got through, so counting any of it is guesswork. A partially
+	// judged pass knows exactly what each topic did, and that is real work worth
+	// showing.
+	//
+	// The first version of this gated stats on the prefix too, and the result was
+	// perverse: one topic failing on the first slice blanked the hit-rate view for
+	// EVERY topic, destroying the one diagnostic that would have identified the
+	// failing one. Re-classifying a slice next run does double-count it -- but it
+	// double-counts numerator and denominator together, so the rate the view exists
+	// to show is unchanged.
+	stats := map[int64]*store.TopicStat{}
+	statOrder := make([]int64, 0, len(ready))
+	for _, sc := range successes {
+		st := stats[sc.topicID]
+		if st == nil {
+			st = &store.TopicStat{TopicID: sc.topicID}
+			stats[sc.topicID] = st
+			statOrder = append(statOrder, sc.topicID)
+		}
+		st.ItemsConsidered += sc.considered
+		st.MatchesKept += sc.matches
+		st.Batches++
+	}
+
 	pass := make([]store.TopicStat, 0, len(statOrder))
 	for _, id := range statOrder {
 		pass = append(pass, *stats[id])

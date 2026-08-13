@@ -242,7 +242,10 @@ func snippetOf(s string) string {
 	s = strings.TrimSpace(strings.ReplaceAll(s, "\n", " "))
 	const max = 160
 	if len(s) > max {
-		return s[:max] + "..."
+		// ToValidUTF8 drops a rune the cut may have split. These strings are stored
+		// in llm_calls.error, so a broken one is persisted mojibake in the one place
+		// someone looks when diagnosing a provider.
+		return strings.ToValidUTF8(s[:max], "") + "..."
 	}
 	return s
 }

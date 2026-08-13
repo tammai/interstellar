@@ -9,6 +9,7 @@ import (
 
 	"github.com/tammai/interstellar/internal/config"
 	"github.com/tammai/interstellar/internal/llm"
+	"github.com/tammai/interstellar/internal/sources"
 	"github.com/tammai/interstellar/internal/store"
 )
 
@@ -109,7 +110,7 @@ func Synthesize(
 				continue
 			}
 			if len(title) > maxSignalTitle {
-				title = strings.TrimSpace(truncateRunes(title, maxSignalTitle))
+				title = strings.TrimSpace(sources.Truncate(title, maxSignalTitle))
 			}
 
 			// Keep only member ids that were actually in the input. A cluster
@@ -273,15 +274,4 @@ func synthesizePrompt(topic store.Topic, matched []store.MatchedItem) string {
 
 	fmt.Fprintf(&b, "\nGroup all %d items into stories. Return the JSON array only.", len(matched))
 	return b.String()
-}
-
-// truncateRunes cuts to at most n bytes without splitting a rune.
-func truncateRunes(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	for n > 0 && s[n]&0xC0 == 0x80 {
-		n--
-	}
-	return s[:n]
 }

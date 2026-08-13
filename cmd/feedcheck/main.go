@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/tammai/interstellar/internal/sources"
@@ -54,7 +55,10 @@ func main() {
 
 func shorten(s string) string {
 	if len(s) > 60 {
-		return s[:60] + "..."
+		// This prints feed titles, and CLAUDE.md's convention is to confirm a channel
+		// by the title the feed itself returns. A title mangled mid-rune undermines
+		// exactly that check.
+		return strings.ToValidUTF8(s[:60], "") + "..."
 	}
 	return s
 }

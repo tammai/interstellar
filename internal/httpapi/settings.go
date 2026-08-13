@@ -282,10 +282,17 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	// The schedule lives in cron entries, so a time change has to be applied to
 	// the running scheduler. This is what makes "no restart" true for §7's
 	// schedule as well as for model routing.
-	if _, ok := updates[store.KeyScheduleIngest]; ok {
-		s.reloadSchedule()
-	} else if _, ok := updates[store.KeyScheduleSynthesis]; ok {
-		s.reloadSchedule()
+	//
+	// Every schedule key, checked in a loop rather than by hand. The weekly round-up
+	// was added without extending the original two-key if/else, so changing its day
+	// silently required a restart -- while the screen that changed it said "the
+	// schedule was rebuilt". A loop over a named list is one place to add the next
+	// one, and a test pins the weekly case.
+	for _, key := range scheduleKeys {
+		if _, ok := updates[key]; ok {
+			s.reloadSchedule()
+			break
+		}
 	}
 
 	s.handleGetSettings(w, r)
@@ -356,6 +363,14 @@ func validWeekday(v string) bool {
 		return true
 	}
 	return false
+}
+
+// scheduleKeys are the settings that change when the scheduler next fires.
+var scheduleKeys = []string{
+	store.KeyScheduleIngest,
+	store.KeyScheduleSynthesis,
+	store.KeyScheduleWeeklyDay,
+	store.KeyScheduleWeeklyTime,
 }
 
 func (s *Server) reloadSchedule() {

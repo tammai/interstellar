@@ -3,6 +3,7 @@ package sources
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // The property that matters most. A false merge deletes a real story before
@@ -146,5 +147,39 @@ func TestNumbersAndNegationsBlockMerges(t *testing.T) {
 	}
 	if negationsAgree(NormalizeTitle("Court allows it"), NormalizeTitle("Court does not allow it")) {
 		t.Error("a negation on one side only should not agree")
+	}
+}
+
+// Truncate must never emit invalid UTF-8, at any cut point.
+//
+// Exhaustive rather than sampled: on Vietnamese text 27% of byte offsets fall inside
+// a multi-byte rune, and this function is now the single implementation four call
+// sites depend on. json.Marshal does not error on invalid UTF-8 — it substitutes
+// U+FFFD — so a regression here would ship as mojibake nobody notices.
+func TestTruncateNeverSplitsARune(t *testing.T) {
+	inputs := []string{
+		strings.Repeat("Tiếng Việt có dấu ", 30),
+		strings.Repeat("日本語のテキスト ", 30),
+		strings.Repeat("emoji ✦ 🌟 and — dashes ", 20),
+		strings.Repeat("plain ascii text ", 30),
+	}
+	for _, in := range inputs {
+		for n := 0; n <= len(in); n++ {
+			got := Truncate(in, n)
+			if !utf8.ValidString(got) {
+				t.Fatalf("Truncate(%d bytes, n=%d) produced invalid UTF-8", len(in), n)
+			}
+			if len(got) > n {
+				t.Fatalf("Truncate(n=%d) returned %d bytes", n, len(got))
+			}
+			// It must not be lossier than necessary: at most one rune shorter than the
+			// cut, never a silently emptied string.
+			if n >= 4 && got == "" && in != "" {
+				t.Fatalf("Truncate(n=%d) returned empty for non-empty input", n)
+			}
+		}
+	}
+	if Truncate("short", 100) != "short" {
+		t.Error("Truncate shortened a string already within the limit")
 	}
 }

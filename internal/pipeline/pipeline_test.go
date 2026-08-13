@@ -975,3 +975,122 @@ func (r rewriteHost) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	return base.RoundTrip(req)
 }
+
+// Items a topic never actually got a verdict on must not be abandoned.
+//
+// A batch fails when the model returns unparseable JSON twice. The watermark used to
+// advance regardless, so those items were never offered to that topic again -- a
+// silent, permanent hole in one topic's coverage, invisible except as a topic that
+// mysteriously matches nothing. §10 gates the classifier on 100% JSON parsing
+// precisely because this path is meant to be rare, which is exactly why losing data
+// down it is the wrong trade.
+func TestClassifyRetriesItemsAFailedTopicNeverJudged(t *testing.T) {
+	db := testDB(t)
+	src := seedSource(t, db, "Blog")
+	good := seedTopic(t, db, "Agents", "Agent harnesses.")
+	broken := seedTopic(t, db, "Broken", "A definition the model chokes on.")
+	seedItem(t, db, src, "https://x.test/a", "A post about harnesses")
+
+	failing := true
+	model := newFakeModel(t, func(prompt string) string {
+		if strings.Contains(prompt, "TOPIC: Broken") && failing {
+			return "I cannot do that."
+		}
+		return scoreAllHigh(prompt)
+	})
+
+	cfg := testConfig()
+	first, err := Classify(context.Background(), db, clientFor(t, db, model), cfg, testRunDate, quietLogger())
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if len(first.Problems) == 0 {
+		t.Fatal("the failing topic reported no problem")
+	}
+
+	// The good topic got its verdict, so its work is done.
+	if statsFor(t, db, good).ItemsConsidered != 1 {
+		t.Error("the healthy topic did not record its item")
+	}
+
+	// The item was never judged for Broken, so a second pass must reconsider it.
+	cfg2, err := configFromDB(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failing = false
+	second, err := Classify(context.Background(), db, clientFor(t, db, model), cfg2, testRunDate, quietLogger())
+	if err != nil {
+		t.Fatalf("second Classify: %v", err)
+	}
+	if second.ItemsConsidered == 0 {
+		t.Fatal("the second pass considered nothing; the item was abandoned for the topic that never judged it")
+	}
+	if statsFor(t, db, broken).ItemsConsidered == 0 {
+		t.Error("the previously failing topic still has no verdict on that item")
+	}
+	if n := countRows(t, db, "SELECT count(*) FROM matches WHERE topic_id = ?", broken); n == 0 {
+		t.Error("the recovered topic produced no match despite the model now working")
+	}
+}
+
+// One failing topic must not blank the hit-rate view for the others.
+//
+// The first version of the watermark fix gated stats on the same prefix as the
+// watermark, which meant a topic failing on the first slice erased every topic's
+// numbers -- destroying the one diagnostic that would identify the failing topic.
+func TestClassifyStillRecordsHealthyTopicsWhenOneFails(t *testing.T) {
+	db := testDB(t)
+	src := seedSource(t, db, "Blog")
+	good := seedTopic(t, db, "Agents", "Agent harnesses.")
+	alsoGood := seedTopic(t, db, "Open weights", "Open-weight releases.")
+	broken := seedTopic(t, db, "Broken", "Chokes.")
+	for i := range 3 {
+		seedItem(t, db, src, fmt.Sprintf("https://x.test/%d", i), fmt.Sprintf("A post about harnesses %d", i))
+	}
+
+	model := newFakeModel(t, func(prompt string) string {
+		if strings.Contains(prompt, "TOPIC: Broken") {
+			return "no."
+		}
+		return scoreAllHigh(prompt)
+	})
+
+	if _, err := Classify(context.Background(), db, clientFor(t, db, model),
+		testConfig(), testRunDate, quietLogger()); err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+
+	for _, id := range []int64{good, alsoGood} {
+		if s := statsFor(t, db, id); s.ItemsConsidered != 3 {
+			t.Errorf("topic %d considered %d, want 3 — a sibling's failure erased its numbers",
+				id, s.ItemsConsidered)
+		}
+	}
+	// And the failing one reads zero, which is what identifies it.
+	if s := statsFor(t, db, broken); s.ItemsConsidered != 0 {
+		t.Errorf("the failing topic considered %d, want 0", s.ItemsConsidered)
+	}
+}
+
+// The committed-range counters are what make a stalled watermark visible.
+func TestClassifyReportsHowMuchOfTheWindowItClaimed(t *testing.T) {
+	db := testDB(t)
+	src := seedSource(t, db, "Blog")
+	seedTopic(t, db, "Agents", "Agent harnesses.")
+	seedTopic(t, db, "Broken", "Chokes.")
+	for i := range 3 {
+		seedItem(t, db, src, fmt.Sprintf("https://x.test/%d", i), fmt.Sprintf("A post %d", i))
+	}
+
+	clean := newFakeModel(t, scoreAllHigh)
+	full, err := Classify(context.Background(), db, clientFor(t, db, clean),
+		testConfig(), testRunDate, quietLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if full.RangesTotal == 0 || full.RangesCommitted != full.RangesTotal {
+		t.Errorf("a clean pass committed %d of %d ranges, want all",
+			full.RangesCommitted, full.RangesTotal)
+	}
+}

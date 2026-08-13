@@ -1728,3 +1728,58 @@ func TestSearchRejectsImpossibleDates(t *testing.T) {
 		}
 	}
 }
+
+// §3.1: a schedule change takes effect on the next run with no restart. That has to
+// include the weekly round-up — the screen's own save message promises "the schedule
+// was rebuilt", and until this was fixed the weekly keys did not trigger a reload at
+// all, so the promise was false for them.
+func TestSavingTheWeeklyScheduleReloadsTheScheduler(t *testing.T) {
+	// testServer builds a server with no scheduler; this needs a real one attached,
+	// because a reload that nothing is listening to proves nothing.
+	_, _, db := testServer(t)
+
+	env := config.Env{Port: "8422", DBPath: db.Path, Location: time.UTC}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	runner := pipeline.NewRunner(db, env, log)
+	sched := pipeline.NewScheduler(db, env, runner, log)
+	if err := sched.Start(); err != nil {
+		t.Fatalf("scheduler Start: %v", err)
+	}
+	defer sched.Stop()
+
+	srv := New(db, env, fstest.MapFS{}, runner, sched, log)
+	handler := srv.Routes()
+
+	weeklyDay := func() time.Weekday {
+		for _, n := range sched.NextRuns() {
+			if local := n.In(time.UTC); local.Hour() == 11 {
+				return local.Weekday()
+			}
+		}
+		return time.Weekday(-1)
+	}
+	if got := weeklyDay(); got != time.Monday {
+		t.Fatalf("weekly day = %v before the change, want Monday", got)
+	}
+
+	if w := do(t, handler, "PUT", "/api/settings", `{"schedule_weekly_day":"fri"}`); w.Code != http.StatusOK {
+		t.Fatalf("save: status %d: %s", w.Code, w.Body.String())
+	}
+	if got := weeklyDay(); got != time.Friday {
+		t.Errorf("weekly day = %v after saving; the cron was not rebuilt, so the change needs a restart", got)
+	}
+
+	// And the time, too.
+	if w := do(t, handler, "PUT", "/api/settings", `{"schedule_weekly_time":"06:15"}`); w.Code != http.StatusOK {
+		t.Fatalf("save time: status %d", w.Code)
+	}
+	var sawNewTime bool
+	for _, n := range sched.NextRuns() {
+		if local := n.In(time.UTC); local.Hour() == 6 && local.Minute() == 15 {
+			sawNewTime = true
+		}
+	}
+	if !sawNewTime {
+		t.Error("the new weekly time was not picked up without a restart")
+	}
+}
