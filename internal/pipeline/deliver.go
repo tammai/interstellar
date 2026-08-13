@@ -10,6 +10,7 @@ import (
 	"github.com/tammai/interstellar/internal/config"
 	"github.com/tammai/interstellar/internal/llm"
 	"github.com/tammai/interstellar/internal/notify"
+	"github.com/tammai/interstellar/internal/sources"
 	"github.com/tammai/interstellar/internal/store"
 )
 
@@ -195,7 +196,7 @@ func firstSentence(body string) string {
 		return body[:i+1]
 	}
 	if len(body) > 240 {
-		return body[:240] + "…"
+		return sources.Truncate(body, 240) + "…"
 	}
 	return body
 }

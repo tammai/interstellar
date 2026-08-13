@@ -50,7 +50,15 @@ func (db *DB) VideosNeedingTranscripts(limit int) ([]VideoNeedingTranscript, err
 		          SELECT 1 FROM item_sources isrc
 		            JOIN sources s ON s.id = isrc.source_id
 		           WHERE isrc.item_id = i.id AND s.kind = 'youtube_rss')
-		    AND NOT EXISTS (SELECT 1 FROM item_transcripts t WHERE t.item_id = i.id)
+		    AND NOT EXISTS (
+		          SELECT 1 FROM item_transcripts t
+		           WHERE t.item_id = i.id
+		             -- A row alone is not "done". A cap breach mid-stage stores the
+		             -- captions with no summary, and the summary is the entire point --
+		             -- excluding that row would lose it permanently. Done means: has a
+		             -- summary, or has a non-ok status (a permanent no-captions, or a
+		             -- recorded error).
+		             AND (t.summary IS NOT NULL OR t.status <> 'ok'))
 		  ORDER BY i.id DESC
 		  LIMIT ?`, limit)
 	if err != nil {

@@ -42,10 +42,13 @@ func IsManualSource(s Source) bool {
 // Lazily rather than in Bootstrap: an owner who never pastes a link should not
 // find a row in Settings they did not ask for and cannot explain.
 func (db *DB) ManualSourceID() (int64, error) {
+	// Matched on the marker alone, NOT on the name. The name is the owner's to
+	// change in Settings, and including it here would mean a rename silently
+	// produces a second inbox -- with the old one still holding every link saved
+	// before it.
 	var id int64
 	err := db.QueryRow(
-		`SELECT id FROM sources WHERE name = ? AND config = ?`,
-		ManualSourceName, manualConfig,
+		`SELECT id FROM sources WHERE config = ? ORDER BY id LIMIT 1`, manualConfig,
 	).Scan(&id)
 	if err == nil {
 		return id, nil

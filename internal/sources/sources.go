@@ -63,15 +63,24 @@ func For(kind string) (Fetcher, error) {
 // stops a pathological feed from writing a novel into every row.
 const maxSummary = 1000
 
-func truncate(s string, n int) string {
+// Truncate cuts a string to at most n BYTES, never mid-rune.
+//
+// Exported because the pipeline needs it too, and a second copy would drift. The
+// naive s[:n] is not a nitpick here: on Vietnamese text -- which §9 keeps topic
+// definitions in, and which Vietnamese feeds carry -- 27% of byte offsets fall
+// inside a multi-byte rune. json.Marshal does not error on that, it silently
+// substitutes U+FFFD, so the damage arrives as a mojibake character on screen and
+// in the database rather than as a failure anyone would notice.
+func Truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	// Trim to a rune boundary so we never store a broken UTF-8 sequence.
 	for n > 0 && !utf8Start(s[n]) {
 		n--
 	}
 	return s[:n]
 }
+
+func truncate(s string, n int) string { return Truncate(s, n) }
 
 func utf8Start(b byte) bool { return b&0xC0 != 0x80 }

@@ -1702,3 +1702,29 @@ func TestResendDefaultsAreSeeded(t *testing.T) {
 		t.Error("a recipient is seeded; that is the owner's to fill in")
 	}
 }
+
+// Both date validators must agree on what a date is. The search endpoint used to
+// count digits, so 2026-99-99 got through and became a query bound that silently
+// matched nothing instead of being refused.
+func TestSearchRejectsImpossibleDates(t *testing.T) {
+	_, h, db := testServer(t)
+	seedSearchable(t, db)
+
+	for _, bad := range []string{
+		"2026-99-99", "2026-13-01", "2026-02-30", "0000-00-00", "2026-1-01", "26-01-01",
+	} {
+		if w := do(t, h, "GET", "/api/search?from="+bad, ""); w.Code != http.StatusBadRequest {
+			t.Errorf("from=%s returned %d, want 400", bad, w.Code)
+		}
+		if w := do(t, h, "GET", "/api/search?to="+bad, ""); w.Code != http.StatusBadRequest {
+			t.Errorf("to=%s returned %d, want 400", bad, w.Code)
+		}
+	}
+
+	// Real dates, including a leap day, still work.
+	for _, ok := range []string{"2026-08-13", "2024-02-29", "2026-01-01", "2026-12-31"} {
+		if w := do(t, h, "GET", "/api/search?from="+ok, ""); w.Code != http.StatusOK {
+			t.Errorf("from=%s returned %d, want 200", ok, w.Code)
+		}
+	}
+}

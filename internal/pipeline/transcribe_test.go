@@ -320,3 +320,93 @@ func TestTranscribeEndToEndWithStubbedCaptions(t *testing.T) {
 		t.Error("the video is still pending after a successful transcript")
 	}
 }
+
+// A transcript fetched but not summarized — which is what a cap breach leaves
+// behind — must still be picked up next run. The anti-join on item_transcripts
+// excludes any item with a row at all, so a capped run would lose that video's
+// summary permanently.
+func TestVideosNeedingTranscriptsPicksUpUnsummarizedTranscripts(t *testing.T) {
+	db := testDB(t)
+	video := seedVideo(t, db, "https://www.youtube.com/watch?v=aaaaaaaaaaa", "A talk")
+
+	// Exactly the state Transcribe leaves on a cap breach: text stored, no summary.
+	if err := db.SaveTranscript(store.TranscriptRecord{
+		ItemID: video, Status: store.TranscriptOK, Text: "the captions", Lang: "en",
+	}); err != nil {
+		t.Fatalf("SaveTranscript: %v", err)
+	}
+
+	pending, err := db.VideosNeedingTranscripts(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("got %d pending, want 1 — a fetched-but-unsummarized video is unfinished work",
+			len(pending))
+	}
+
+	// And once it has a summary it is genuinely done.
+	if err := db.SaveTranscript(store.TranscriptRecord{
+		ItemID: video, Status: store.TranscriptOK, Text: "the captions",
+		Lang: "en", Summary: "A summary.",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	pending, _ = db.VideosNeedingTranscripts(10)
+	if len(pending) != 0 {
+		t.Errorf("a summarized video is still pending: %+v", pending)
+	}
+
+	// A permanent 'none' must NOT come back, or captions-disabled videos retry forever.
+	other := seedVideo(t, db, "https://www.youtube.com/watch?v=bbbbbbbbbbb", "No captions here")
+	if err := db.SaveTranscript(store.TranscriptRecord{
+		ItemID: other, Status: store.TranscriptNone, Err: "no captions advertised",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	pending, _ = db.VideosNeedingTranscripts(10)
+	for _, p := range pending {
+		if p.ItemID == other {
+			t.Error("a video with no captions is pending again; it will be refetched forever")
+		}
+	}
+}
+
+// The inbox is identified by its config marker, not its name. Renaming it in
+// Settings — which the owner is free to do — must not create a second one, leaving
+// the first holding every link saved before the rename.
+func TestManualSourceSurvivesARename(t *testing.T) {
+	db := testDB(t)
+
+	first, err := db.ManualSourceID()
+	if err != nil {
+		t.Fatalf("ManualSourceID: %v", err)
+	}
+
+	src, err := db.SourceByID(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src.Name = "My saved bits"
+	if err := db.UpdateSource(src); err != nil {
+		t.Fatalf("UpdateSource: %v", err)
+	}
+
+	again, err := db.ManualSourceID()
+	if err != nil {
+		t.Fatalf("ManualSourceID after rename: %v", err)
+	}
+	if again != first {
+		t.Errorf("got source %d after a rename, want the original %d — a second inbox was created",
+			again, first)
+	}
+
+	var n int
+	if err := db.QueryRow(
+		`SELECT count(*) FROM sources WHERE config = '{"manual":true}'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("%d inbox sources exist, want 1", n)
+	}
+}

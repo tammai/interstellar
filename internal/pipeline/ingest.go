@@ -213,10 +213,16 @@ func store_(
 		}
 
 		// Level three of deduplication, after URL canonicalization and before the
-		// synthesizer's clustering: the same article at a different URL. Attribution
+		// synthesizer's clustering: the same article at a DIFFERENT URL. Attribution
 		// rather than a discard, because two outlets carrying one story is precisely
 		// what source_count measures and what makes a signal gold (§6).
-		if dup, ok := findDuplicate(*known, it.Title); ok {
+		//
+		// Skipped when the URL is already known, which is the ordinary re-fetch. That
+		// case belongs to the upsert below so it reports as "seen"; routing it here
+		// instead would make every unchanged item on every run look like a fuzzy
+		// merge, and the merge count is the only warning anyone would get if the
+		// matcher started collapsing real stories.
+		if dup, ok := findDuplicate(*known, canonical, it.Title); ok {
 			if err := db.AttributeItem(dup.ID, out.source.ID, it.Detail); err != nil {
 				log.Warn("attribute fuzzy duplicate", "source", out.source.Name, "err", err)
 				continue
@@ -241,7 +247,7 @@ func store_(
 		}
 		if isNew {
 			newCount++
-			*known = append(*known, store.TitleRef{ID: id, Title: it.Title})
+			*known = append(*known, store.TitleRef{ID: id, Title: it.Title, URL: canonical})
 		} else {
 			seenCount++
 		}
@@ -259,12 +265,22 @@ const fuzzyWindowDays = 7
 // O(index) per item instead of O(all items ever).
 const fuzzyIndexLimit = 4000
 
-// findDuplicate looks for an existing item that is the same article.
+// findDuplicate looks for an existing item that is the same article at a different
+// URL.
 //
-// Linear, which is fine: a few thousand normalized titles against a few hundred new
-// items per run is microseconds, and the alternative -- an inverted index -- would
-// be real machinery guarding a cost nobody has measured as a problem.
-func findDuplicate(known []store.TitleRef, title string) (store.TitleRef, bool) {
+// An exact URL match is explicitly NOT a fuzzy duplicate: it is a re-fetch, and
+// reporting it as a merge would make the counter meaningless. Checked first, and in
+// the same pass, so this costs nothing extra.
+//
+// Linear, which is fine: a few thousand titles against a few hundred new items per
+// run is microseconds, and the alternative -- an inverted index -- is real machinery
+// guarding a cost nobody has measured as a problem.
+func findDuplicate(known []store.TitleRef, canonicalURL, title string) (store.TitleRef, bool) {
+	for _, k := range known {
+		if k.URL == canonicalURL {
+			return store.TitleRef{}, false
+		}
+	}
 	for _, k := range known {
 		if sources.SameArticle(k.Title, title) {
 			return k, true

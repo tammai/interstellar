@@ -183,13 +183,23 @@ func (db *DB) ItemCountsBySource() (map[int64]int, error) {
 	return out, rows.Err()
 }
 
-// TitleRef is an item's id and title, for fuzzy duplicate detection.
+// TitleRef is an item's id, title and canonical URL, for duplicate detection.
+//
+// The URL is carried alongside the title because the two answer different
+// questions and the order matters: an identical URL is an exact re-fetch, while a
+// similar title at a DIFFERENT URL is a republish. Without the URL here, a second
+// run finds each item's own title in the index and reports every unchanged item as
+// a fuzzy merge -- which inflates the one counter that would warn of the matcher
+// misfiring.
 type TitleRef struct {
 	ID    int64
 	Title string
+	URL   string
 }
 
 // RecentTitles returns items fetched in the last `days` days, newest first.
+//
+// Title and canonical URL together: see TitleRef.
 //
 // Loaded once per run and compared in memory, never queried per candidate item.
 // The pool is a single connection: a lookup inside the ingest loop would be one
@@ -200,7 +210,7 @@ func (db *DB) RecentTitles(days, limit int) ([]TitleRef, error) {
 		days = 1
 	}
 	rows, err := db.Query(
-		`SELECT id, title FROM items
+		`SELECT id, title, canonical_url FROM items
 		  WHERE fetched_at >= datetime('now', ?)
 		  ORDER BY id DESC
 		  LIMIT ?`,
@@ -214,7 +224,7 @@ func (db *DB) RecentTitles(days, limit int) ([]TitleRef, error) {
 	var out []TitleRef
 	for rows.Next() {
 		var t TitleRef
-		if err := rows.Scan(&t.ID, &t.Title); err != nil {
+		if err := rows.Scan(&t.ID, &t.Title, &t.URL); err != nil {
 			return nil, fmt.Errorf("scan title: %w", err)
 		}
 		out = append(out, t)

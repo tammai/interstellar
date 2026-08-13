@@ -456,3 +456,38 @@ func TestIngestMergeIsIdempotentAcrossRuns(t *testing.T) {
 		t.Errorf("attributions went from %d to %d across runs", attrsAfterFirst, n)
 	}
 }
+
+// Re-ingesting an unchanged item must report it as SEEN, not as a fuzzy merge.
+//
+// The existing idempotency test uses the title "A post", which is below the
+// minimum length fuzzy matching will consider — so it never exercised this path.
+// With a realistic title the second run finds the item's own title in the dedup
+// index and takes the merge branch, which inflates ItemsMerged on every single run
+// and destroys the one number that would warn of the dedup misfiring.
+func TestReIngestCountsAsSeenNotMerged(t *testing.T) {
+	db := testDB(t)
+	srv := feedServer(t,
+		"Agent harness patterns are converging on standardised tool loops",
+		"https://example.test/harness-patterns")
+	addSource(t, db, "Blog", srv.URL)
+
+	if _, err := Ingest(context.Background(), db, testConfig(), quietLogger()); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := Ingest(context.Background(), db, testConfig(), quietLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if second.ItemsMerged != 0 {
+		t.Errorf("ItemsMerged = %d on a re-ingest; the same URL is not a fuzzy duplicate",
+			second.ItemsMerged)
+	}
+	if second.ItemsSeen != 1 {
+		t.Errorf("ItemsSeen = %d, want 1", second.ItemsSeen)
+	}
+	if n := countRows(t, db, "SELECT count(*) FROM items"); n != 1 {
+		t.Errorf("%d items after two runs", n)
+	}
+}

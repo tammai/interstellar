@@ -2,7 +2,6 @@ package store
 
 import (
 	"encoding/json"
-	"fmt"
 	"strings"
 )
 
@@ -104,38 +103,4 @@ type ImportOutcome struct {
 	// answered but carried nothing, which is the failure the convention in
 	// CLAUDE.md exists for -- a 200 is not evidence.
 	Items int `json:"items"`
-}
-
-// ImportSources adds sources that are not already present.
-//
-// Additive only. Deleting whatever a file does not mention would make an import
-// from a stale export silently destroy the pruning the owner has done since --
-// and pruning is most of what an owner does to this list. Removing a source stays
-// a deliberate, one-at-a-time act.
-func (db *DB) ImportSources(candidates []SourceExport) ([]int64, error) {
-	existing, err := db.SourceIdentities()
-	if err != nil {
-		return nil, err
-	}
-
-	var added []int64
-	for _, c := range candidates {
-		if _, ok := existing[c.Identity()]; ok {
-			continue
-		}
-		id, err := db.CreateSource(Source{
-			Kind:   c.Kind,
-			Name:   c.Name,
-			Config: c.Config,
-			Active: c.Active,
-		})
-		if err != nil {
-			return added, fmt.Errorf("import source %q: %w", c.Name, err)
-		}
-		// Within one file, two rows may share an identity. Register as we go so the
-		// second is skipped rather than inserted.
-		existing[c.Identity()] = id
-		added = append(added, id)
-	}
-	return added, nil
 }

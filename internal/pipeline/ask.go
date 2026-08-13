@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/tammai/interstellar/internal/llm"
+	"github.com/tammai/interstellar/internal/sources"
 	"github.com/tammai/interstellar/internal/store"
 )
 
@@ -92,7 +93,7 @@ func (a *Asker) Ask(ctx context.Context, client *llm.Client, question string) (A
 		return AskResult{}, fmt.Errorf("question is empty")
 	}
 	if len(question) > askMaxQuestion {
-		question = question[:askMaxQuestion]
+		question = sources.Truncate(question, askMaxQuestion)
 	}
 
 	result := AskResult{Question: question}
@@ -257,7 +258,7 @@ func (a *Asker) sanitizePlan(plan AskQuery, question string, topics []store.Topi
 
 	plan.Rationale = strings.TrimSpace(plan.Rationale)
 	if len(plan.Rationale) > 300 {
-		plan.Rationale = plan.Rationale[:300]
+		plan.Rationale = sources.Truncate(plan.Rationale, 300)
 	}
 	return plan
 }

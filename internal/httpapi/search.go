@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/tammai/interstellar/internal/store"
 )
@@ -82,23 +83,16 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// validDate accepts an empty string or a strict YYYY-MM-DD. Loose parsing here
-// would push a malformed bound into a string comparison against run_date, where
-// it silently matches nothing rather than erroring.
+// validDate accepts an empty string or a real YYYY-MM-DD.
+//
+// time.Parse rather than a digit check: the digit version accepted 2026-99-99, which
+// is not a date but is a perfectly good string bound -- so it reached the query and
+// silently matched nothing instead of being refused. The chat planner's own validator
+// always parsed; these two disagreeing about what a date is was the actual defect.
 func validDate(s string) bool {
 	if s == "" {
 		return true
 	}
-	if len(s) != 10 || s[4] != '-' || s[7] != '-' {
-		return false
-	}
-	for i, r := range s {
-		if i == 4 || i == 7 {
-			continue
-		}
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return true
+	_, err := time.Parse("2006-01-02", s)
+	return err == nil
 }

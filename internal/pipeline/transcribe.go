@@ -162,7 +162,7 @@ func summarizeTranscript(
 ) (string, error) {
 	text := transcript.Text
 	if len(text) > transcriptPromptChars {
-		text = text[:transcriptPromptChars]
+		text = sources.Truncate(text, transcriptPromptChars)
 	}
 
 	note := ""
@@ -189,7 +189,7 @@ func summarizeTranscript(
 	// Long enough to be substance, short enough that the classifier's 400-character
 	// truncation does not cut it mid-thought.
 	if len(summary) > 600 {
-		summary = summary[:600]
+		summary = sources.Truncate(summary, 600)
 	}
 	return summary, nil
 }
@@ -230,7 +230,7 @@ func isMissingCaptions(err error) bool {
 
 func trimTitle(s string) string {
 	if len(s) > 60 {
-		return s[:60] + "…"
+		return sources.Truncate(s, 60) + "…"
 	}
 	return s
 }

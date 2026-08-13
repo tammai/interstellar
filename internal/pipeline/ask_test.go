@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/tammai/interstellar/internal/llm"
 	"github.com/tammai/interstellar/internal/store"
@@ -459,5 +460,47 @@ func TestChatTurnSurvivesCorruptRefs(t *testing.T) {
 	}
 	if turns[0].HitRefs != nil {
 		t.Errorf("refs should be nil, got %+v", turns[0].HitRefs)
+	}
+}
+
+// Truncation must never cut a rune in half.
+//
+// §9 keeps topic definitions in Vietnamese and Vietnamese feeds carry Vietnamese
+// titles; on that text 27% of byte offsets fall inside a multi-byte rune. json
+// encoding does not error on invalid UTF-8, it substitutes U+FFFD — so the damage
+// arrives as mojibake in the database and on screen rather than as a failure.
+func TestQuestionAndPlanTruncationStayValidUTF8(t *testing.T) {
+	db := testDB(t)
+	askCorpus(t, db)
+
+	// Longer than askMaxQuestion, all multi-byte.
+	long := strings.Repeat("Tiếng Việt có dấu ", 200)
+	if len(long) <= askMaxQuestion {
+		t.Fatalf("fixture is too short to exercise truncation: %d bytes", len(long))
+	}
+
+	rationale := strings.Repeat("Chủ đề tiếng Việt ", 40)
+	plan := fmt.Sprintf(`{"text":"agent","rationale":%q}`, rationale)
+	model := askModel(t, plan, "Answer [1].")
+
+	asker := NewAsker(db, quietLogger(), fixedNow())
+	got, err := asker.Ask(context.Background(), clientFor(t, db, model), long)
+	if err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+
+	if !utf8.ValidString(got.Question) {
+		t.Error("the truncated question is not valid UTF-8")
+	}
+	if !utf8.ValidString(got.Query.Rationale) {
+		t.Error("the truncated rationale is not valid UTF-8")
+	}
+	// And it survives the encoding the API actually uses.
+	enc, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(enc), "�") {
+		t.Error("the JSON response contains a replacement character; a rune was cut in half")
 	}
 }
