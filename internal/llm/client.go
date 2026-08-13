@@ -29,6 +29,10 @@ const (
 	// role is for -- but is logged under its own name so the cost is visible rather
 	// than blended into classification.
 	RoleTranscript Role = "transcript"
+	// RoleWeekly writes the weekly round-up. It runs on the synthesizer's chain --
+	// turning a pile of stories into prose a person reads is that role's job at a
+	// different scale -- with its own line in the cost log.
+	RoleWeekly Role = "weekly"
 )
 
 // attemptsPerRef bounds retries against a single provider before moving down the

@@ -66,22 +66,83 @@ func TestSchedulerHonorsTimezone(t *testing.T) {
 	defer s.Stop()
 
 	next := s.NextRuns()
-	if len(next) != 2 {
-		t.Fatalf("got %d scheduled entries, want 2 (ingest and synthesize)", len(next))
+	// Three: the daily ingest and synthesize, plus the weekly round-up. The round-up
+	// is written by default -- one synthesizer call a week -- while DELIVERING it is
+	// off, which is the part decision #10 actually turned down.
+	if len(next) != 3 {
+		t.Fatalf("got %d scheduled entries, want 3 (ingest, synthesize, weekly)", len(next))
 	}
 
-	// The seeded times are 09:30 and 10:30 local.
-	wantHours := map[int]int{9: 30, 10: 30}
+	// The seeded times are 09:30, 10:30 and Monday 11:00, all local.
+	wantHours := map[int]int{9: 30, 10: 30, 11: 0}
+	var sawMonday bool
 	for _, n := range next {
 		local := n.In(bangkok)
 		wantMin, ok := wantHours[local.Hour()]
 		if !ok {
-			t.Errorf("scheduled run at %s local; want 09:30 or 10:30", local.Format("15:04"))
+			t.Errorf("scheduled run at %s local; want 09:30, 10:30 or 11:00", local.Format("15:04"))
 			continue
 		}
 		if local.Minute() != wantMin {
 			t.Errorf("scheduled at %s local, want minute %d", local.Format("15:04"), wantMin)
 		}
+		// The 11:00 entry is the weekly one, and it must land on a Monday -- a
+		// weekly cron with the day field wrong fires daily, which would be seven
+		// round-ups a week and seven synthesizer calls.
+		if local.Hour() == 11 {
+			if local.Weekday() != time.Monday {
+				t.Errorf("the weekly round-up is scheduled for %s, want Monday", local.Weekday())
+			}
+			sawMonday = true
+		}
+	}
+	if !sawMonday {
+		t.Error("no weekly entry found among the scheduled runs")
+	}
+}
+
+// An empty weekly day switches the round-up off, leaving the daily schedule intact.
+func TestSchedulerWeeklyCanBeSwitchedOff(t *testing.T) {
+	db := testDB(t)
+	if err := db.Bootstrap(); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetSetting(store.KeyScheduleWeeklyDay, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	env := config.Env{Port: "8422", Location: time.UTC}
+	s := NewScheduler(db, env, NewRunner(db, env, quietLogger()), quietLogger())
+	if err := s.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer s.Stop()
+
+	if n := len(s.NextRuns()); n != 2 {
+		t.Errorf("got %d entries with the round-up off, want 2", n)
+	}
+}
+
+// A bad weekly setting must not take the daily schedule down with it: the daily sky
+// is the product, and a typo in a weekly day is not worth losing it over.
+func TestSchedulerSurvivesABadWeeklySetting(t *testing.T) {
+	db := testDB(t)
+	if err := db.Bootstrap(); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetSetting(store.KeyScheduleWeeklyDay, "someday"); err != nil {
+		t.Fatal(err)
+	}
+
+	env := config.Env{Port: "8422", Location: time.UTC}
+	s := NewScheduler(db, env, NewRunner(db, env, quietLogger()), quietLogger())
+	if err := s.Start(); err != nil {
+		t.Fatalf("Start returned an error for a bad weekly day: %v", err)
+	}
+	defer s.Stop()
+
+	if n := len(s.NextRuns()); n != 2 {
+		t.Errorf("got %d entries, want the 2 daily ones to survive", n)
 	}
 }
 

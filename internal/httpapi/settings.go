@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 
@@ -37,7 +38,22 @@ type settingsResponse struct {
 
 	ScheduleIngest     string `json:"schedule_ingest"`
 	ScheduleSynthesize string `json:"schedule_synthesize"`
+	ScheduleWeeklyDay  string `json:"schedule_weekly_day"`
+	ScheduleWeeklyTime string `json:"schedule_weekly_time"`
 	Timezone           string `json:"timezone"`
+
+	DigestEnabled bool   `json:"digest_enabled"`
+	SMTPHost      string `json:"smtp_host"`
+	SMTPPort      int    `json:"smtp_port"`
+	SMTPUsername  string `json:"smtp_username"`
+	// The env var NAME plus whether it resolves. Never the value -- same contract as
+	// the provider registry.
+	SMTPPasswordEnv      string `json:"smtp_password_env"`
+	SMTPPasswordResolved bool   `json:"smtp_password_resolved"`
+	DigestFrom           string `json:"digest_from"`
+	DigestTo             string `json:"digest_to"`
+	PingEnabled          bool   `json:"ping_enabled"`
+	PingURL              string `json:"ping_url"`
 
 	MaxCallsPerRun     int `json:"max_calls_per_run"`
 	MaxCallsPerDay     int `json:"max_calls_per_day"`
@@ -70,6 +86,18 @@ type settingsRequest struct {
 
 	ScheduleIngest     *string `json:"schedule_ingest"`
 	ScheduleSynthesize *string `json:"schedule_synthesize"`
+	ScheduleWeeklyDay  *string `json:"schedule_weekly_day"`
+	ScheduleWeeklyTime *string `json:"schedule_weekly_time"`
+
+	DigestEnabled   *bool   `json:"digest_enabled"`
+	SMTPHost        *string `json:"smtp_host"`
+	SMTPPort        *int    `json:"smtp_port"`
+	SMTPUsername    *string `json:"smtp_username"`
+	SMTPPasswordEnv *string `json:"smtp_password_env"`
+	DigestFrom      *string `json:"digest_from"`
+	DigestTo        *string `json:"digest_to"`
+	PingEnabled     *bool   `json:"ping_enabled"`
+	PingURL         *string `json:"ping_url"`
 
 	MaxCallsPerRun     *int `json:"max_calls_per_run"`
 	MaxCallsPerDay     *int `json:"max_calls_per_day"`
@@ -100,17 +128,31 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		ChatFallback:        stringList(settings[store.KeyChatFallback]),
 		ScheduleIngest:      settings[store.KeyScheduleIngest],
 		ScheduleSynthesize:  settings[store.KeyScheduleSynthesis],
-		Timezone:            s.Env.Location.String(),
-		MaxCallsPerRun:      intOf(settings[store.KeyMaxCallsPerRun], 200),
-		MaxCallsPerDay:      intOf(settings[store.KeyMaxCallsPerDay], 500),
-		MaxChatCallsPerDay:  intOf(settings[store.KeyMaxChatCallsPerDay], 100),
-		TranscriptsPerRun:   intOf(settings[store.KeyTranscriptsPerRun], 6),
-		TranscriptLang:      settings[store.KeyTranscriptLang],
-		HNMinPoints:         intOf(settings[store.KeyHNMinPoints], 25),
-		SkyDays:             intOf(settings[store.KeySkyDays], 7),
-		ClassifyBatchSize:   intOf(settings[store.KeyClassifyBatchSize], 30),
-		HotThreshold:        intOf(settings[store.KeyHotThreshold], 3),
-		MatchThreshold:      floatOf(settings[store.KeyMatchThreshold], 4),
+		ScheduleWeeklyDay:   settings[store.KeyScheduleWeeklyDay],
+		ScheduleWeeklyTime:  settings[store.KeyScheduleWeeklyTime],
+		DigestEnabled:       settings[store.KeyDigestEnabled] == "1",
+		SMTPHost:            settings[store.KeySMTPHost],
+		SMTPPort:            intOf(settings[store.KeySMTPPort], 587),
+		SMTPUsername:        settings[store.KeySMTPUsername],
+		SMTPPasswordEnv:     settings[store.KeySMTPPasswordEnv],
+		DigestFrom:          settings[store.KeyDigestFrom],
+		DigestTo:            settings[store.KeyDigestTo],
+		PingEnabled:         settings[store.KeyPingEnabled] == "1",
+		PingURL:             settings[store.KeyPingURL],
+		// Only whether it resolves, never the value. Same contract as provider keys.
+		SMTPPasswordResolved: settings[store.KeySMTPPasswordEnv] == "" ||
+			os.Getenv(settings[store.KeySMTPPasswordEnv]) != "",
+		Timezone:           s.Env.Location.String(),
+		MaxCallsPerRun:     intOf(settings[store.KeyMaxCallsPerRun], 200),
+		MaxCallsPerDay:     intOf(settings[store.KeyMaxCallsPerDay], 500),
+		MaxChatCallsPerDay: intOf(settings[store.KeyMaxChatCallsPerDay], 100),
+		TranscriptsPerRun:  intOf(settings[store.KeyTranscriptsPerRun], 6),
+		TranscriptLang:     settings[store.KeyTranscriptLang],
+		HNMinPoints:        intOf(settings[store.KeyHNMinPoints], 25),
+		SkyDays:            intOf(settings[store.KeySkyDays], 7),
+		ClassifyBatchSize:  intOf(settings[store.KeyClassifyBatchSize], 30),
+		HotThreshold:       intOf(settings[store.KeyHotThreshold], 3),
+		MatchThreshold:     floatOf(settings[store.KeyMatchThreshold], 4),
 	}
 
 	// A malformed registry still has to render, or the owner cannot fix it in the
@@ -165,6 +207,15 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 			updates[key] = strings.TrimSpace(*v)
 		}
 	}
+	setBool := func(key string, v *bool) {
+		if v != nil {
+			if *v {
+				updates[key] = "1"
+			} else {
+				updates[key] = "0"
+			}
+		}
+	}
 	setInt := func(key string, v *int) {
 		if v != nil {
 			updates[key] = strconv.Itoa(*v)
@@ -176,6 +227,17 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	setStr(store.KeyChatModel, req.ChatModel)
 	setStr(store.KeyScheduleIngest, req.ScheduleIngest)
 	setStr(store.KeyScheduleSynthesis, req.ScheduleSynthesize)
+	setStr(store.KeyScheduleWeeklyDay, req.ScheduleWeeklyDay)
+	setStr(store.KeyScheduleWeeklyTime, req.ScheduleWeeklyTime)
+	setStr(store.KeySMTPHost, req.SMTPHost)
+	setStr(store.KeySMTPUsername, req.SMTPUsername)
+	setStr(store.KeySMTPPasswordEnv, req.SMTPPasswordEnv)
+	setStr(store.KeyDigestFrom, req.DigestFrom)
+	setStr(store.KeyDigestTo, req.DigestTo)
+	setStr(store.KeyPingURL, req.PingURL)
+	setInt(store.KeySMTPPort, req.SMTPPort)
+	setBool(store.KeyDigestEnabled, req.DigestEnabled)
+	setBool(store.KeyPingEnabled, req.PingEnabled)
 
 	if req.ClassifierFallback != nil {
 		updates[store.KeyClassifierFallback] = mustJSON(*req.ClassifierFallback)
@@ -247,14 +309,53 @@ func (s *Server) validateSettingsUpdate(updates map[string]string) error {
 	if _, err := llm.LoadConfig(merged); err != nil {
 		return err
 	}
-	for _, key := range []string{store.KeyScheduleIngest, store.KeyScheduleSynthesis} {
+	for _, key := range []string{
+		store.KeyScheduleIngest, store.KeyScheduleSynthesis, store.KeyScheduleWeeklyTime,
+	} {
 		if v, ok := updates[key]; ok {
 			if err := validateHHMM(v); err != nil {
 				return fmt.Errorf("%s: %w", key, err)
 			}
 		}
 	}
+
+	// A weekday name, or empty to switch the round-up off.
+	if v, ok := updates[store.KeyScheduleWeeklyDay]; ok && strings.TrimSpace(v) != "" {
+		if !validWeekday(v) {
+			return fmt.Errorf("schedule_weekly_day: want a weekday name like \"mon\", or empty to switch off")
+		}
+	}
+
+	// A port that will not connect is worth rejecting at save time rather than
+	// discovering when a digest silently never arrives.
+	if v, ok := updates[store.KeySMTPPort]; ok {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 65535 {
+			return fmt.Errorf("smtp_port: want a port between 1 and 65535")
+		}
+	}
+
+	// Enabling delivery with nothing to deliver to is the one combination that fails
+	// silently a week later, so it is refused now.
+	merged2 := merged
+	if merged2[store.KeyDigestEnabled] == "1" && strings.TrimSpace(merged2[store.KeyDigestTo]) == "" {
+		return fmt.Errorf("digest_to: an email address is required to switch the digest on")
+	}
+	if merged2[store.KeyPingEnabled] == "1" && strings.TrimSpace(merged2[store.KeyPingURL]) == "" {
+		return fmt.Errorf("ping_url: a webhook URL is required to switch pings on")
+	}
+
 	return nil
+}
+
+// validWeekday accepts the day names weeklySpec understands.
+func validWeekday(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "sun", "sunday", "mon", "monday", "tue", "tuesday", "wed", "wednesday",
+		"thu", "thursday", "fri", "friday", "sat", "saturday", "off", "never":
+		return true
+	}
+	return false
 }
 
 func (s *Server) reloadSchedule() {

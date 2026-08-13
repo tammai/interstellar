@@ -65,6 +65,11 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/ask", s.handleAsk)
 	mux.HandleFunc("GET /api/chat/history", s.handleChatHistory)
 
+	// The weekly round-up, and delivery.
+	mux.HandleFunc("GET /api/weekly", s.handleWeekly)
+	mux.HandleFunc("POST /api/weekly/run", s.handleWeeklyRun)
+	mux.HandleFunc("POST /api/delivery/test", s.handleDeliveryTest)
+
 	// Run control and progress.
 	mux.HandleFunc("POST /api/refresh", s.handleRefresh)
 	mux.HandleFunc("GET /api/status", s.handleStatus)

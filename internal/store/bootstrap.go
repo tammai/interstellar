@@ -15,6 +15,10 @@ const (
 
 	KeyScheduleIngest    = "schedule_ingest"     // "HH:MM" local
 	KeyScheduleSynthesis = "schedule_synthesize" // "HH:MM" local
+	// The weekly round-up: a day name and a time, both local. Empty day switches
+	// it off.
+	KeyScheduleWeeklyDay  = "schedule_weekly_day"
+	KeyScheduleWeeklyTime = "schedule_weekly_time"
 
 	KeyMaxCallsPerRun = "max_calls_per_run"
 	KeyMaxCallsPerDay = "max_calls_per_day"
@@ -26,6 +30,22 @@ const (
 	// switches the stage off entirely.
 	KeyTranscriptsPerRun = "transcripts_per_run"
 	KeyTranscriptLang    = "transcript_lang"
+
+	// Delivery, off by default. Spec decision #10 dropped email from Phase 0 on
+	// purpose; these exist so Phase 2 is a settings change rather than a rebuild.
+	//
+	// The password is referenced by ENV VAR NAME, never stored -- the same rule as
+	// provider keys. Defaults point at Resend's relay, which authenticates with the
+	// literal username "resend" and an API key as the password.
+	KeyDigestEnabled   = "digest_enabled"
+	KeySMTPHost        = "smtp_host"
+	KeySMTPPort        = "smtp_port"
+	KeySMTPUsername    = "smtp_username"
+	KeySMTPPasswordEnv = "smtp_password_env"
+	KeyDigestFrom      = "digest_from"
+	KeyDigestTo        = "digest_to"
+	KeyPingEnabled     = "ping_enabled"
+	KeyPingURL         = "ping_url"
 
 	KeyHNMinPoints = "hn_min_points"
 	// Items published longer ago than this are not news and are skipped at
@@ -74,6 +94,11 @@ func defaultSettings() map[string]string {
 
 		KeyScheduleIngest:    "09:30",
 		KeyScheduleSynthesis: "10:30",
+		// Monday morning, after the daily run has produced that day's sky. The
+		// round-up covers the week that just finished, so Monday is the first day it
+		// can be complete.
+		KeyScheduleWeeklyDay:  "mon",
+		KeyScheduleWeeklyTime: "11:00",
 
 		// Sized against the seed list, not against a blank instance. The starter
 		// set is ~62 active sources and max_item_age_days admits a 30-day
@@ -95,6 +120,22 @@ func defaultSettings() map[string]string {
 		// costs six cheap calls. Set to 0 to switch transcripts off.
 		KeyTranscriptsPerRun: "6",
 		KeyTranscriptLang:    "en",
+
+		// Off. The web UI is the front door (decision #10); this is here to be
+		// switched on if the Phase 2 gate -- "I forgot to open it" -- ever trips.
+		KeyDigestEnabled: "0",
+		// Resend's relay. Username is the literal string "resend"; the password is
+		// an API key, read from RESEND_API_KEY at send time and never stored.
+		KeySMTPHost:        "smtp.resend.com",
+		KeySMTPPort:        "587",
+		KeySMTPUsername:    "resend",
+		KeySMTPPasswordEnv: "RESEND_API_KEY",
+		// onboarding@resend.dev works without verifying a domain, but only to the
+		// address that owns the Resend account. Change both once a domain is set up.
+		KeyDigestFrom:  "Interstellar <onboarding@resend.dev>",
+		KeyDigestTo:    "",
+		KeyPingEnabled: "0",
+		KeyPingURL:     "",
 
 		KeyHNMinPoints:       "25", // decision #4
 		KeyMaxItemAgeDays:    "30",

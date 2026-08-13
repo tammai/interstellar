@@ -261,6 +261,59 @@ is too small to mean anything. `Read` counts only the batches a model actually
 answered, so a provider having a bad afternoon does not show up as a badly defined
 topic.
 
+## The weekly round-up
+
+Once a week a model reads that week's signals and writes 200-350 words about what
+actually happened — grouped by story rather than by topic, because two topics
+converging on one thing is the most interesting shape a week can have.
+
+It appears under **Settings → Weekly round-up**, where you can also write last
+week's on demand. Reading it there needs nothing configured. `schedule_weekly_day`
+controls when it runs; **empty stops it being written at all**.
+
+A week with no signals gets no round-up. "There was no news" is a sentence the
+absence of a digest already makes, and writing it would occupy the slot so a later
+re-run looked done.
+
+### Having it emailed
+
+Off by default, and that is the design: spec decision #10 made the web UI the front
+door on purpose. This exists for the day "I forgot to open it" actually happens.
+
+Defaults point at **Resend**, used as a plain SMTP relay:
+
+```sh
+docker run -p 8422:8422 -v interstellar-data:/data \
+  -e TZ=Asia/Bangkok \
+  -e DEEPSEEK_API_KEY=sk-... \
+  -e RESEND_API_KEY=re_...        # the SMTP password
+  interstellar
+```
+
+Then in **Settings → Weekly round-up → Send it somewhere**, fill in the recipient and
+flip *Email it*. The shipped values are `smtp.resend.com`, port `587`, username
+`resend` — Resend authenticates with that literal username and your API key as the
+password.
+
+- **The password is never stored.** The settings row holds the *name* of an
+  environment variable; the value is read at send time, exactly like a provider key.
+  The screen shows whether it resolves, never what it is.
+- **`onboarding@resend.dev` works without verifying a domain**, but only to the
+  address that owns the Resend account. Change the From once you have a domain.
+- **Adding the variable needs a container restart**, because the environment is fixed
+  at boot. Everything else is live.
+- **Press "Send a test"** rather than waiting a week to discover a typo. It uses the
+  same code path the round-up does.
+- TLS is not optional: if the relay advertises STARTTLS and then refuses it, the send
+  fails rather than falling back to plaintext.
+
+### Or just a ping
+
+*Ping a webhook* posts a small JSON payload — the week, the counts, and one sentence
+— to a URL you choose. The round-up itself stays in the app deliberately: a webhook
+carrying the whole digest would publish a week of your reading interests to someone
+else's server.
+
 ## Keeping two instances in step
 
 Each instance is one person's container, so two people accumulate two different

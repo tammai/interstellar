@@ -33,7 +33,14 @@ type Scheduler struct {
 
 	mu   sync.Mutex
 	cron *cron.Cron
+
+	// weekly is what the weekly entry calls. Injected rather than built here so the
+	// scheduler keeps knowing nothing about models or email.
+	weekly func(context.Context)
 }
+
+// OnWeekly sets the weekly round-up handler. Must be called before Start.
+func (s *Scheduler) OnWeekly(fn func(context.Context)) { s.weekly = fn }
 
 // NewScheduler builds a scheduler. Call Start to begin firing.
 func NewScheduler(db *store.DB, env config.Env, runner *Runner, log *slog.Logger) *Scheduler {
@@ -70,6 +77,17 @@ func (s *Scheduler) Reload() error {
 	}
 	if _, err := next.AddFunc(synthSpec, func() { s.fire("scheduled synthesis") }); err != nil {
 		return fmt.Errorf("add synthesize schedule: %w", err)
+	}
+
+	// The weekly round-up, if it is switched on. A bad weekly spec must not take the
+	// daily schedule down with it -- the daily sky is the product -- so this is
+	// logged and skipped rather than returned as an error.
+	if spec, err := weeklySpec(cfg.ScheduleWeeklyDay, cfg.ScheduleWeeklyTime); err != nil {
+		s.log.Warn("weekly round-up not scheduled", "err", err)
+	} else if spec != "" {
+		if _, err := next.AddFunc(spec, func() { s.fireWeekly() }); err != nil {
+			s.log.Warn("weekly round-up not scheduled", "err", err)
+		}
 	}
 
 	s.mu.Lock()
@@ -123,6 +141,44 @@ func (s *Scheduler) fire(reason string) {
 	if err := s.runner.RunNow(context.Background(), reason); err != nil {
 		s.log.Info("scheduled run skipped", "reason", reason, "err", err)
 	}
+}
+
+// fireWeekly writes the round-up for the week that just finished, then delivers it.
+//
+// Last week, not this one: fired on a Monday morning, "this week" is four hours old.
+func (s *Scheduler) fireWeekly() {
+	if s.weekly == nil {
+		return
+	}
+	s.weekly(context.Background())
+}
+
+// weeklySpec converts a day name and "HH:MM" into a weekly cron expression.
+//
+// An empty day switches the round-up off, which is why "" is a valid answer with no
+// error rather than something to complain about.
+func weeklySpec(day, hhmm string) (string, error) {
+	day = strings.ToLower(strings.TrimSpace(day))
+	if day == "" || day == "off" || day == "never" {
+		return "", nil
+	}
+
+	days := map[string]int{
+		"sun": 0, "sunday": 0, "mon": 1, "monday": 1, "tue": 2, "tuesday": 2,
+		"wed": 3, "wednesday": 3, "thu": 4, "thursday": 4,
+		"fri": 5, "friday": 5, "sat": 6, "saturday": 6,
+	}
+	n, ok := days[day]
+	if !ok {
+		return "", fmt.Errorf("day %q: want a weekday name, or empty to switch off", day)
+	}
+
+	daily, err := cronSpec(hhmm)
+	if err != nil {
+		return "", fmt.Errorf("weekly time %q: %w", hhmm, err)
+	}
+	// cronSpec yields "M H * * *"; swap the day-of-week field.
+	return strings.TrimSuffix(daily, "*") + strconv.Itoa(n), nil
 }
 
 // cronSpec converts "HH:MM" into a daily cron expression.

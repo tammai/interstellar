@@ -102,6 +102,7 @@ func TestNoEndpointEverLeaksAKey(t *testing.T) {
 		{"GET", "/api/topics", ""},
 		{"GET", "/api/topics/stats", ""},
 		{"GET", "/api/trending", ""},
+		{"GET", "/api/weekly", ""},
 		{"GET", "/api/search?q=agents", ""},
 		{"GET", "/api/chat/history", ""},
 		{"POST", "/api/ask", `{"question":"anything?"}`},
@@ -1482,5 +1483,222 @@ func TestTrendingOnAFreshInstance(t *testing.T) {
 		if tr.Direction != "quiet" {
 			t.Errorf("topic %d reports %q on a fresh instance, want quiet", tr.TopicID, tr.Direction)
 		}
+	}
+}
+
+// --- weekly round-up and delivery ---
+
+func TestWeeklyReportsDeliveryStatusOnAFreshInstance(t *testing.T) {
+	_, h, _ := testServer(t)
+
+	got := decode[weeklyResponse](t, do(t, h, "GET", "/api/weekly", ""))
+	if got.Latest != nil {
+		t.Error("a fresh instance has a round-up")
+	}
+	// Delivery is off by default — decision #10 dropped email from Phase 0 on
+	// purpose, and this is the switch, not the default.
+	if got.Delivery.EmailEnabled || got.Delivery.PingEnabled {
+		t.Errorf("delivery is on by default: %+v", got.Delivery)
+	}
+	if got.Delivery.Schedule == "" {
+		t.Error("no weekly schedule reported; the screen cannot say when it is due")
+	}
+}
+
+func TestWeeklyRunWritesAndStores(t *testing.T) {
+	_, h, db := testServer(t)
+	useFakeChatModel(t, db, chatModelServer(t, `{}`, "The week converged on harnesses."))
+
+	topics, _ := db.AllTopics()
+	// Signals inside last week, which is what a scheduled run covers.
+	for i := range 3 {
+		if _, err := db.Exec(
+			`INSERT INTO signals (run_date, topic_id, title, reason, score, source_count, primary_url)
+			 VALUES (date('now','localtime',?), ?, ?, 'Because.', 5, 3, 'https://x.test/a')`,
+			fmt.Sprintf("-%d days", 8+i), topics[0].ID, fmt.Sprintf("Story %d", i),
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	w := do(t, h, "POST", "/api/weekly/run", `{}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+	got := decode[pipeline.WeeklyRunResult](t, w)
+
+	if !got.Written {
+		t.Fatalf("nothing written: %+v", got)
+	}
+	if got.Signals == 0 {
+		t.Error("written from zero signals")
+	}
+	// Delivery is off, so nothing was sent and the response says why.
+	if got.EmailSent || got.PingSent {
+		t.Error("something was delivered with delivery switched off")
+	}
+	if got.DeliverNote == "" {
+		t.Error("no note explaining that delivery is off")
+	}
+
+	list := decode[weeklyResponse](t, do(t, h, "GET", "/api/weekly", ""))
+	if list.Latest == nil || list.Latest.Body == "" {
+		t.Fatal("the round-up is not in the history")
+	}
+}
+
+// Pressing "write it now" to read the prose must not mail anyone.
+func TestWeeklyRunDoesNotDeliverUnlessAsked(t *testing.T) {
+	_, h, db := testServer(t)
+	useFakeChatModel(t, db, chatModelServer(t, `{}`, "Body."))
+
+	var pinged int
+	ping := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pinged++
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer ping.Close()
+
+	if err := db.SetSettings(map[string]string{
+		store.KeyPingEnabled: "1", store.KeyPingURL: ping.URL,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	topics, _ := db.AllTopics()
+	if _, err := db.Exec(
+		`INSERT INTO signals (run_date, topic_id, title, reason, score, source_count, primary_url)
+		 VALUES (date('now','localtime','-8 days'), ?, 'A story', 'Because.', 5, 3, 'https://x.test/a')`,
+		topics[0].ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Default: no deliver flag.
+	do(t, h, "POST", "/api/weekly/run", `{}`)
+	if pinged != 0 {
+		t.Errorf("pinged %d times without being asked to deliver", pinged)
+	}
+
+	// Explicitly asked.
+	got := decode[pipeline.WeeklyRunResult](t, do(t, h, "POST", "/api/weekly/run", `{"deliver":true}`))
+	if pinged != 1 {
+		t.Errorf("pinged %d times when delivery was requested, want 1", pinged)
+	}
+	if !got.PingSent {
+		t.Errorf("ping not reported as sent: %+v", got)
+	}
+}
+
+func TestWeeklyRunValidatesTheWeek(t *testing.T) {
+	_, h, _ := testServer(t)
+	for _, bad := range []string{`{"week":"last-monday"}`, `{"week":"2026-8-1"}`, `nope`} {
+		if w := do(t, h, "POST", "/api/weekly/run", bad); w.Code != http.StatusBadRequest {
+			t.Errorf("%s: status %d, want 400", bad, w.Code)
+		}
+	}
+}
+
+// Enabling delivery with nowhere to deliver to is the one combination that fails
+// silently a week later, so it must be refused at save time.
+func TestSettingsRefusesDeliveryWithNoDestination(t *testing.T) {
+	_, h, _ := testServer(t)
+
+	if w := do(t, h, "PUT", "/api/settings", `{"digest_enabled":true}`); w.Code != http.StatusBadRequest {
+		t.Errorf("enabling email with no recipient: status %d, want 400", w.Code)
+	}
+	if w := do(t, h, "PUT", "/api/settings", `{"ping_enabled":true}`); w.Code != http.StatusBadRequest {
+		t.Errorf("enabling ping with no URL: status %d, want 400", w.Code)
+	}
+	// Together they are fine.
+	if w := do(t, h, "PUT", "/api/settings",
+		`{"digest_enabled":true,"digest_to":"owner@example.test"}`); w.Code != http.StatusOK {
+		t.Errorf("enabling email with a recipient: status %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestSettingsValidatesTheWeeklyScheduleAndPort(t *testing.T) {
+	_, h, _ := testServer(t)
+
+	for name, body := range map[string]string{
+		"bad day":   `{"schedule_weekly_day":"someday"}`,
+		"bad time":  `{"schedule_weekly_time":"25:00"}`,
+		"bad port":  `{"smtp_port":0}`,
+		"huge port": `{"smtp_port":70000}`,
+	} {
+		if w := do(t, h, "PUT", "/api/settings", body); w.Code != http.StatusBadRequest {
+			t.Errorf("%s: status %d, want 400", name, w.Code)
+		}
+	}
+
+	// Empty day switches the round-up off, which is legal.
+	if w := do(t, h, "PUT", "/api/settings", `{"schedule_weekly_day":""}`); w.Code != http.StatusOK {
+		t.Errorf("switching the round-up off: status %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// The SMTP credential follows the provider-key contract exactly: the settings row
+// holds the env var NAME, the endpoint returns the name plus whether it resolves,
+// and the value never appears anywhere.
+func TestSettingsNeverReturnsTheSMTPPassword(t *testing.T) {
+	_, h, db := testServer(t)
+
+	const secret = "re_super_secret_resend_key"
+	t.Setenv("TEST_RESEND_KEY", secret)
+	if err := db.SetSettings(map[string]string{
+		store.KeySMTPPasswordEnv: "TEST_RESEND_KEY",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, path := range []string{"/api/settings", "/api/weekly", "/api/status"} {
+		w := do(t, h, "GET", path, "")
+		if strings.Contains(w.Body.String(), secret) {
+			t.Errorf("%s leaked the SMTP password", path)
+		}
+	}
+
+	got := decode[settingsResponse](t, do(t, h, "GET", "/api/settings", ""))
+	if got.SMTPPasswordEnv != "TEST_RESEND_KEY" {
+		t.Errorf("smtp_password_env = %q; the NAME should be returned", got.SMTPPasswordEnv)
+	}
+	if !got.SMTPPasswordResolved {
+		t.Error("resolved is false though the variable is set")
+	}
+
+	// And unresolved is reported honestly.
+	if err := db.SetSettings(map[string]string{
+		store.KeySMTPPasswordEnv: "DEFINITELY_NOT_SET",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got = decode[settingsResponse](t, do(t, h, "GET", "/api/settings", ""))
+	if got.SMTPPasswordResolved {
+		t.Error("resolved is true for an unset variable")
+	}
+}
+
+// The Resend defaults ship configured except for the recipient, so switching the
+// digest on is one field plus one environment variable.
+func TestResendDefaultsAreSeeded(t *testing.T) {
+	_, h, _ := testServer(t)
+	got := decode[settingsResponse](t, do(t, h, "GET", "/api/settings", ""))
+
+	if got.SMTPHost != "smtp.resend.com" {
+		t.Errorf("smtp_host = %q", got.SMTPHost)
+	}
+	if got.SMTPPort != 587 {
+		t.Errorf("smtp_port = %d", got.SMTPPort)
+	}
+	if got.SMTPUsername != "resend" {
+		t.Errorf("smtp_username = %q; Resend authenticates with the literal \"resend\"", got.SMTPUsername)
+	}
+	if got.SMTPPasswordEnv != "RESEND_API_KEY" {
+		t.Errorf("smtp_password_env = %q", got.SMTPPasswordEnv)
+	}
+	if got.DigestEnabled {
+		t.Error("the digest is on by default")
+	}
+	if got.DigestTo != "" {
+		t.Error("a recipient is seeded; that is the owner's to fill in")
 	}
 }

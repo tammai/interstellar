@@ -159,6 +159,11 @@ export class Settings {
       // configured, so the row shows it directly -- the point is to notice it in
       // passing, not to have to go looking.
       {
+        key: 'weekly', label: 'Weekly round-up',
+        value: s ? (s.digest_enabled ? 'emailed ' + (s.schedule_weekly_day || 'off')
+                                     : (s.schedule_weekly_day ? 'written ' + s.schedule_weekly_day : 'off')) : '—',
+      },
+      {
         key: 'quality', label: 'Signal quality',
         value: this.quality?.ready ? formatRate(this.quality.hit_rate) + ' matched' : 'no data yet',
       },
@@ -211,6 +216,7 @@ export class Settings {
       case 'model': return this.renderModel();
       case 'schedule': return this.renderSchedule();
       case 'quality': return this.renderQuality();
+      case 'weekly': return this.renderWeekly();
     }
     return Promise.resolve();
   }
@@ -1246,6 +1252,223 @@ export class Settings {
     }
   }
 
+  // The weekly round-up, and getting it off the instance.
+  //
+  // Delivery is off by default and this screen says so plainly: spec decision #10
+  // made the web UI the front door on purpose, so email exists here to be switched
+  // on if "I forgot to open it" ever actually happens.
+  async renderWeekly() {
+    await this.loadSettings();
+    const s = this.settings;
+    if (!s) return;
+
+    const body = this.sheetFrame('Weekly round-up',
+      'One written pass over the week\'s signals. Reading it here needs nothing configured; ' +
+      'having it emailed needs a relay and an API key in the environment.');
+
+    const data = await fetchJSON('/api/weekly');
+
+    // --- the round-up itself ---
+    const latest = section(body, 'Latest');
+    if (data?.latest) {
+      const meta = document.createElement('p');
+      meta.className = 'note';
+      meta.style.marginTop = '0';
+      const bits = [`${data.latest.week_start} → ${data.latest.week_end}`,
+                    `${data.latest.signals} signals`,
+                    `${data.latest.topics} topics`];
+      if (data.latest.sent_at) bits.push(`sent via ${data.latest.sent_via}`);
+      else if (data.latest.send_error) bits.push(`send failed: ${data.latest.send_error}`);
+      meta.textContent = bits.join(' · ');
+
+      const prose = document.createElement('p');
+      prose.className = 'weekly-body';
+      prose.textContent = data.latest.body;
+
+      latest.append(meta, prose);
+    } else {
+      const none = document.createElement('p');
+      none.className = 'note';
+      none.textContent = 'None yet. One is written automatically on the day below, ' +
+        'or press the button to write last week\'s now.';
+      latest.append(none);
+    }
+
+    const runResult = document.createElement('div');
+    runResult.className = 'test-result';
+
+    const runNow = document.createElement('button');
+    runNow.className = 'btn-quiet';
+    runNow.textContent = 'Write last week now';
+    runNow.onclick = async () => {
+      runNow.disabled = true;
+      runResult.className = 'test-result';
+      runResult.textContent = 'Writing…';
+      // deliver is deliberately not set: reading the prose must not mail anyone.
+      const res = await fetchJSON('/api/weekly/run', { method: 'POST', body: '{}' });
+      runNow.disabled = false;
+      if (!res) {
+        runResult.className = 'test-result bad';
+        runResult.textContent = 'Could not write it. Check the synthesizer model.';
+        return;
+      }
+      runResult.className = 'test-result ok';
+      runResult.textContent = res.written
+        ? `Written from ${res.signals} signals. Not sent — ${res.deliver_note || 'delivery not requested'}.`
+        : `Nothing written: ${res.skipped || 'no signals that week'}.`;
+
+      // Update the prose in place rather than calling rerenderCurrent(). A rebuild
+      // goes through sheetFrame, which replaceChildren()s the sheet -- destroying the
+      // confirmation set two lines above. That is the same trap the Model screen hit:
+      // a save whose own refresh wipes the message telling you it worked.
+      if (res.written) {
+        const fresh = await fetchJSON('/api/weekly');
+        const prose = body.querySelector('.weekly-body');
+        if (fresh?.latest && prose) prose.textContent = fresh.latest.body;
+      }
+    };
+
+    const runActions = document.createElement('div');
+    runActions.className = 'card-actions wide';
+    runActions.append(runNow);
+    latest.append(runActions, runResult);
+
+    // --- when ---
+    const when = section(body, 'When');
+    const grid = document.createElement('div');
+    grid.className = 'grid';
+    grid.append(
+      field('schedule_weekly_day', 'Day', s.schedule_weekly_day, 'text',
+        'A weekday name, or empty to stop writing it.'),
+      field('schedule_weekly_time', 'Time', s.schedule_weekly_time, 'time',
+        `Local to the container (${s.timezone}).`),
+    );
+    when.append(grid);
+
+    // --- delivery ---
+    const out = section(body, 'Send it somewhere');
+
+    const note = document.createElement('p');
+    note.className = 'note';
+    note.style.marginTop = '0';
+    note.textContent = 'Both off by default — the app is the front door. ' +
+      'The SMTP password is read from the named environment variable at send time and never stored.';
+    out.append(note);
+
+    const dgrid = document.createElement('div');
+    dgrid.className = 'grid';
+    dgrid.append(
+      field('digest_to', 'Email to', s.digest_to, 'text', 'Comma-separated for more than one.'),
+      field('digest_from', 'Email from', s.digest_from, 'text',
+        'Must be a Resend-verified sender. onboarding@resend.dev works to your own address.'),
+      field('smtp_host', 'SMTP host', s.smtp_host, 'text', 'smtp.resend.com'),
+      field('smtp_port', 'SMTP port', s.smtp_port, 'number', '587 for STARTTLS, 465 for TLS.'),
+      field('smtp_username', 'SMTP username', s.smtp_username, 'text', 'Resend expects "resend".'),
+      field('smtp_password_env', 'Password env var', s.smtp_password_env, 'text',
+        s.smtp_password_resolved ? 'Set in the environment.' : 'NOT set — nothing will send.'),
+      field('ping_url', 'Webhook URL', s.ping_url, 'text',
+        'Posted a small JSON payload. The round-up itself stays in the app.'),
+    );
+    out.append(dgrid);
+
+    if (!s.smtp_password_resolved) {
+      const warn = document.createElement('p');
+      warn.className = 'test-result bad';
+      warn.textContent = `${s.smtp_password_env || 'The password variable'} is not set in the environment. ` +
+        'Adding it needs a container restart, because the environment is fixed at boot.';
+      out.append(warn);
+    }
+
+    // Each switch gets a visible label, not just an aria-label. Two identical
+    // "Active" toggles side by side are indistinguishable by sight, and which one is
+    // email matters -- one of them sends mail.
+    const labelled = (text, control) => {
+      const wrap = document.createElement('div');
+      wrap.className = 'switch-row';
+      const l = document.createElement('span');
+      l.className = 'switch-label';
+      l.textContent = text;
+      wrap.append(l, control);
+      return wrap;
+    };
+
+    const toggles = document.createElement('div');
+    toggles.className = 'switch-group';
+    toggles.append(
+      labelled('Email it', this.switchControl(s.digest_enabled, 'Email the round-up', async (next) => {
+        const ok = await fetchJSON('/api/settings', {
+          method: 'PUT', body: JSON.stringify({ digest_enabled: next }),
+        });
+        if (!ok) return false;
+        this.settings = ok;
+        return true;
+      })),
+      labelled('Ping a webhook', this.switchControl(s.ping_enabled, 'Ping a webhook', async (next) => {
+        const ok = await fetchJSON('/api/settings', {
+          method: 'PUT', body: JSON.stringify({ ping_enabled: next }),
+        });
+        if (!ok) return false;
+        this.settings = ok;
+        return true;
+      })),
+    );
+    out.append(toggles);
+
+    const testResult = document.createElement('div');
+    testResult.className = 'test-result';
+
+    const save = document.createElement('button');
+    save.className = 'btn-primary';
+    save.textContent = 'Save';
+    save.onclick = async () => {
+      const payload = {};
+      for (const input of body.querySelectorAll('input[data-key]')) {
+        payload[input.dataset.key] = input.type === 'number' ? Number(input.value) : input.value;
+      }
+      const res = await fetch('/api/settings', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (res.ok) {
+        testResult.className = 'test-result ok';
+        testResult.textContent = 'Saved. The schedule was rebuilt — no restart needed.';
+        this.onChanged();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        testResult.className = 'test-result bad';
+        testResult.textContent = err.error || 'Could not save';
+      }
+    };
+
+    // The same idea as the per-role model test: a setting you cannot verify is a
+    // setting you do not trust, and waiting a week to find out is not verification.
+    const test = document.createElement('button');
+    test.className = 'btn-quiet';
+    test.textContent = 'Send a test';
+    test.onclick = async () => {
+      test.disabled = true;
+      testResult.className = 'test-result';
+      testResult.textContent = 'Sending…';
+      const res = await fetchJSON('/api/delivery/test', { method: 'POST', body: '{}' });
+      test.disabled = false;
+      if (!res) {
+        testResult.className = 'test-result bad';
+        testResult.textContent = 'Could not run the test.';
+        return;
+      }
+      const lines = [];
+      lines.push(res.email ? 'Email sent.' : `Email: ${res.email_error}`);
+      lines.push(res.ping ? 'Ping sent.' : `Ping: ${res.ping_error}`);
+      testResult.className = 'test-result' + (res.email || res.ping ? ' ok' : ' bad');
+      testResult.textContent = lines.join(' · ');
+    };
+
+    const actions = document.createElement('div');
+    actions.className = 'card-actions wide';
+    actions.append(save, test);
+    out.append(actions, testResult);
+  }
+
   qualityWindowPicker() {
     const wrap = document.createElement('div');
     wrap.className = 'window-picker';
@@ -1269,6 +1492,30 @@ export class Settings {
 }
 
 // ---------- helpers ----------
+
+// field builds a labelled input carrying its settings key, the shape the Schedule
+// and Weekly screens both save from.
+function field(key, label, value, type, help) {
+  const wrap = document.createElement('label');
+  wrap.className = 'field-wrap';
+
+  const l = document.createElement('span');
+  l.className = 'field-label';
+  l.textContent = label;
+
+  const input = document.createElement('input');
+  input.className = 'field';
+  input.type = type;
+  input.value = value ?? '';
+  input.dataset.key = key;
+
+  const h = document.createElement('span');
+  h.className = 'field-help';
+  h.textContent = help;
+
+  wrap.append(l, input, h);
+  return wrap;
+}
 
 function section(parent, title) {
   const wrap = document.createElement('section');

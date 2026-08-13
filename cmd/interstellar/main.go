@@ -60,6 +60,11 @@ func run(log *slog.Logger) error {
 	runner := pipeline.NewRunner(db, env, log)
 
 	scheduler := pipeline.NewScheduler(db, env, runner, log)
+
+	// The weekly round-up. Injected rather than built inside the scheduler, which
+	// deliberately knows nothing about models or email.
+	weekly := pipeline.NewWeeklyRunner(db, env, log, nil)
+	scheduler.OnWeekly(weekly.RunScheduled)
 	if err := scheduler.Start(); err != nil {
 		// A bad schedule must not stop the app: the sky and an on-demand
 		// refresh still work, and Settings is where the owner fixes it.

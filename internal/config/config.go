@@ -59,6 +59,19 @@ type Runtime struct {
 	ScheduleIngest     string // "HH:MM" local
 	ScheduleSynthesize string // "HH:MM" local
 
+	ScheduleWeeklyDay  string
+	ScheduleWeeklyTime string
+
+	DigestEnabled   bool
+	SMTPHost        string
+	SMTPPort        int
+	SMTPUsername    string
+	SMTPPasswordEnv string
+	DigestFrom      string
+	DigestTo        string
+	PingEnabled     bool
+	PingURL         string
+
 	TranscriptsPerRun int
 	TranscriptLang    string
 
@@ -90,6 +103,23 @@ func Load(db *store.DB) (Runtime, error) {
 		// These fall back only when the row is missing, but they still have to
 		// agree with what bootstrap seeds -- a fallback quietly stricter than the
 		// seed would abort a run that the seeded instance next door completes.
+		// Read raw, NOT through str(): that helper treats an empty value as absent and
+		// substitutes the default, which makes "empty switches the round-up off"
+		// impossible to express. The default for this key lives in bootstrap's seed,
+		// where it is applied once to a missing row rather than on every read.
+		ScheduleWeeklyDay:  s[store.KeyScheduleWeeklyDay],
+		ScheduleWeeklyTime: str(s, store.KeyScheduleWeeklyTime, "11:00"),
+
+		DigestEnabled:   integer(s, store.KeyDigestEnabled, 0) == 1,
+		SMTPHost:        str(s, store.KeySMTPHost, "smtp.resend.com"),
+		SMTPPort:        integer(s, store.KeySMTPPort, 587),
+		SMTPUsername:    str(s, store.KeySMTPUsername, "resend"),
+		SMTPPasswordEnv: str(s, store.KeySMTPPasswordEnv, "RESEND_API_KEY"),
+		DigestFrom:      str(s, store.KeyDigestFrom, ""),
+		DigestTo:        str(s, store.KeyDigestTo, ""),
+		PingEnabled:     integer(s, store.KeyPingEnabled, 0) == 1,
+		PingURL:         str(s, store.KeyPingURL, ""),
+
 		TranscriptsPerRun: integer(s, store.KeyTranscriptsPerRun, 6),
 		TranscriptLang:    str(s, store.KeyTranscriptLang, "en"),
 
