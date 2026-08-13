@@ -6,6 +6,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Phase 0 is built and every §10 acceptance criterion passes. What happens next is decided by real use, not by a backlog — see "Phase discipline" below.
 
+**Phase 1 opened 2026-08-12 by owner decision, ahead of its gate.** The spec gates Phase 1 on "we open it daily but complain about content"; the owner started it before that signal existed, on the argument that the diagnostic should come first. One item is done — the **per-topic hit-rate view** (`topic_stats`, `GET /api/topics/stats`, Settings → Signal quality). The remaining Phase 1 candidates are untouched and still gated: YouTube transcripts, fuzzy dedup, manual-forward inbox, source list import/export.
+
+Note for whoever picks this up: the spec is internally inconsistent about the **email digest**. The `## Phase 1 backlog` paragraph lists it, but the roadmap table puts it in Phase 2 and says that if its gate trips it "outranks all of Phase 1". The table is the more considered statement. Settling this needs a spec revision, not an edit.
+
 ## Working on this
 
 ```sh
@@ -97,6 +101,7 @@ These come straight from spec §10 (acceptance criteria) and §6 (UI contract). 
 - Every LLM call attempt gets a row in `llm_calls` (run date, role, **provider**, model, token counts). Cost visibility is a feature, and it feeds the Phase 3 habit analysis.
 - Schema changes go through the embedded migration path, never hand-edited SQL against a live DB. Migrations are append-only: never edit one that has shipped, add the next number.
 - **The connection pool is capped at one.** Never issue a query while a `*sql.Rows` is still open — the open rows hold the only connection, so the inner call waits on a connection the outer loop won't release. It hangs rather than erroring. Drain into a slice, close, then do the follow-up work; `store.SignalByID` is the worked example.
+- **Per-topic stats and the classify watermark commit together, in one transaction** (`store.CommitClassifyPass`). They are not independent writes. Stats written without the watermark count the same items again on the next pass, inflating every denominator and understating every hit rate; the watermark without the stats loses a pass that can never be recomputed, because `matches` keeps score ≥ 4 verdicts only and the denominator exists nowhere else. For the same reason an **aborted** pass — cap breached, context cancelled — records neither, including for the batches that did succeed. `ItemsConsidered` counts only batches the model answered: a failed batch is not a denominator, or a provider's bad afternoon reads as a badly defined topic.
 - `specs/` is history. Amend it by adding a revision, not by silently rewriting a decision.
 - **Distribution is local `docker build`, decided 2026-08-11.** No image is published and none should be: an instance is one person's container built from this repo. The plan carried "publish to GHCR" as an open item; it is now closed as *won't do*, so don't reopen it as tidying. `make docker-multiarch` still verifies amd64 and arm64 both build.
 - **Never seed a source URL you have not run through the real fetcher.** `make feedcheck URLS="…"` does it with the app's own parser. A feed can return 200 in a browser and yield zero items; worse, a YouTube channel ID scraped from page HTML will happily serve *someone else's* channel — a `"channelId":"UC…"` regex matches the recommended-channels sidebar, which is how Karpathy's row once got 3Blue1Brown's ID. Resolve channels from `rel="canonical"` and confirm against the title the feed itself returns.

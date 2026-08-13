@@ -99,6 +99,7 @@ func TestNoEndpointEverLeaksAKey(t *testing.T) {
 		{"GET", "/api/status", ""},
 		{"GET", "/api/sky", ""},
 		{"GET", "/api/topics", ""},
+		{"GET", "/api/topics/stats", ""},
 		{"GET", "/api/sources", ""},
 		{"PUT", "/api/settings", `{"classifier_model":"deepseek/deepseek-chat"}`},
 	}
@@ -564,3 +565,109 @@ func TestModelTestReportsFailureAsDiagnosis(t *testing.T) {
 }
 
 func itoa(v int64) string { return strconv.FormatInt(v, 10) }
+
+// --- per-topic hit rates ---
+
+func TestTopicStatsReportsHitRatePerTopic(t *testing.T) {
+	_, h, db := testServer(t)
+
+	topics, err := db.AllTopics()
+	if err != nil || len(topics) < 2 {
+		t.Fatalf("need seeded topics: %d, %v", len(topics), err)
+	}
+	day := store.RunDate(time.Now())
+	if err := db.CommitClassifyPass(day, []store.TopicStat{
+		{TopicID: topics[0].ID, ItemsConsidered: 40, MatchesKept: 10, Batches: 2},
+	}, ""); err != nil {
+		t.Fatalf("CommitClassifyPass: %v", err)
+	}
+
+	w := do(t, h, "GET", "/api/topics/stats", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s", w.Code, w.Body.String())
+	}
+	got := decode[topicStatsResponse](t, w)
+
+	if got.Days != 7 {
+		t.Errorf("days = %d, want the 7-day default", got.Days)
+	}
+	if len(got.Rows) != len(topics) {
+		t.Errorf("got %d rows, want %d — every topic appears, classified or not",
+			len(got.Rows), len(topics))
+	}
+	if got.ItemsConsidered != 40 || got.MatchesKept != 10 {
+		t.Errorf("totals considered=%d matched=%d, want 40/10", got.ItemsConsidered, got.MatchesKept)
+	}
+	if got.HitRate != 0.25 {
+		t.Errorf("overall hit rate = %v, want 0.25", got.HitRate)
+	}
+	if !got.Ready {
+		t.Error("ready should be true once anything has been classified")
+	}
+
+	var classified, untouched int
+	for _, row := range got.Rows {
+		if row.HitRate < 0 {
+			untouched++
+			continue
+		}
+		classified++
+		if row.TopicID != topics[0].ID {
+			t.Errorf("topic %d reports a hit rate but was never classified", row.TopicID)
+		}
+	}
+	if classified != 1 {
+		t.Errorf("%d topics report a hit rate, want 1", classified)
+	}
+	if untouched != len(topics)-1 {
+		t.Errorf("%d topics report unknown, want %d", untouched, len(topics)-1)
+	}
+}
+
+// A fresh instance has classified nothing. The view must say so rather than
+// showing an instance-wide 0%, which reads as "the classifier matches nothing".
+func TestTopicStatsSaysUnknownBeforeAnyRun(t *testing.T) {
+	_, h, _ := testServer(t)
+
+	got := decode[topicStatsResponse](t, do(t, h, "GET", "/api/topics/stats", ""))
+	if got.Ready {
+		t.Error("ready is true on an instance that has never classified anything")
+	}
+	if got.HitRate != -1 {
+		t.Errorf("hit rate = %v, want the -1 unknown sentinel", got.HitRate)
+	}
+	if len(got.Rows) == 0 {
+		t.Error("no rows: the seeded topics should still be listed")
+	}
+}
+
+func TestTopicStatsWindowIsSelectableAndValidated(t *testing.T) {
+	_, h, db := testServer(t)
+
+	topics, _ := db.AllTopics()
+	old := store.RunDate(time.Now().AddDate(0, 0, -20))
+	if err := db.CommitClassifyPass(old, []store.TopicStat{
+		{TopicID: topics[0].ID, ItemsConsidered: 100, MatchesKept: 50, Batches: 4},
+	}, ""); err != nil {
+		t.Fatalf("CommitClassifyPass: %v", err)
+	}
+
+	week := decode[topicStatsResponse](t, do(t, h, "GET", "/api/topics/stats?days=7", ""))
+	if week.ItemsConsidered != 0 {
+		t.Errorf("7-day window considered %d, want 0: a 20-day-old pass leaked in",
+			week.ItemsConsidered)
+	}
+
+	month := decode[topicStatsResponse](t, do(t, h, "GET", "/api/topics/stats?days=30", ""))
+	if month.Days != 30 || month.ItemsConsidered != 100 {
+		t.Errorf("30-day window: days=%d considered=%d, want 30/100",
+			month.Days, month.ItemsConsidered)
+	}
+
+	for _, bad := range []string{"0", "-3", "400", "seven", "7.5"} {
+		w := do(t, h, "GET", "/api/topics/stats?days="+bad, "")
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("days=%s returned %d, want 400", bad, w.Code)
+		}
+	}
+}

@@ -126,6 +126,29 @@ It also reports how many items went unscored. Valid JSON that silently drops a
 third of its input is not a model worth shipping, and nothing else would show you
 that.
 
+## Tuning your topics
+
+A topic is only as good as its definition, and the sky alone will not tell you
+which definition is wrong. **Settings → Signal quality** shows the per-topic hit
+rate: how much of what the classifier read against a topic it judged relevant,
+over the last day, week or month.
+
+The number to look at is the rate, not the match count. Two matches out of four
+items and two out of four hundred both read as "2 matches" everywhere else in the
+app, and only the second is a definition worth rewriting:
+
+- **Under ~2%** — drawn too tight, or your sources simply do not cover it. Widen
+  the definition, or add a source.
+- **Over ~50%** — drawn too loose. Everything is getting through, which makes the
+  constellation noise rather than signal.
+- **An em dash** — never classified in this window. Not the same as 0%, which is
+  why it is not shown as one.
+
+Only rates with at least 50 items behind them are flagged; below that the sample
+is too small to mean anything. `Read` counts only the batches a model actually
+answered, so a provider having a bad afternoon does not show up as a badly defined
+topic.
+
 ## Backup
 
 The entire instance is one file.

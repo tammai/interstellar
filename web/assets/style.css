@@ -596,7 +596,51 @@ select.field { appearance: none }
 .ladder li { margin-bottom: 4px }
 .add-source { border-style: dashed }
 
+/* --- signal quality (per-topic hit rate) --- */
+
+.window-picker { display: flex; gap: 8px; margin-bottom: 18px }
+.window-picker .btn-quiet.on { border-color: var(--glass-border); color: var(--star-white); background: rgba(143,184,255,.1) }
+
+.quality-summary { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 22px }
+.stat-tile {
+  flex: 1 1 96px; min-width: 0;
+  background: rgba(6,10,24,.4); border: 1px solid var(--grid); border-radius: 10px;
+  padding: 12px 14px;
+}
+/* Playfair for the figure, matching the panel's stat treatment: these are numbers
+   to be read at a glance, not data to be scanned. */
+.stat-value { display: block; font-family: 'Playfair Display', Georgia, serif; font-size: 22px; color: var(--star-white); line-height: 1.15 }
+.stat-label { display: block; font-size: 10.5px; letter-spacing: .07em; text-transform: uppercase; color: var(--ink-faint); margin-top: 5px }
+
+.quality-table { border: 1px solid var(--grid); border-radius: 10px; overflow: hidden }
+.qt-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 52px 62px 58px 56px;
+  gap: 8px; align-items: baseline;
+  padding: 10px 13px; font-size: 12.5px;
+  border-top: 1px solid var(--grid);
+}
+.qt-row:first-child { border-top: 0 }
+.qt-head { font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-faint); background: rgba(6,10,24,.5) }
+.qt-topic { color: var(--ink); overflow-wrap: anywhere; display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px }
+.qt-n, .qt-rate { text-align: right; font-variant-numeric: tabular-nums; color: var(--ink-dim) }
+.qt-rate { color: var(--star-white) }
+/* The two shapes worth acting on. Colour is a hint, never the only carrier: each
+   also gets a title explaining what to do, and the number itself is the message. */
+.qt-rate.bad { color: var(--hot-gold) }
+.qt-rate.loose { color: var(--accent) }
+.qt-tag { font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-faint); border: 1px solid var(--grid); border-radius: 999px; padding: 1px 6px; white-space: nowrap }
+
 @media (max-width: 640px) {
   #settings { right: 12px; left: 12px; width: auto }
   #sheet { top: auto; bottom: 0; right: 0; left: 0; width: 100%; max-height: 88vh; border-radius: 18px 18px 0 0; transform: translateY(22px); transform-origin: bottom center }
+}
+
+/* §10 wants the layout working to ~380px. The Signals column is the one that can
+   go: matches and rate carry the judgment, and signals-per-topic is already on
+   the Topics screen. */
+@media (max-width: 420px) {
+  .qt-row { grid-template-columns: minmax(0, 1fr) 46px 52px 52px; font-size: 12px; padding: 9px 10px }
+  .qt-row > :last-child { display: none }
+  .stat-value { font-size: 19px }
 }

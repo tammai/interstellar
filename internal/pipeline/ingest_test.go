@@ -29,6 +29,11 @@ func quietLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
+// testRunDate is the run date the pipeline stamps stats with. Today's local date,
+// not a fixed string: TopicHitRates filters on date('now','localtime'), so a
+// hardcoded date would fall outside every window and the stats would look unwritten.
+var testRunDate = store.RunDate(time.Now())
+
 func testConfig() config.Runtime {
 	return config.Runtime{
 		HNMinPoints: 25, ClassifyBatchSize: 30, MatchThreshold: 4,

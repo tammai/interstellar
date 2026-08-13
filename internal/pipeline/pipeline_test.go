@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -68,6 +69,22 @@ func clientFor(t *testing.T, db *store.DB, srv *fakeModel) *llm.Client {
 		store.KeyProviders:        fmt.Sprintf(`[{"name":"fake","base_url":%q,"api_key_env":""}]`, srv.URL),
 		store.KeyClassifierModel:  "fake/classifier-model",
 		store.KeySynthesizerModel: "fake/synth-model",
+	})
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	return llm.NewClient(cfg, db, store.RunDate(time.Now()), quietLogger())
+}
+
+// clientForCapped is clientFor with a per-run call cap, for testing what an
+// aborted pass leaves behind.
+func clientForCapped(t *testing.T, db *store.DB, srv *fakeModel, runCap int) *llm.Client {
+	t.Helper()
+	cfg, err := llm.LoadConfig(map[string]string{
+		store.KeyProviders:        fmt.Sprintf(`[{"name":"fake","base_url":%q,"api_key_env":""}]`, srv.URL),
+		store.KeyClassifierModel:  "fake/classifier-model",
+		store.KeySynthesizerModel: "fake/synth-model",
+		store.KeyMaxCallsPerRun:   fmt.Sprint(runCap),
 	})
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
@@ -166,7 +183,7 @@ func TestClassifyStoresMatchesAboveThreshold(t *testing.T) {
 	})
 
 	cfg := testConfig()
-	result, err := Classify(context.Background(), db, clientFor(t, db, model), cfg, quietLogger())
+	result, err := Classify(context.Background(), db, clientFor(t, db, model), cfg, testRunDate, quietLogger())
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
@@ -193,7 +210,7 @@ func TestClassifySkipsTopicsWithoutDefinitions(t *testing.T) {
 	}
 
 	model := newFakeModel(t, scoreAllHigh)
-	result, err := Classify(context.Background(), db, clientFor(t, db, model), testConfig(), quietLogger())
+	result, err := Classify(context.Background(), db, clientFor(t, db, model), testConfig(), testRunDate, quietLogger())
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
@@ -217,7 +234,7 @@ func TestClassifyWatermarkMakesRerunFree(t *testing.T) {
 	client := clientFor(t, db, model)
 
 	cfg := testConfig()
-	if _, err := Classify(context.Background(), db, client, cfg, quietLogger()); err != nil {
+	if _, err := Classify(context.Background(), db, client, cfg, testRunDate, quietLogger()); err != nil {
 		t.Fatalf("first classify: %v", err)
 	}
 	afterFirst := model.callCount()
@@ -231,7 +248,7 @@ func TestClassifyWatermarkMakesRerunFree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := Classify(context.Background(), db, client, cfg2, quietLogger())
+	result, err := Classify(context.Background(), db, client, cfg2, testRunDate, quietLogger())
 	if err != nil {
 		t.Fatalf("second classify: %v", err)
 	}
@@ -258,7 +275,7 @@ func TestClassifyDropsHallucinatedItemIDs(t *testing.T) {
 		                     {"item_id":999999,"score":5,"reason":"invented"}]`, real)
 	})
 
-	result, err := Classify(context.Background(), db, clientFor(t, db, model), testConfig(), quietLogger())
+	result, err := Classify(context.Background(), db, clientFor(t, db, model), testConfig(), testRunDate, quietLogger())
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
@@ -286,7 +303,7 @@ func TestClassifyRepairsUnparseableOutput(t *testing.T) {
 		return fmt.Sprintf(`[{"item_id":%d,"score":5,"reason":"fixed"}]`, item)
 	})
 
-	result, err := Classify(context.Background(), db, clientFor(t, db, model), testConfig(), quietLogger())
+	result, err := Classify(context.Background(), db, clientFor(t, db, model), testConfig(), testRunDate, quietLogger())
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
@@ -307,7 +324,7 @@ func TestClassifyGivesUpAfterOneRepair(t *testing.T) {
 
 	model := newFakeModel(t, func(string) string { return "Sorry, I cannot do that." })
 
-	result, err := Classify(context.Background(), db, clientFor(t, db, model), testConfig(), quietLogger())
+	result, err := Classify(context.Background(), db, clientFor(t, db, model), testConfig(), testRunDate, quietLogger())
 	if err != nil {
 		t.Fatalf("Classify should not fail the run: %v", err)
 	}
@@ -513,7 +530,7 @@ func TestFullPipelineProducesASky(t *testing.T) {
 	if _, err := Ingest(context.Background(), db, cfg, quietLogger()); err != nil {
 		t.Fatalf("ingest: %v", err)
 	}
-	if _, err := Classify(context.Background(), db, client, cfg, quietLogger()); err != nil {
+	if _, err := Classify(context.Background(), db, client, cfg, testRunDate, quietLogger()); err != nil {
 		t.Fatalf("classify: %v", err)
 	}
 	if _, err := Synthesize(context.Background(), db, client, cfg, runDate, quietLogger()); err != nil {
@@ -638,7 +655,7 @@ func TestClassifyRunsBatchesConcurrently(t *testing.T) {
 		return scoreAllHigh(prompt)
 	})
 
-	if _, err := Classify(context.Background(), db, clientFor(t, db, model), testConfig(), quietLogger()); err != nil {
+	if _, err := Classify(context.Background(), db, clientFor(t, db, model), testConfig(), testRunDate, quietLogger()); err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
 
@@ -667,7 +684,7 @@ func TestConcurrentClassifyStillHonorsWatermark(t *testing.T) {
 	model := newFakeModel(t, scoreAllHigh)
 	client := clientFor(t, db, model)
 
-	if _, err := Classify(context.Background(), db, client, testConfig(), quietLogger()); err != nil {
+	if _, err := Classify(context.Background(), db, client, testConfig(), testRunDate, quietLogger()); err != nil {
 		t.Fatal(err)
 	}
 	first := model.callCount()
@@ -676,7 +693,7 @@ func TestConcurrentClassifyStillHonorsWatermark(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := Classify(context.Background(), db, client, cfg2, quietLogger())
+	result, err := Classify(context.Background(), db, client, cfg2, testRunDate, quietLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -685,5 +702,190 @@ func TestConcurrentClassifyStillHonorsWatermark(t *testing.T) {
 	}
 	if model.callCount() != first {
 		t.Errorf("second pass made %d extra calls", model.callCount()-first)
+	}
+}
+
+// --- per-topic stats ---
+
+// statsFor reads back what a pass recorded, so the assertions below talk about
+// the stored row rather than the in-memory result they were derived from.
+func statsFor(t *testing.T, db *store.DB, topicID int64) store.TopicHitRate {
+	t.Helper()
+	rates, err := db.TopicHitRates(7)
+	if err != nil {
+		t.Fatalf("TopicHitRates: %v", err)
+	}
+	for _, r := range rates {
+		if r.TopicID == topicID {
+			return r
+		}
+	}
+	t.Fatalf("no stats row for topic %d", topicID)
+	return store.TopicHitRate{}
+}
+
+func TestClassifyRecordsPerTopicStats(t *testing.T) {
+	db := testDB(t)
+	src := seedSource(t, db, "Blog")
+	agents := seedTopic(t, db, "Agents", "Agent harnesses.")
+	weights := seedTopic(t, db, "Open weights", "Open-weight releases.")
+
+	hit := seedItem(t, db, src, "https://x.test/a", "Agent harness patterns")
+	miss := seedItem(t, db, src, "https://x.test/b", "Gardening in August")
+
+	// Only the Agents topic matches, and only one of its two items.
+	model := newFakeModel(t, func(prompt string) string {
+		if strings.Contains(prompt, "TOPIC: Agents") {
+			return fmt.Sprintf(`[{"item_id":%d,"score":5,"reason":"on topic"},
+			                     {"item_id":%d,"score":1}]`, hit, miss)
+		}
+		return fmt.Sprintf(`[{"item_id":%d,"score":2},{"item_id":%d,"score":1}]`, hit, miss)
+	})
+
+	if _, err := Classify(context.Background(), db, clientFor(t, db, model), testConfig(), testRunDate, quietLogger()); err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+
+	// Both topics saw both items: the denominator is per topic, not shared.
+	a := statsFor(t, db, agents)
+	if a.ItemsConsidered != 2 || a.MatchesKept != 1 || a.Batches != 1 {
+		t.Errorf("Agents: considered=%d matched=%d batches=%d, want 2/1/1",
+			a.ItemsConsidered, a.MatchesKept, a.Batches)
+	}
+	if a.HitRate != 0.5 {
+		t.Errorf("Agents hit rate = %v, want 0.5", a.HitRate)
+	}
+
+	w := statsFor(t, db, weights)
+	if w.ItemsConsidered != 2 || w.MatchesKept != 0 {
+		t.Errorf("Open weights: considered=%d matched=%d, want 2/0",
+			w.ItemsConsidered, w.MatchesKept)
+	}
+	// A real zero, not the never-classified sentinel: this definition was given
+	// two items and rejected both.
+	if w.HitRate != 0 {
+		t.Errorf("Open weights hit rate = %v, want exactly 0", w.HitRate)
+	}
+}
+
+// A batch the model never returned parseable JSON for had its items looked at in
+// no meaningful sense. Counting them would blame the topic's definition for a
+// provider's bad afternoon.
+func TestClassifyStatsExcludeFailedBatches(t *testing.T) {
+	db := testDB(t)
+	src := seedSource(t, db, "Blog")
+	good := seedTopic(t, db, "Agents", "Agent harnesses.")
+	broken := seedTopic(t, db, "Broken", "A definition the model chokes on.")
+
+	for i := range 4 {
+		seedItem(t, db, src, fmt.Sprintf("https://x.test/%d", i), fmt.Sprintf("Post %d", i))
+	}
+
+	model := newFakeModel(t, func(prompt string) string {
+		if strings.Contains(prompt, "TOPIC: Broken") {
+			return "I'm afraid I can't do that."
+		}
+		return scoreAllHigh(prompt)
+	})
+
+	result, err := Classify(context.Background(), db, clientFor(t, db, model), testConfig(), testRunDate, quietLogger())
+	if err != nil {
+		t.Fatalf("Classify should survive one topic failing: %v", err)
+	}
+	if len(result.Problems) == 0 {
+		t.Error("no problem recorded for the topic that never parsed")
+	}
+
+	g := statsFor(t, db, good)
+	if g.ItemsConsidered != 4 || g.MatchesKept != 4 {
+		t.Errorf("Agents: considered=%d matched=%d, want 4/4", g.ItemsConsidered, g.MatchesKept)
+	}
+
+	b := statsFor(t, db, broken)
+	if b.ItemsConsidered != 0 || b.Batches != 0 {
+		t.Errorf("Broken: considered=%d batches=%d, want 0/0 — a failed batch is not a denominator",
+			b.ItemsConsidered, b.Batches)
+	}
+	if b.HitRate != -1 {
+		t.Errorf("Broken hit rate = %v, want the -1 unknown sentinel", b.HitRate)
+	}
+}
+
+// An aborted pass leaves its items unclaimed -- the watermark does not advance, so
+// the next run classifies them again. Recording this pass's denominator would count
+// those same items twice and understate every hit rate, so stats and watermark are
+// committed together or not at all.
+func TestClassifyRecordsNoStatsWhenTheCapAborts(t *testing.T) {
+	db := testDB(t)
+	src := seedSource(t, db, "Blog")
+	first := seedTopic(t, db, "Agents", "Agent harnesses.")
+	second := seedTopic(t, db, "Open weights", "Open-weight releases.")
+	seedItem(t, db, src, "https://x.test/a", "A post")
+
+	model := newFakeModel(t, scoreAllHigh)
+
+	// A run cap of one against two topics: one batch lands cleanly and the other
+	// is refused. The successful one is exactly the work that must not be
+	// recorded, because its items go back into the next run's window.
+	client := clientForCapped(t, db, model, 1)
+
+	if _, err := Classify(context.Background(), db, client, testConfig(), testRunDate, quietLogger()); !errors.Is(err, llm.ErrCapReached) {
+		t.Fatalf("Classify error = %v, want ErrCapReached", err)
+	}
+
+	for _, topic := range []int64{first, second} {
+		s := statsFor(t, db, topic)
+		if s.ItemsConsidered != 0 || s.Batches != 0 {
+			t.Errorf("topic %d: considered=%d batches=%d, want 0/0 — an aborted pass records nothing, "+
+				"including the batch that succeeded", topic, s.ItemsConsidered, s.Batches)
+		}
+	}
+
+	// And the watermark stayed put, which is what makes the re-run correct.
+	if mark, ok, _ := db.Setting(store.KeyClassifyWatermark); ok && mark != "" {
+		t.Errorf("watermark = %q, want unset after an aborted pass", mark)
+	}
+}
+
+// A day holds the scheduled run plus any manual refresh. Each pass sees only what
+// the watermark had not covered, so the day's totals have to add up.
+func TestClassifyStatsAccumulateAcrossPassesInADay(t *testing.T) {
+	db := testDB(t)
+	src := seedSource(t, db, "Blog")
+	topic := seedTopic(t, db, "Agents", "Agent harnesses.")
+	seedItem(t, db, src, "https://x.test/a", "First post")
+
+	model := newFakeModel(t, scoreAllHigh)
+	cfg := testConfig()
+
+	if _, err := Classify(context.Background(), db, clientFor(t, db, model), cfg, testRunDate, quietLogger()); err != nil {
+		t.Fatalf("first Classify: %v", err)
+	}
+
+	// A second item arrives, and a second pass picks up only that one. fetched_at
+	// has second resolution and ItemsSince is a strict >, so the arrival has to be
+	// pushed past the first item's timestamp explicitly -- seeded back to back they
+	// land in the same second and the second pass would see nothing.
+	second := seedItem(t, db, src, "https://x.test/b", "Second post")
+	if _, err := db.Exec(
+		`UPDATE items SET fetched_at = datetime('now', '+1 minute') WHERE id = ?`, second); err != nil {
+		t.Fatalf("age the second item: %v", err)
+	}
+
+	cfg2 := cfg
+	mark, _, _ := db.Setting(store.KeyClassifyWatermark)
+	cfg2.ClassifyWatermark = mark
+
+	if _, err := Classify(context.Background(), db, clientFor(t, db, model), cfg2, testRunDate, quietLogger()); err != nil {
+		t.Fatalf("second Classify: %v", err)
+	}
+
+	s := statsFor(t, db, topic)
+	if s.ItemsConsidered != 2 || s.MatchesKept != 2 || s.Batches != 2 {
+		t.Errorf("considered=%d matched=%d batches=%d, want 2/2/2 across two passes",
+			s.ItemsConsidered, s.MatchesKept, s.Batches)
+	}
+	if s.RunDays != 1 {
+		t.Errorf("run days = %d, want 1: both passes ran on the same date", s.RunDays)
 	}
 }

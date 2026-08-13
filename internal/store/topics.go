@@ -133,6 +133,9 @@ func (db *DB) DeleteTopic(id int64) error {
 	if _, err := tx.Exec(`DELETE FROM matches WHERE topic_id = ?`, id); err != nil {
 		return fmt.Errorf("delete topic %d matches: %w", id, err)
 	}
+	if _, err := tx.Exec(`DELETE FROM topic_stats WHERE topic_id = ?`, id); err != nil {
+		return fmt.Errorf("delete topic %d stats: %w", id, err)
+	}
 	res, err := tx.Exec(`DELETE FROM topics WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("delete topic %d: %w", id, err)

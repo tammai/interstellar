@@ -31,6 +31,7 @@ func TestOpenMigratesEmptyDatabase(t *testing.T) {
 	for _, table := range []string{
 		"topics", "sources", "items", "item_sources",
 		"matches", "signals", "signal_items", "llm_calls", "settings",
+		"topic_stats",
 	} {
 		var n int
 		err := db.QueryRow(

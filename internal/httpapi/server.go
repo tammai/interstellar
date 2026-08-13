@@ -63,6 +63,10 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("PUT /api/settings", s.handlePutSettings)
 	mux.HandleFunc("POST /api/model/test", s.handleModelTest)
 
+	// Ahead of GET /api/topics only for readability; the patterns are distinct
+	// literals, so ServeMux does not have to choose between them.
+	mux.HandleFunc("GET /api/topics/stats", s.handleTopicStats)
+
 	mux.HandleFunc("GET /api/topics", s.handleListTopics)
 	mux.HandleFunc("POST /api/topics", s.handleCreateTopic)
 	mux.HandleFunc("PATCH /api/topics/{id}", s.handleUpdateTopic)

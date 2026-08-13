@@ -59,6 +59,7 @@ func Classify(
 	db *store.DB,
 	client *llm.Client,
 	cfg config.Runtime,
+	runDate string,
 	log *slog.Logger,
 ) (ClassifyResult, error) {
 	var result ClassifyResult
@@ -128,7 +129,11 @@ func Classify(
 		dropped  int
 		repaired bool
 		topic    string
-		err      error
+		topicID  int64
+		// considered is the batch size, carried so per-topic stats can count only
+		// the batches that actually came back parseable.
+		considered int
+		err        error
 	}
 
 	jobs := make(chan work)
@@ -141,7 +146,13 @@ func Classify(
 			defer wg.Done()
 			for w := range jobs {
 				verdicts, repaired, err := classifyBatch(ctx, client, w.topic, w.batch, log)
-				out := outcome{repaired: repaired, err: err, topic: w.topic.Title}
+				out := outcome{
+					repaired:   repaired,
+					err:        err,
+					topic:      w.topic.Title,
+					topicID:    w.topic.ID,
+					considered: len(w.batch),
+				}
 				if err == nil {
 					known := itemIDSet(w.batch)
 					for _, v := range verdicts {
@@ -185,6 +196,13 @@ func Classify(
 	}()
 
 	// All database writes happen here, on one goroutine.
+	//
+	// stats accrue per topic as batches land, so a topic's denominator counts the
+	// batches that succeeded and nothing else. Keyed by id rather than title
+	// because two topics may share a name.
+	stats := map[int64]*store.TopicStat{}
+	statOrder := make([]int64, 0, len(ready))
+
 	var fatal error
 	for out := range results {
 		if out.err != nil {
@@ -212,8 +230,21 @@ func Classify(
 			return result, err
 		}
 		result.MatchesKept += len(out.matches)
+
+		st := stats[out.topicID]
+		if st == nil {
+			st = &store.TopicStat{TopicID: out.topicID}
+			stats[out.topicID] = st
+			statOrder = append(statOrder, out.topicID)
+		}
+		st.ItemsConsidered += out.considered
+		st.MatchesKept += len(out.matches)
+		st.Batches++
 	}
 	if fatal != nil {
+		// Deliberately no stats and no watermark. An aborted pass leaves its items
+		// unclaimed, so the next run classifies them again -- recording this pass's
+		// denominator now would count those items twice and understate the topic.
 		return result, fatal
 	}
 
@@ -222,10 +253,17 @@ func Classify(
 			highWater = it.FetchedAt
 		}
 	}
+
+	watermark := ""
 	if highWater != cfg.ClassifyWatermark {
-		if err := db.SetSetting(store.KeyClassifyWatermark, highWater); err != nil {
-			return result, err
-		}
+		watermark = highWater
+	}
+	pass := make([]store.TopicStat, 0, len(statOrder))
+	for _, id := range statOrder {
+		pass = append(pass, *stats[id])
+	}
+	if err := db.CommitClassifyPass(runDate, pass, watermark); err != nil {
+		return result, err
 	}
 
 	log.Info("classify complete",

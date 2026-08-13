@@ -21,6 +21,8 @@ export class Settings {
     this.onRefreshRequested = onRefreshRequested;
     this.status = null;
     this.settings = null;
+    this.quality = null;    // last /api/topics/stats response, for the popover row
+    this.qualityDays = 7;
     this.screen = null;
     this.modelSig = null;   // signature of the last Model render, see refreshModel
 
@@ -102,6 +104,10 @@ export class Settings {
 
   async open(screen) {
     await this.loadSettings();
+    // The popover's quality row needs a number to show. Fetched alongside
+    // settings rather than on every status poll: it changes once a run, and the
+    // popover is the only thing reading it until the screen opens.
+    this.quality = await fetchJSON(`/api/topics/stats?days=${this.qualityDays}`);
     this.popover.classList.add('open');
     el('btnSettings').setAttribute('aria-expanded', 'true');
     this.renderPopover();
@@ -148,6 +154,13 @@ export class Settings {
       {
         key: 'schedule', label: 'Schedule',
         value: s ? `${s.schedule_ingest} · ${s.schedule_synthesize}` : '—',
+      },
+      // The hit rate is the one number here that is measured rather than
+      // configured, so the row shows it directly -- the point is to notice it in
+      // passing, not to have to go looking.
+      {
+        key: 'quality', label: 'Signal quality',
+        value: this.quality?.ready ? formatRate(this.quality.hit_rate) + ' matched' : 'no data yet',
       },
     ];
 
@@ -197,6 +210,7 @@ export class Settings {
       case 'sources': return this.renderSources();
       case 'model': return this.renderModel();
       case 'schedule': return this.renderSchedule();
+      case 'quality': return this.renderQuality();
     }
     return Promise.resolve();
   }
@@ -882,6 +896,115 @@ export class Settings {
       body.append(next);
     }
   }
+
+  // ---------- signal quality ----------
+
+  // The per-topic hit rate: how much of what the classifier read against a topic
+  // it judged relevant.
+  //
+  // This is the only screen showing a measurement rather than a setting, and the
+  // measurement it shows is a denominator that exists nowhere else -- `matches`
+  // keeps score >= 4 verdicts only, so without this the difference between a
+  // topic that matched 2 of 4 items and one that matched 2 of 400 is invisible.
+  // Both look like "2 matches"; only one is a definition that needs rewriting.
+  async renderQuality() {
+    const body = this.sheetFrame('Signal quality',
+      'How much of what the classifier read, it judged relevant. A very low rate usually means a topic definition is drawn too tight; a very high one means it is too loose and everything gets through.');
+
+    const data = await fetchJSON(`/api/topics/stats?days=${this.qualityDays}`);
+    this.quality = data;
+
+    body.append(this.qualityWindowPicker());
+
+    if (!data) {
+      const err = document.createElement('p');
+      err.className = 'test-result bad';
+      err.textContent = 'Could not read the statistics.';
+      body.append(err);
+      return;
+    }
+
+    // Lead with the instance-wide number, then break it down.
+    const summary = document.createElement('div');
+    summary.className = 'quality-summary';
+    if (data.ready) {
+      summary.append(
+        statTile(formatRate(data.hit_rate), 'matched overall'),
+        statTile(String(data.items_considered), 'items read'),
+        statTile(String(data.matches_kept), 'matches kept'),
+        statTile(String(data.batches), 'classifier calls'),
+      );
+    } else {
+      const none = document.createElement('p');
+      none.className = 'note';
+      none.textContent = this.status?.ready === false
+        ? 'Nothing classified yet — finish setting up a model, then run once.'
+        : 'Nothing classified in this window yet. Run a refresh, or widen the window.';
+      summary.append(none);
+    }
+    body.append(summary);
+
+    const rows = data.rows || [];
+    if (!rows.length) {
+      const none = document.createElement('p');
+      none.className = 'note';
+      none.textContent = 'No topics yet.';
+      body.append(none);
+      return;
+    }
+
+    const table = document.createElement('div');
+    table.className = 'quality-table';
+    table.setAttribute('role', 'table');
+    table.setAttribute('aria-label',
+      `Per-topic hit rate over ${data.days} ${data.days === 1 ? 'day' : 'days'}`);
+
+    const head = document.createElement('div');
+    head.className = 'qt-row qt-head';
+    head.setAttribute('role', 'row');
+    for (const [label, cls] of [['Topic', 'qt-topic'], ['Read', 'qt-n'],
+                                ['Matched', 'qt-n'], ['Rate', 'qt-rate'], ['Signals', 'qt-n']]) {
+      const cell = document.createElement('span');
+      cell.className = cls;
+      cell.setAttribute('role', 'columnheader');
+      cell.textContent = label;
+      head.append(cell);
+    }
+    table.append(head);
+
+    for (const row of rows) {
+      table.append(qualityRow(row));
+    }
+    body.append(table);
+
+    const note = document.createElement('p');
+    note.className = 'note';
+    note.textContent =
+      'Read counts only the batches a model answered, so a provider having a bad afternoon does not show up as a badly defined topic. ' +
+      'Matches are raw verdicts; signals are what the synthesizer composed from them and what the sky actually shows.';
+    body.append(note);
+  }
+
+  qualityWindowPicker() {
+    const wrap = document.createElement('div');
+    wrap.className = 'window-picker';
+    wrap.setAttribute('role', 'group');
+    wrap.setAttribute('aria-label', 'Window');
+
+    for (const days of [1, 7, 30]) {
+      const btn = document.createElement('button');
+      btn.className = 'btn-quiet' + (days === this.qualityDays ? ' on' : '');
+      btn.setAttribute('aria-pressed', String(days === this.qualityDays));
+      btn.textContent = days === 1 ? 'Today' : `${days} days`;
+      btn.onclick = () => {
+        if (days === this.qualityDays) return;
+        this.qualityDays = days;
+        this.rerenderCurrent();
+      };
+      wrap.append(btn);
+    }
+    return wrap;
+  }
 }
 
 // ---------- helpers ----------
@@ -909,6 +1032,89 @@ async function fetchJSON(url, options = {}) {
     console.error(err);
     return null;
   }
+}
+
+// formatRate renders a 0..1 fraction as a percentage, and the -1 sentinel as an
+// em dash. Those are genuinely different answers: a topic that has never been
+// classified is not a topic that matches nothing, and rendering both as "0%"
+// sends the owner off to rewrite a definition that was never used.
+function formatRate(rate) {
+  if (rate == null || rate < 0) return '—';
+  const pct = rate * 100;
+  // One decimal below 10%, where the interesting differences live: 0.4% and 2%
+  // are very different definitions and both round to the same whole number.
+  return (pct < 10 && pct > 0 ? pct.toFixed(1) : Math.round(pct)) + '%';
+}
+
+function statTile(value, label) {
+  const tile = document.createElement('div');
+  tile.className = 'stat-tile';
+
+  const v = document.createElement('span');
+  v.className = 'stat-value';
+  v.textContent = value;
+
+  const l = document.createElement('span');
+  l.className = 'stat-label';
+  l.textContent = label;
+
+  tile.append(v, l);
+  return tile;
+}
+
+// qualityRow is one topic. Flags the two shapes worth acting on: a definition
+// that was never used, and one that is plainly mis-drawn.
+function qualityRow(row) {
+  // Not named `el`: that is the module's getElementById helper, and shadowing it
+  // inside a function that also builds DOM is a trap waiting for the next edit.
+  const tr = document.createElement('div');
+  tr.className = 'qt-row';
+  tr.setAttribute('role', 'row');
+
+  const name = document.createElement('span');
+  name.className = 'qt-topic';
+  name.setAttribute('role', 'cell');
+  name.textContent = row.title;
+  if (!row.active) name.append(quietTag('paused'));
+  if (row.needs_setup) name.append(quietTag('no definition'));
+
+  const cells = [
+    [String(row.items_considered || '—'), 'qt-n'],
+    [String(row.matches_kept || (row.items_considered ? '0' : '—')), 'qt-n'],
+    [formatRate(row.hit_rate), 'qt-rate'],
+    [String(row.signals || (row.items_considered ? '0' : '—')), 'qt-n'],
+  ];
+
+  tr.append(name);
+  for (const [text, cls] of cells) {
+    const cell = document.createElement('span');
+    cell.className = cls;
+    cell.setAttribute('role', 'cell');
+    cell.textContent = text;
+    tr.append(cell);
+  }
+
+  // Only judge a topic once there is enough behind the number to judge it on. A
+  // 0% over three items is noise; over three hundred it is a finding.
+  const rate = row.hit_rate;
+  if (row.items_considered >= 50 && rate >= 0) {
+    const verdict = tr.querySelector('.qt-rate');
+    if (rate < 0.02) {
+      verdict.classList.add('bad');
+      verdict.title = 'Almost nothing matches. The definition may be too narrow, or the sources may not cover this topic.';
+    } else if (rate > 0.5) {
+      verdict.classList.add('loose');
+      verdict.title = 'More than half of everything read matches. The definition is probably too broad to be useful.';
+    }
+  }
+  return tr;
+}
+
+function quietTag(text) {
+  const tag = document.createElement('span');
+  tag.className = 'qt-tag';
+  tag.textContent = text;
+  return tag;
 }
 
 function shortModel(ref) {

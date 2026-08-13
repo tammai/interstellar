@@ -181,7 +181,7 @@ func (r *Runner) execute(ctx context.Context) {
 	client := llm.NewClient(llmCfg, r.db, runDate, r.log)
 
 	r.setStage(StageClassifying)
-	classify, err := Classify(ctx, r.db, client, cfg, r.log)
+	classify, err := Classify(ctx, r.db, client, cfg, runDate, r.log)
 	r.mu.Lock()
 	r.state.Classify = &classify
 	r.state.LLMCalls = client.Guard().UsedThisRun()
