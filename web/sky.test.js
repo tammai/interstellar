@@ -7,7 +7,10 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { groupSignals, relax, passesFilter, bigCutFor, Sky } from './assets/sky.js';
+import {
+  groupSignals, relax, passesFilter, bigCutFor, Sky,
+  loadShow, SKY_LAYERS,
+} from './assets/sky.js';
 
 const signal = (over = {}) => ({
   id: 1, topic_id: 1, title: 'A story', reason: 'because',
@@ -286,4 +289,128 @@ test('nothing hoverable is ever culled', () => {
     const justHittable = { x: -r * 1.7 + 0.5, y: 400, r };
     assert.equal(onScreen(justHittable, b), true, `r=${r} was hittable but not drawn`);
   }
+});
+
+// Sky layer toggles. These are view preferences rather than configuration, so
+// the risks worth pinning are not "does the switch work" but the two ways a
+// preference can quietly break something: a stored value reaching the renderer
+// unchecked, and the motion switch defeating a §10 guarantee.
+
+const fakeStore = (initial) => {
+  let value = initial;
+  return {
+    getItem: () => value,
+    setItem: (_k, v) => { value = v },
+    read: () => value,
+  };
+};
+
+test('every layer is on before anything is stored', () => {
+  const show = loadShow(fakeStore(null));
+  assert.deepEqual(SKY_LAYERS.map((k) => show[k]), SKY_LAYERS.map(() => true),
+    'the approved sky is what you get before touching a switch');
+});
+
+test('a stored preference is read back', () => {
+  const show = loadShow(fakeStore(JSON.stringify({ dust: false, meteors: false })));
+  assert.equal(show.dust, false);
+  assert.equal(show.meteors, false);
+  assert.equal(show.grid, true, 'keys absent from the store keep their default');
+});
+
+test('unparseable or hostile storage cannot hide a layer', () => {
+  // Unparseable is the same as unset. The failure this guards against is a
+  // corrupted key blanking the sky with no way to tell why.
+  for (const raw of ['not json', '[]', 'null', '{"dust":"no"}', '{"dust":0}']) {
+    const show = loadShow(fakeStore(raw));
+    assert.equal(show.dust, true, `${raw} must not turn dust off`);
+  }
+});
+
+test('an unknown key in storage does not become a layer', () => {
+  const show = loadShow(fakeStore(JSON.stringify({ nebula: false })));
+  assert.equal(show.nebula, undefined, 'only layers something actually draws exist');
+  assert.deepEqual(Object.keys(show).sort(), [...SKY_LAYERS].sort());
+});
+
+test('setShow rejects a layer name nothing draws', () => {
+  const self = { show: loadShow(fakeStore(null)), buildLayers: () => {} };
+  assert.equal(Sky.prototype.setShow.call(self, 'nebula', false), false);
+  assert.equal(self.show.nebula, undefined);
+});
+
+test('turning the Milky Way off re-bakes the background, and nothing else does', () => {
+  // The band is baked into bgLayer rather than drawn per frame, so it is the one
+  // toggle that needs more than the next frame to take effect.
+  let bakes = 0;
+  const self = { show: loadShow(fakeStore(null)), buildLayers: () => { bakes++ } };
+
+  Sky.prototype.setShow.call(self, 'dust', false);
+  assert.equal(bakes, 0, 'a per-frame guard must not pay for a re-bake');
+
+  Sky.prototype.setShow.call(self, 'milkyway', false);
+  assert.equal(bakes, 1);
+});
+
+test('the motion switch can turn motion off but never on', () => {
+  // §10: prefers-reduced-motion disables twinkle, pulse, glint and easing. A
+  // settings toggle must not be able to override the system preference, so the
+  // gate ORs them rather than letting the switch decide.
+  const gate = Object.getOwnPropertyDescriptor(Sky.prototype, 'still').get;
+
+  assert.equal(gate.call({ show: { motion: true } }), false, 'motion on, no system preference');
+  assert.equal(gate.call({ show: { motion: false } }), true, 'the switch alone stills the sky');
+});
+
+// Idle skipping. The risk here is not that it fails to skip — that only costs
+// frames — but that it skips a frame it needed to draw, which leaves a stale
+// image on screen with nothing to indicate why.
+
+const easer = (view, viewTarget, still = true) =>
+  ({ view, viewTarget, still });
+
+test('a settled view reports no movement, so the frame can be skipped', () => {
+  const self = easer({ x: 10, y: 20, s: 2 }, { x: 10, y: 20, s: 2 });
+  assert.equal(Sky.prototype.easeView.call(self), false);
+});
+
+test('the ease snaps once the remainder stops being visible', () => {
+  // Asymptotic easing never reaches its target, so without a snap the sky would
+  // repaint forever over thousandths of a pixel. The frame it snaps on still
+  // counts as movement, because the view did change.
+  const self = easer({ x: 10.1, y: 20, s: 2 }, { x: 10, y: 20, s: 2 });
+  assert.equal(Sky.prototype.easeView.call(self), true);
+  assert.deepEqual(self.view, { x: 10, y: 20, s: 2 }, 'snapped exactly onto the target');
+  assert.equal(Sky.prototype.easeView.call(self), false, 'and is settled from then on');
+});
+
+test('a real pan still eases rather than snapping', () => {
+  const self = easer({ x: 0, y: 0, s: 1 }, { x: 100, y: 0, s: 1 }, false);
+  assert.equal(Sky.prototype.easeView.call(self), true);
+  assert.equal(self.view.x, 30, 'eased at 0.3, not jumped to the target');
+});
+
+test('reduced motion snaps the view instead of easing it', () => {
+  // §10: prefers-reduced-motion disables parallax easing.
+  const self = easer({ x: 0, y: 0, s: 1 }, { x: 100, y: 0, s: 1 }, true);
+  Sky.prototype.easeView.call(self);
+  assert.equal(self.view.x, 100);
+});
+
+test('a scale change too small to move a star does not count as movement', () => {
+  const self = easer({ x: 0, y: 0, s: 1 }, { x: 0, y: 0, s: 1.0001 });
+  assert.equal(Sky.prototype.easeView.call(self), true, 'snaps once');
+  assert.equal(self.view.s, 1.0001);
+  assert.equal(Sky.prototype.easeView.call(self), false);
+});
+
+test('changing a layer marks the sky for a repaint', () => {
+  const self = {
+    show: loadShow(fakeStore(null)),
+    buildLayers: () => {},
+    dirty: false,
+  };
+  Sky.prototype.setShow.call(self, 'grid', false);
+  assert.equal(self.dirty, true,
+    'a layer switched off must repaint, or the old layer stays on screen');
 });

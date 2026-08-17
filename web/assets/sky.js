@@ -18,6 +18,67 @@ const motionQuery = typeof matchMedia === 'function'
 let REDUCED_MOTION = motionQuery ? motionQuery.matches : false;
 motionQuery?.addEventListener?.('change', (e) => { REDUCED_MOTION = e.matches });
 
+// Which layers of the sky get drawn.
+//
+// These are view preferences, not configuration. Nothing here reaches a run, is
+// read by the pipeline, or changes what was ingested, matched or composed — so
+// they live in the browser rather than the `settings` table, and they apply on
+// the next frame rather than the next run. Putting them in `settings` would mean
+// a migration and new API surface to express "this reader prefers less scenery".
+//
+// Every layer defaults on: the sky §6 approved is the one you get before touching
+// anything, and a stale key must never be able to hide a layer you did not turn off.
+const SHOW_KEY = 'interstellar.sky.show';
+const DEFAULT_SHOW = {
+  dust: true,        // the two parallax dust layers
+  milkyway: true,    // the galactic band, baked into bgLayer
+  grid: true,        // the celestial graticule
+  lines: true,       // constellation joins and shared-star ties (never the labels)
+  meteors: true,     // the occasional streak
+  motion: true,      // twinkle, pulse, glint rotation, view easing
+};
+
+export const SKY_LAYERS = Object.keys(DEFAULT_SHOW);
+
+function storage() {
+  // Guarded so the module still imports outside a browser (see sky.test.js), and
+  // so a locked-down profile that throws on localStorage access cannot take the
+  // whole star map down with it.
+  try {
+    return typeof localStorage === 'object' && localStorage ? localStorage : null;
+  } catch {
+    return null;
+  }
+}
+
+export function loadShow(store) {
+  const ls = store === undefined ? storage() : store;
+  const show = { ...DEFAULT_SHOW };
+  if (!ls) return show;
+  try {
+    const raw = JSON.parse(ls.getItem(SHOW_KEY) || '{}');
+    // Whitelisted key by key rather than merged wholesale. A hand-edited or
+    // stale value must not introduce a layer name nothing draws, and a
+    // non-boolean must not become a layer state by being truthy.
+    for (const k of SKY_LAYERS) {
+      if (typeof raw?.[k] === 'boolean') show[k] = raw[k];
+    }
+  } catch {
+    // Unparseable is the same as unset: draw everything.
+  }
+  return show;
+}
+
+export function saveShow(show, store) {
+  const ls = store === undefined ? storage() : store;
+  if (!ls) return;
+  try {
+    ls.setItem(SHOW_KEY, JSON.stringify(show));
+  } catch {
+    // A full or blocked quota costs the preference, not the frame.
+  }
+}
+
 // Colour temperature palette. Real skies are not uniformly white, and the
 // variation is what stops a field of stars reading as a scatter plot.
 const TEMPS = [
@@ -60,6 +121,10 @@ export class Sky {
     this.hoverStar = null;
     this.hotThreshold = 3;
 
+    // Read before the first layout(): buildLayers bakes the Milky Way into
+    // bgLayer, so this has to be known before that bake, not after it.
+    this.show = loadShow();
+
     // Interaction gate. The pan/hover listeners live on `window`, because a drag
     // that leaves the canvas should keep panning — but that also means the list
     // overlay does not shield them, and a mouse moved over a list row was firing
@@ -78,6 +143,23 @@ export class Sky {
     this.constellations = [];
     this.bigCut = Infinity;
     this.drawn = 0;                          // stars blitted last frame, see onScreen
+
+    // Frame-rate meter for the Layers panel. Counted inside frame() rather than
+    // by a second rAF loop, which would measure its own scheduling alongside the
+    // sky's and cost a callback per frame to do it.
+    this.fps = 0;
+    this.fpsFrames = 0;
+    this.fpsSince = 0;
+
+    // Idle skipping. A sky with motion off, a settled view and no pointer
+    // activity is identical frame to frame, and repainting it meant overwriting
+    // the whole backing store — 4.4 million device pixels on a 2x display —
+    // sixty times a second to produce the same image. `dirty` is set by anything
+    // that changes what a frame would look like; `idle` is what the last frame
+    // actually did, for the readout.
+    this.dirty = true;
+    this.idle = false;
+    this.wasStill = null;   // reconciled on the first frame, see frame()
 
     // Latest pointer position, consumed once per frame by updateHover rather
     // than hit-tested per mousemove event.
@@ -150,11 +232,20 @@ export class Sky {
     // treats a null lastNow as "start the clock here" rather than integrating
     // across however long the tab was hidden.
     this.lastNow = null;
+    // A resumed loop measures from here; averaging across the gap would report a
+    // frame rate for time the sky spent not drawing at all.
+    this.fpsFrames = 0;
+    this.fpsSince = 0;
+    // A resumed loop has nothing on the canvas it can trust: the tab may have
+    // been backgrounded for hours, or List view may have covered it.
+    this.dirty = true;
     this.raf = requestAnimationFrame((t) => this.frame(t));
   }
 
   stop() {
     this.running = false;
+    this.fps = 0;
+    this.idle = false;
     if (this.raf !== null) {
       cancelAnimationFrame(this.raf);
       this.raf = null;
@@ -177,6 +268,51 @@ export class Sky {
     this.visible = on;
     if (on) this.start();
     else this.stop();
+  }
+
+  // The motion gate, replacing what used to be a bare REDUCED_MOTION read.
+  //
+  // The OS preference wins by construction: this ORs the two, so the settings
+  // toggle can turn motion off but never on. §10 requires prefers-reduced-motion
+  // to disable twinkle, pulse, glint and parallax easing, and that guarantee must
+  // not be defeatable from a settings sheet.
+  get still() { return REDUCED_MOTION || !this.show.motion }
+
+  // Flip one layer on or off.
+  //
+  // Everything except the Milky Way is a per-frame guard and needs nothing but
+  // the next frame. The band is baked into bgLayer, so turning it off means
+  // re-baking that layer rather than skipping a draw call.
+  setShow(name, on) {
+    if (!SKY_LAYERS.includes(name)) return false;
+    this.show[name] = !!on;
+    saveShow(this.show);
+    if (name === 'milkyway') this.buildLayers();
+    this.dirty = true;
+    return true;
+  }
+
+  // Ease the view toward its target, and report whether it actually moved.
+  //
+  // The snap is what makes idle skipping possible at all: the ease is asymptotic,
+  // so `view` never becomes exactly `viewTarget`, and a sky that has visibly
+  // stopped would otherwise keep repainting forever over a difference measured in
+  // thousandths of a pixel. The threshold is half a device pixel of translation,
+  // and a scale step too small to move any star by that much.
+  easeView() {
+    const t = this.viewTarget, v = this.view;
+    const dx = t.x - v.x, dy = t.y - v.y, ds = t.s - v.s;
+
+    if (Math.abs(dx) < 0.25 && Math.abs(dy) < 0.25 && Math.abs(ds) < 0.0005) {
+      if (dx === 0 && dy === 0 && ds === 0) return false;
+      v.x = t.x; v.y = t.y; v.s = t.s;
+      return true;
+    }
+
+    // Reduced motion snaps rather than eases (§10).
+    const e = this.still ? 1 : 0.3;
+    v.x += dx * e; v.y += dy * e; v.s += ds * e;
+    return true;
   }
 
   // setData takes the /api/sky payload and rebuilds the scene.
@@ -306,6 +442,9 @@ export class Sky {
     // different-DPI display invalidates them.
     this.sprites.clear();
     this.buildLayers();
+
+    // Everything on screen was just rebuilt.
+    this.dirty = true;
   }
 
   // ---------- filters ----------
@@ -348,6 +487,7 @@ export class Sky {
       this.onHover(null);
     }
     this.buildConstellations();
+    this.dirty = true;
   }
 
   // Group `shown` by topic once, instead of once per topic per frame.
@@ -419,9 +559,9 @@ export class Sky {
     const c = hot ? HOT : s.temp;
 
     // Organic twinkle from two incommensurate sines, so it never visibly loops.
-    const tw = (REDUCED_MOTION || flat) ? 1
+    const tw = (this.still || flat) ? 1
       : 0.9 + 0.06 * Math.sin(now / 860 + s.phase) + 0.04 * Math.sin(now / 347 + s.ph2);
-    const pulse = hot && !REDUCED_MOTION && !flat ? 1 + 0.2 * Math.sin(now / 520 + s.phase) : 1;
+    const pulse = hot && !this.still && !flat ? 1 + 0.2 * Math.sin(now / 520 + s.phase) : 1;
     const hover = (!flat && this.hoverStar === s) ? 1.2 : 1;
     const R = s.r * tw * hover;
     const a = alpha === undefined ? s.a : alpha;
@@ -478,7 +618,7 @@ export class Sky {
 
       // Secondary diagonals on the largest stars; on hot ones they rotate.
       if (s.r > 9 && want('diagonals')) {
-        const rot = hot && !REDUCED_MOTION && !flat ? now / 9000 : 0;
+        const rot = hot && !this.still && !flat ? now / 9000 : 0;
         const d = L * 0.5;
         const ca = Math.cos(Math.PI / 4 + rot + spinBase);
         const sb = Math.sin(Math.PI / 4 + rot + spinBase);
@@ -605,10 +745,16 @@ export class Sky {
     ctx.font = this._fontStr;
     ctx.textAlign = 'center';
 
+    // Lines are toggleable; labels are not. §10 requires an empty topic to render
+    // "No signal today" rather than disappear, and the label is the only place
+    // the sky says that — so a switch that hid it would turn an acceptance
+    // criterion off. Joins and ties carry no such guarantee.
+    const lines = this.show.lines;
+
     for (const c of this.constellations) {
       const { centre, pts } = c;
 
-      if (pts.length > 1) {
+      if (lines && pts.length > 1) {
         ctx.strokeStyle = 'rgba(56,78,140,.4)';
         ctx.lineWidth = inv;
         ctx.setLineDash([inv, 5 * inv]);
@@ -623,7 +769,7 @@ export class Sky {
 
       // A shared star gets its own dashed tie to each constellation it belongs
       // to, so "between constellations" reads as membership, not as drift.
-      if (c.shared.length) {
+      if (lines && c.shared.length) {
         ctx.strokeStyle = 'rgba(56,78,140,.28)';
         ctx.lineWidth = inv;
         ctx.setLineDash([inv, 4 * inv]);
@@ -648,9 +794,22 @@ export class Sky {
 
   // Dust is 200 particles across two parallax layers. Drawn naively that is 200
   // fillStyle assignments a frame — each one a string build plus a CSS colour
-  // parse. Bucketing the twinkled alpha to 1/24ths collapses it to one path and
-  // one style per bucket; the quantization is finer than the eye resolves on a
-  // 1px dot.
+  // parse. Bucketing the twinkled alpha to 1/24ths collapses that to ~9 styles
+  // per layer; the quantization is finer than the eye resolves on a 1px dot.
+  //
+  // The bucket decides the *colour*, not the path. Collecting each bucket's dots
+  // into one path and issuing a single fill() looks like the same optimization
+  // carried one step further, and it was measured to cost two thirds of the frame
+  // rate: 21fps against 55 for the identical dots filled one at a time, in both a
+  // GPU window and a software-rasterized one. The dots in a bucket are scattered
+  // across the whole sky, so one path per bucket means ~18 fills a frame whose
+  // bounding boxes each span the entire canvas, and the rasterizer sets up over
+  // the box rather than over the ink. Batching draw calls is usually the right
+  // instinct; batching *geometry this sparse* into one path inverts it.
+  //
+  // Per-dot fills also blend overlaps twice where one path with nonzero winding
+  // merged them. At these radii, scattered over 1.6x the viewport, that is not a
+  // visible difference.
   drawDust(list, parallax, now) {
     const ctx = this.ctx;
     ctx.save();
@@ -660,7 +819,7 @@ export class Sky {
 
     const buckets = new Map();
     for (const d of list) {
-      const tw = REDUCED_MOTION ? 1 : 0.55 + 0.45 * Math.sin((now / 1500) * d.sp + d.ph);
+      const tw = this.still ? 1 : 0.55 + 0.45 * Math.sin((now / 1500) * d.sp + d.ph);
       const q = Math.max(1, Math.round(d.a * tw * 24));
       let b = buckets.get(q);
       if (!b) buckets.set(q, (b = []));
@@ -668,12 +827,11 @@ export class Sky {
     }
     for (const [q, group] of buckets) {
       ctx.fillStyle = `rgba(200,215,245,${q / 24})`;
-      ctx.beginPath();
       for (const d of group) {
-        ctx.moveTo(d.x + d.r, d.y);
+        ctx.beginPath();
         ctx.arc(d.x, d.y, d.r, 0, 7);
+        ctx.fill();
       }
-      ctx.fill();
     }
     ctx.restore();
   }
@@ -793,7 +951,7 @@ export class Sky {
     c.fillStyle = neb;
     c.fillRect(0, 0, this.W, this.H);
 
-    this.drawMilkyWay(c);
+    if (this.show.milkyway) this.drawMilkyWay(c);
 
     // Corner falloff. The single cheapest depth cue there is: a flat field reads
     // as paper, a darkened rim reads as a dome.
@@ -835,7 +993,7 @@ export class Sky {
   // easing, and a meteor is the most motion on the screen; exempting it because it
   // is decorative would be exactly backwards.
   updateMeteor(now) {
-    if (REDUCED_MOTION) { this.meteor = null; return }
+    if (this.still) { this.meteor = null; return }
 
     if (!this.nextMeteor) {
       // Don't fire one the instant the page opens; let the sky settle first.
@@ -931,17 +1089,36 @@ export class Sky {
 
     const ctx = this.ctx;
 
-    // Ease toward the target. Reduced motion snaps instead. The rate is a
-    // responsiveness/smoothness trade: too low and a zoom feels like it lags the
-    // wheel, which reads as the app being slow rather than as easing.
-    const e = REDUCED_MOTION ? 1 : 0.3;
-    this.view.x += (this.viewTarget.x - this.view.x) * e;
-    this.view.y += (this.viewTarget.y - this.view.y) * e;
-    this.view.s += (this.viewTarget.s - this.view.s) * e;
+    // Ease toward the target. The rate is a responsiveness/smoothness trade: too
+    // low and a zoom feels like it lags the wheel, which reads as the app being
+    // slow rather than as easing.
+    const moved = this.easeView();
 
     // After the ease, before the draw: the hit test then uses the same view the
     // frame is about to render, and hoverStar stays consistent within the frame.
     this.updateHover();
+
+    // A change in the motion gate repaints once, to settle the stars at rest or
+    // to start them moving again. This covers the system preference flipping
+    // mid-session as well as the Layers switch.
+    if (this.still !== this.wasStill) {
+      this.wasStill = this.still;
+      this.dirty = true;
+    }
+
+    // The skip. Motion on means every star twinkles, so that alone forces a
+    // repaint every frame; the meteor needs no separate test, because
+    // updateMeteor never spawns one while `still` is true.
+    if (this.still && !moved && !this.dirty) {
+      this.idle = true;
+      this.fps = 0;
+      this.fpsFrames = 0;
+      this.fpsSince = 0;
+      this.lastNow = now;
+      return;
+    }
+    this.idle = false;
+    this.dirty = false;
 
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
     ctx.globalAlpha = 1;
@@ -951,19 +1128,28 @@ export class Sky {
     ctx.drawImage(this.bgLayer, 0, 0, this.W, this.H);
     ctx.globalCompositeOperation = 'source-over';
 
-    this.drawDust(this.dustFar, 0.25, now);
-    this.drawDust(this.dustNear, 0.55, now);
+    if (this.show.dust) {
+      this.drawDust(this.dustFar, 0.25, now);
+      this.drawDust(this.dustNear, 0.55, now);
+    }
 
     // Behind the world layer on purpose: a meteor crossing *in front of* the
     // signals would compete with them for attention.
-    this.updateMeteor(now);
-    this.drawMeteor();
+    //
+    // Switched off, the streak in flight is dropped rather than left frozen
+    // mid-arc — updateMeteor owns that state and is the thing being skipped.
+    if (this.show.meteors) {
+      this.updateMeteor(now);
+      this.drawMeteor();
+    } else {
+      this.meteor = null;
+    }
 
     // World layer.
     ctx.setTransform(this.dpr, 0, 0, this.dpr, this.view.x * this.dpr, this.view.y * this.dpr);
     ctx.scale(this.view.s, this.view.s);
 
-    ctx.drawImage(this.gridLayer, 0, 0, this.W, this.H);
+    if (this.show.grid) ctx.drawImage(this.gridLayer, 0, 0, this.W, this.H);
     this.drawConstellations();
 
     // Every star's gradient work blits; every star's core is drawn exactly. The
@@ -978,7 +1164,7 @@ export class Sky {
       if (s === hovered) continue;
       if (!this.onScreen(s, bounds)) continue;
       drawn++;
-      const tw = REDUCED_MOTION ? 1
+      const tw = this.still ? 1
         : 0.9 + 0.06 * Math.sin(now / 860 + s.phase) + 0.04 * Math.sin(now / 347 + s.ph2);
 
       if (this.isHot(s.g)) { hotList.push({ s, tw }); continue }
@@ -991,11 +1177,11 @@ export class Sky {
 
     // Hot stars after the field, so they sit on top of it.
     for (const { s, tw } of hotList) {
-      const pulse = REDUCED_MOTION ? 1 : 1 + 0.2 * Math.sin(now / 520 + s.phase);
+      const pulse = this.still ? 1 : 1 + 0.2 * Math.sin(now / 520 + s.phase);
       this.blit(ctx, s, 'pulsing', tw * pulse, s.a);
 
       if (s.r > 9) {
-        const rot = REDUCED_MOTION ? 0 : now / 9000;
+        const rot = this.still ? 0 : now / 9000;
         ctx.save();
         ctx.translate(s.x, s.y);
         ctx.rotate(rot + s.spin);
@@ -1015,6 +1201,16 @@ export class Sky {
     // point of culling is invisible when it works, and this is how you check it
     // from the console rather than by trusting the frame rate.
     this.drawn = drawn;
+
+    // Averaged over half a second. Per-frame deltas swing far too much to read,
+    // and the panel only repaints twice a second anyway.
+    this.fpsFrames++;
+    if (!this.fpsSince) this.fpsSince = now;
+    else if (now - this.fpsSince >= 500) {
+      this.fps = Math.round((this.fpsFrames * 1000) / (now - this.fpsSince));
+      this.fpsFrames = 0;
+      this.fpsSince = now;
+    }
 
     // Last, so updateMeteor above measured against the previous frame.
     this.lastNow = now;
@@ -1038,6 +1234,7 @@ export class Sky {
     if (!p.over) {
       if (this.hoverStar) {
         this.hoverStar = null;
+        this.dirty = true;
         this.canvas.classList.remove('pointing');
         this.onHover(null);
       }
@@ -1046,7 +1243,14 @@ export class Sky {
 
     const w = this.screenToWorld(p.x, p.y);
     const s = this.starAtWorld(w.x, w.y);
-    this.hoverStar = s;
+    // Only a *change* of hovered star changes the picture — the hovered one is
+    // drawn 1.2x through the direct path. Moving the pointer within the same
+    // star, or across empty sky, repaints nothing. onHover still fires either
+    // way: the tooltip follows the cursor, and it is DOM, not canvas.
+    if (s !== this.hoverStar) {
+      this.hoverStar = s;
+      this.dirty = true;
+    }
     this.canvas.classList.toggle('pointing', !!s);
     this.onHover(s ? s.g : null, p.x, p.y);
   }
@@ -1061,6 +1265,7 @@ export class Sky {
       this.pointer = null;
       this.pointerDirty = false;
       this.hoverStar = null;
+      this.dirty = true;
       this.canvas.classList.remove('pointing', 'grabbing');
       this.onHover(null);
     }
@@ -1183,6 +1388,7 @@ export class Sky {
       // pointer just left.
       this.pointer = null;
       this.pointerDirty = false;
+      if (this.hoverStar) this.dirty = true;
       this.hoverStar = null;
       this.onHover(null);
     });

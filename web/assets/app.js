@@ -1,7 +1,7 @@
 // Entry point: loads the sky, keeps status in view, and wires the two views
 // together.
 
-import { Sky } from './sky.js';
+import { Sky, SKY_LAYERS } from './sky.js';
 import { Panel } from './panel.js';
 import { renderList } from './list.js';
 import { Settings } from './settings.js';
@@ -279,6 +279,80 @@ for (const [id, name] of FILTERS) {
     updateEmptyState();
   };
 }
+
+// Sky layers. Deliberately the same kind of control as the legend: each row names
+// one thing the canvas draws and switches it. These are view preferences the Sky
+// owns and persists itself — nothing here reaches a run, so there is no endpoint
+// behind them and no "applies on the next run" to explain.
+//
+// Rows are built from the Sky's own layer list rather than a copy, so a layer
+// cannot be added to the renderer and silently missing from the panel.
+const LAYER_LABELS = {
+  dust: 'Parallax dust',
+  milkyway: 'Milky Way band',
+  grid: 'Celestial grid',
+  lines: 'Constellation lines',
+  meteors: 'Meteors',
+  motion: 'Twinkle & motion',
+};
+
+const layersEl = el('layers');
+const layersList = el('layersList');
+
+for (const key of SKY_LAYERS) {
+  const btn = document.createElement('button');
+  btn.className = 'row';
+  btn.type = 'button';
+  btn.setAttribute('aria-pressed', String(sky.show[key]));
+  btn.setAttribute('aria-label', `${LAYER_LABELS[key]} — show or hide`);
+
+  const dot = document.createElement('span');
+  dot.className = 'ly-dot';
+  dot.setAttribute('aria-hidden', 'true');
+
+  const txt = document.createElement('span');
+  txt.className = 'txt';
+  txt.textContent = LAYER_LABELS[key];
+
+  btn.append(dot, txt);
+  btn.onclick = () => {
+    const next = btn.getAttribute('aria-pressed') !== 'true';
+    if (sky.setShow(key, next)) btn.setAttribute('aria-pressed', String(next));
+  };
+  layersList.append(btn);
+}
+
+// Frame rate, for information. It reads the count the sky already keeps rather
+// than starting a second rAF loop, which would measure its own scheduling as
+// much as the sky's — and `drawn` beside it is the culling diagnostic: when the
+// two diverge under zoom, the cull is doing its job.
+const fpsRow = document.createElement('div');
+fpsRow.className = 'row note';
+fpsRow.id = 'layersFps';
+layersList.append(fpsRow);
+
+// "idle" rather than a bare 0, which reads as broken: with motion off and the
+// view settled the sky is deliberately not repainting, because every frame would
+// be identical to the one already on screen.
+const paintFps = () => {
+  fpsRow.textContent = !sky.running ? 'not drawing'
+    : sky.idle ? '0 fps · idle'
+    : `${sky.fps || '—'} fps · ${sky.drawn} drawn`;
+};
+
+// Polled only while the panel is open. A collapsed panel costs nothing, which
+// matters for a readout whose whole purpose is not to affect what it measures.
+let fpsTimer = null;
+el('layersToggle').onclick = () => {
+  const open = layersEl.classList.toggle('open');
+  el('layersToggle').setAttribute('aria-expanded', String(open));
+  clearInterval(fpsTimer);
+  fpsTimer = null;
+  if (open) {
+    paintFps();
+    fpsTimer = setInterval(paintFps, 500);
+  }
+};
 
 el('zin').onclick = () => sky.zoomAt(innerWidth / 2, innerHeight / 2, 1.7);
 el('zout').onclick = () => sky.zoomAt(innerWidth / 2, innerHeight / 2, 1 / 1.7);

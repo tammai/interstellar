@@ -70,10 +70,50 @@
   <div class="row note"><span class="lg-star tiny" aria-hidden="true"></span><span class="txt">Constellation = your topic</span></div>
 </div>
 
+<!-- Sky layers: the same overlay control as the legend, in the opposite corner.
+     Each row names one thing the canvas draws and switches it off.
+
+     Collapsed by default, unlike the legend, because six permanent rows here
+     would sit on top of the upper-left constellation — the legend can be always-on
+     at the bottom because nothing is laid out there. Rows are built in app.js from
+     the Sky's own layer list, so a layer cannot exist in one place and not the other.
+
+     Opened and closed by class, not by `hidden`: .rows declares a display, and an
+     author display beats the UA [hidden] rule — the trap web/css.test.js exists to
+     catch. -->
+<div class="layers" id="layers" role="group" aria-label="Sky layers">
+  <button class="row head" id="layersToggle" type="button" aria-expanded="false" aria-controls="layersList">
+    <svg class="ly-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="m9 6 6 6-6 6"/>
+    </svg>
+    <span class="txt">Layers</span>
+  </button>
+  <div class="rows" id="layersList"></div>
+</div>
+
+<!-- Inline SVG, matching the header's icon set: same 24x24 box, same 1.8 stroke,
+     same currentColor. These were text characters, and the reset glyph U+2302 is
+     not in the bundled Noto Sans subset — Chrome rendered it in Menlo, which is
+     both why it needed a hand-written font-size to look right and why it would
+     have been tofu on a machine without a system fallback for it. §6 requires the
+     UI to render offline from bundled fonts; an icon must not depend on one. -->
 <div class="nav">
-  <button id="zin" aria-label="Zoom in">+</button>
-  <button id="zout" aria-label="Zoom out">−</button>
-  <button id="zreset" aria-label="Reset view" style="font-size:12px">⌂</button>
+  <button id="zin" aria-label="Zoom in">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M12 5v14M5 12h14"/>
+    </svg>
+  </button>
+  <button id="zout" aria-label="Zoom out">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M5 12h14"/>
+    </svg>
+  </button>
+  <button id="zreset" aria-label="Reset view">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M3 9.5 12 3l9 6.5V20a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/>
+      <path d="M9.5 21v-7h5v7"/>
+    </svg>
+  </button>
   <div class="hint" aria-hidden="true">scroll · drag<br>dbl-click reset</div>
 </div>
 
