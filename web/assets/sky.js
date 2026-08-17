@@ -758,6 +758,8 @@ export class Sky {
   drawConstellations() {
     const ctx = this.ctx;
     const inv = 1 / this.view.s;
+    // Ties are drawn for this star only; see the tie block below.
+    const hovered = this.hoverStar;
 
     // Setting ctx.font re-parses the shorthand and re-resolves the webfont, and
     // it was being set once per topic with a size of 11.5 / view.s -- a fresh
@@ -800,20 +802,30 @@ export class Sky {
         ctx.setLineDash([]);
       }
 
-      // A shared star gets its own dashed tie to each constellation it belongs
-      // to, so "between constellations" reads as membership, not as drift.
-      if (lines && c.shared.length) {
-        // Dimmer than the join, and a finer dash: a tie states membership, the
-        // join states shape, and the two must not be mistaken for each other.
-        ctx.strokeStyle = 'rgba(132,172,255,.3)';
-        ctx.lineWidth = inv;
-        ctx.setLineDash([inv, 4 * inv]);
-        for (const p of c.shared) {
-          ctx.beginPath();
-          ctx.moveTo(p.x, p.y);
-          ctx.lineTo(centre.x, centre.y);
-          ctx.stroke();
-        }
+      // A shared star gets a dashed tie to each constellation it belongs to, so
+      // "between constellations" reads as membership rather than as drift.
+      //
+      // Only the hovered star's ties are drawn. Every shared star's ties used to
+      // be on screen at once, and a shared star is anchored beside its *primary*
+      // topic while tying to every other topic it matched — so each tie could
+      // cross the whole sky, and 49 of them made a tangle that hid the joins
+      // rather than explaining anything. Membership is a question about one
+      // star, and it is now answered about the star being asked about.
+      //
+      // The tooltip already names the topics in text; what these add is *where*
+      // those constellations are, which is the part text cannot give. Brighter
+      // than the join, because a handful of transient lines should be read, not
+      // noticed — the opposite trade from the permanent version, which had to be
+      // faint precisely because there were too many of them.
+      const tie = hovered && c.shared.includes(hovered) ? hovered : null;
+      if (lines && tie) {
+        ctx.strokeStyle = 'rgba(158,195,255,.62)';
+        ctx.lineWidth = 1.2 * inv;
+        ctx.setLineDash([2 * inv, 3 * inv]);
+        ctx.beginPath();
+        ctx.moveTo(tie.x, tie.y);
+        ctx.lineTo(centre.x, centre.y);
+        ctx.stroke();
         ctx.setLineDash([]);
       }
 

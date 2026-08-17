@@ -34,6 +34,7 @@
 | 15 | Motion toggle vs system preference | **OR, never override** — the switch can turn motion off, never on | Letting the switch win. §6's quality floor is a guarantee, not a default; a settings control must not be able to defeat `prefers-reduced-motion` |
 | 16 | Repainting a static sky | **Skip the frame when nothing can have changed** | Repainting unconditionally. With motion off and the view settled, every frame is identical to the one already on screen |
 | 18 | Constellation joins | **A minimum spanning tree over each topic's stars**, and the layer **defaults off** | A polyline in array order — which is score order, not spatial, so a 45-star topic zigzagged across itself and several topics' joins crossed the whole canvas. §6 specifies the links, so defaulting them off is a default and not a removal: at today's density the sky reads better without them, and the Layers panel turns them on |
+| 19 | Shared-star ties | **Drawn for the hovered star only** | All of them at once. 49 sky-spanning lines stated every membership simultaneously and communicated none of them; the tooltip already names the topics, so the tie's job is to point at *where* they are, for one star at a time |
 | 17 | The galactic band | **A bundled photograph**, composited additively into the baked background; the hand-drawn band stays as the fallback | Procedural-only. The photograph carries grain and dust structure no reasonable amount of arc-drawing reproduces, bakes in 3ms against 7.2ms, and adds 66KB to a 20MB binary. Bundled next to the fonts, never fetched — §6's offline rule covers images too |
 
 ## 1. Goal
@@ -251,12 +252,15 @@ spanning tree is the shortest set of edges that still connects every star, and i
 branches, which is what makes the figure read as a constellation. Computed once
 per rebuild alongside `relax`, never per frame.
 
-Still open, and visible the moment the joins stopped hiding it: a **shared star
-draws a tie to every topic centre it belongs to**, and it is anchored near its
-*primary* topic, so those ties can span the width of the sky. At 49 of them they
-are the remaining tangle. The information is real — it is §6's answer to "one
-signal matching multiple topics" — but a full-canvas line per membership is not
-how to state it.
+**Shared-star ties are drawn on hover only (decision 19).** They were the tangle
+the joins had been hiding: a shared star is anchored beside its *primary* topic
+but tied to every topic it matched, so each tie could cross the sky, and 49 at
+once explained nothing. Membership is a question about one star, so it is now
+answered about the star being pointed at — 0 ties at rest, 2 while hovering a
+two-topic star, verified by counting the segments drawn rather than by eye. The
+tooltip already names those topics in text; what the ties add is *where* the
+other constellations are, which is the part text cannot give, and that is only
+worth drawing for the star actually being asked about.
 
 **The band is a photograph now (decision 17).** It is composited with `lighter`
 rather than painted over: the image is light on black, so additive blending lets
