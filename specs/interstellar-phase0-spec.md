@@ -2,6 +2,7 @@
 
 > Personal AI news intelligence tool. Per-user, self-contained, runs locally via Docker.
 > **Revision 3 — FINAL for build.** Supersedes rev 2. Companion artifact: `interstellar-starmap-prototype.html` (approved UI concept).
+> **Revision 4 — amends rev 3, 2026-08-17.** Closes §6's canvas-performance build problem with what measurement actually found, and records the sky-layer preferences it produced. Rev 3's text stands as written; rev 4 is additive — see §0 "Added in rev 4" and §11.
 
 ## 0. Decision log
 
@@ -24,6 +25,14 @@
 | 10 | Email digest as primary channel | **Web UI (star map + list) as front door**; email dropped from Phase 0 | Per-instance pull model; local SMTP config per user is friction. Email → Phase 1 optional |
 | 11 | n8n Form for topics | **Settings screens in-app** (Topics, Sources, Model, Schedule) | Same UI, no external dependency |
 | 12 | Shared multi-user instance | **One instance per person** (Tam's and Long's are unrelated) | Owner's call. Accepted trade-off: no cross-user analytics; source lists will drift between instances |
+
+### Added in rev 4 — cause: canvas performance measured rather than assumed
+| # | Decision | Choice | Rejected |
+|---|----------|--------|----------|
+| 13 | Where sky layer visibility lives | **Browser storage, owned by the Sky** | The `settings` table. Nothing here reaches a run, is read by the pipeline, or changes what was ingested/matched/composed. Putting it in `settings` would mean a migration and API surface to express "this reader prefers less scenery", and would inherit §0's "applies on the next run" semantics, which is wrong for something that applies on the next frame |
+| 14 | Which layers may be hidden | **Dust, Milky Way, graticule, constellation lines, meteors, motion** | Constellation **labels** and the **stars themselves**. The label is the only place the sky renders §10's "No signal today", so a switch that hid it would turn an acceptance criterion off; the stars are the product |
+| 15 | Motion toggle vs system preference | **OR, never override** — the switch can turn motion off, never on | Letting the switch win. §6's quality floor is a guarantee, not a default; a settings control must not be able to defeat `prefers-reduced-motion` |
+| 16 | Repainting a static sky | **Skip the frame when nothing can have changed** | Repainting unconditionally. With motion off and the view settled, every frame is identical to the one already on screen |
 
 ## 1. Goal
 
@@ -146,6 +155,8 @@ Reference implementation: `interstellar-starmap-prototype.html`. Contract, not s
 - One signal matching multiple topics → place star between constellations; render in both topic groups in list view.
 - Canvas perf at 100+ stars with gradient spikes → measure; if needed, pre-render star sprites to offscreen canvas (`drawImage`), WebGL only as last resort.
 
+> **rev 4:** measured and closed — see §11. Sprites were built and do help, but the star count was not what governed the frame rate; the dust batching was, and under it a fixed full-screen repaint cost. WebGL was never needed.
+
 ## 7. Config & distribution
 
 - Env: provider API keys by name (e.g. `DEEPSEEK_API_KEY`, `ANTHROPIC_API_KEY` — only the ones your registry references), `PORT` (8422), `TZ` (schedule honors it).
@@ -173,6 +184,67 @@ Long's 7 topics (verbatim definitions). Sources: rev 2 list (~20 blogs/HN querie
 - [ ] Zoom/pan/reset + touch work; reduced-motion verified.
 - [ ] Call-cap guard aborts a runaway run and surfaces a UI banner.
 - [ ] Kill container mid-run → restart → no corruption, next run clean.
+
+## 11. Canvas performance — what measurement found (rev 4)
+
+Closes the third bullet of §6 "Known build problems". That bullet named the right
+remedy for the wrong cause, and the correction is the useful part.
+
+**The hypothesis was the stars.** "Canvas perf at 100+ stars with gradient spikes
+→ pre-render star sprites." The sprite work was done and it does help. But
+measured in a real browser at 117 stars, the star count turned out not to govern
+the frame rate at all: it was identical whether 117 stars drew or 38 did at
+maximum zoom.
+
+**The cost was the dust.** Ablating one piece of the frame at a time put the
+entire gap in the 200 parallax dust particles — 21fps with them, 59 without —
+and the cost was the *batching*, not the dots. Bucketing the twinkled alpha and
+collecting each bucket into one path for a single `fill()` looks like the
+star-sprite optimization carried one step further. It is the opposite: the dots
+in a bucket are scattered across the whole sky, so one path per bucket means ~18
+fills a frame whose bounding boxes each span the entire canvas, and the
+rasterizer sets up over the box rather than over the ink. Same colours, same
+style-change count, one `fill()` per dot: 21fps → 55.
+
+Batching draw calls is normally right. Batching *geometry this sparse* into one
+path inverts it. That is the transferable lesson, and it applies to anything else
+here tempted to merge scattered small shapes into one path.
+
+**Underneath that is a floor no drawing change can move.** Every frame overwrites
+the whole backing store — 4.4 megapixels at dpr 2 on a 1440×813 viewport — and
+that alone caps out around 20–27fps on a loaded machine. Proved two ways:
+replacing the background image with a 2×2 one scaled to full screen costs the
+same, and a frame that draws nothing runs at 60. So the remaining lever is not
+what is drawn but *whether* to draw: decision #16. With motion off and the view
+settled the sky repaints nothing, which takes it from 17.7fps to a pinned 60.
+
+**Two measurement traps**, recorded because both produced confident wrong answers
+first and anyone re-measuring this will hit them:
+
+- Timing the draw calls measures only JS record time. Canvas rasterization is
+  deferred, so the call returns long before the work happens.
+- Forcing a flush with `getImageData` charges a readback whose cost tracks the
+  dirtied area, not the work done — which made full-screen blits look like 40ms
+  and the dust like 0.3ms.
+
+Only end-to-end frame-rate ablation, interleaved across conditions so machine
+drift cancels, is trustworthy here. Absolute numbers move a lot with machine
+load; the *ratios* between interleaved conditions hold.
+
+**Idle skipping is the part most able to go wrong silently.** Skipping a frame
+that was needed leaves a stale image with nothing on screen to explain it, so
+invalidation is explicit and every wake path is verified by counting draw calls
+rather than by trusting a flag: view movement, hover changing star, layer toggle,
+filter change, relayout, resumed loop, and any change to the motion gate
+(including the system preference flipping mid-session). The view ease also had to
+learn to snap — it is asymptotic, so the view never becomes exactly the target
+and the sky would otherwise repaint forever over thousandths of a pixel.
+
+**§6's typography contract binds icons too.** The zoom controls were text
+characters, and U+2302 (⌂) is not in the bundled Noto Sans subset — it was
+rendering in a system font, and would have been tofu on a machine without one.
+"Font files BUNDLED, no hotlinking, renders offline" is not satisfied by a glyph
+that depends on the host. UI symbols are inline SVG.
 
 ## Phase 1 backlog
 

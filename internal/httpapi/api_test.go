@@ -1505,17 +1505,60 @@ func TestWeeklyReportsDeliveryStatusOnAFreshInstance(t *testing.T) {
 	}
 }
 
+// weekdaysInCoveredWeek returns n consecutive dates starting at the Monday of the
+// week a default POST /api/weekly/run covers — the week that just finished.
+//
+// It resolves the week the same way the handler does, in the same location
+// testServer configures, so a seeded signal is inside the window on every day of
+// the week rather than on four of them. The bounds arithmetic itself is pinned
+// against fixed dates in pipeline.TestWeekBoundsStartOnMonday, so leaning on it
+// here does not leave that logic unchecked.
+//
+// n must stay ≤ 7; past that the dates run out of the week they are meant to be in.
+func weekdaysInCoveredWeek(t *testing.T, n int) []string {
+	t.Helper()
+	if n < 1 || n > 7 {
+		t.Fatalf("weekdaysInCoveredWeek(%d): want 1..7", n)
+	}
+
+	weekStart, weekEnd := store.PreviousWeekBounds(time.Now().In(time.UTC))
+	monday, err := time.ParseInLocation("2006-01-02", weekStart, time.UTC)
+	if err != nil {
+		t.Fatalf("parse week start %q: %v", weekStart, err)
+	}
+
+	days := make([]string, n)
+	for i := range days {
+		days[i] = monday.AddDate(0, 0, i).Format("2006-01-02")
+		if days[i] > weekEnd {
+			t.Fatalf("day %s is past the covered week ending %s", days[i], weekEnd)
+		}
+	}
+	return days
+}
+
 func TestWeeklyRunWritesAndStores(t *testing.T) {
 	_, h, db := testServer(t)
 	useFakeChatModel(t, db, chatModelServer(t, `{}`, "The week converged on harnesses."))
 
 	topics, _ := db.AllTopics()
 	// Signals inside last week, which is what a scheduled run covers.
-	for i := range 3 {
+	//
+	// Anchored to the week the handler will actually resolve, not to a fixed day
+	// offset. "-8 days" is only inside last week on some weekdays: run on a
+	// Monday it lands on the Sunday *before* the covered week, so the run found
+	// zero signals and this failed — every Monday. It was quietly weaker on
+	// Tuesday and Wednesday too, where only one and two of the three rows fell in
+	// range while the test still passed.
+	//
+	// The dates go in as literals for a second reason: the server resolves the
+	// week in Env.Location, which is UTC here, while date('now','localtime')
+	// follows the machine — and for part of every day those disagree.
+	for i, day := range weekdaysInCoveredWeek(t, 3) {
 		if _, err := db.Exec(
 			`INSERT INTO signals (run_date, topic_id, title, reason, score, source_count, primary_url)
-			 VALUES (date('now','localtime',?), ?, ?, 'Because.', 5, 3, 'https://x.test/a')`,
-			fmt.Sprintf("-%d days", 8+i), topics[0].ID, fmt.Sprintf("Story %d", i),
+			 VALUES (?, ?, ?, 'Because.', 5, 3, 'https://x.test/a')`,
+			day, topics[0].ID, fmt.Sprintf("Story %d", i),
 		); err != nil {
 			t.Fatal(err)
 		}
@@ -1566,10 +1609,11 @@ func TestWeeklyRunDoesNotDeliverUnlessAsked(t *testing.T) {
 	}
 
 	topics, _ := db.AllTopics()
+	// Inside the covered week on any weekday — see weekdaysInCoveredWeek.
 	if _, err := db.Exec(
 		`INSERT INTO signals (run_date, topic_id, title, reason, score, source_count, primary_url)
-		 VALUES (date('now','localtime','-8 days'), ?, 'A story', 'Because.', 5, 3, 'https://x.test/a')`,
-		topics[0].ID); err != nil {
+		 VALUES (?, ?, 'A story', 'Because.', 5, 3, 'https://x.test/a')`,
+		weekdaysInCoveredWeek(t, 1)[0], topics[0].ID); err != nil {
 		t.Fatal(err)
 	}
 
