@@ -9,7 +9,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   groupSignals, relax, passesFilter, bigCutFor, Sky,
-  loadShow, SKY_LAYERS,
+  loadShow, SKY_LAYERS, constellationEdges,
 } from './assets/sky.js';
 
 const signal = (over = {}) => ({
@@ -305,10 +305,14 @@ const fakeStore = (initial) => {
   };
 };
 
-test('every layer is on before anything is stored', () => {
+test('the scenery is on before anything is stored, and the joins are not', () => {
   const show = loadShow(fakeStore(null));
-  assert.deepEqual(SKY_LAYERS.map((k) => show[k]), SKY_LAYERS.map(() => true),
-    'the approved sky is what you get before touching a switch');
+  for (const k of ['dust', 'milkyway', 'grid', 'meteors', 'motion']) {
+    assert.equal(show[k], true, `${k} should be on by default`);
+  }
+  // The one layer that defaults off. Pinned because it is a deliberate departure
+  // from §6, not an oversight: the links are specified, the default is ours.
+  assert.equal(show.lines, false, 'constellation joins default off');
 });
 
 test('a stored preference is read back', () => {
@@ -413,4 +417,65 @@ test('changing a layer marks the sky for a repaint', () => {
   Sky.prototype.setShow.call(self, 'grid', false);
   assert.equal(self.dirty, true,
     'a layer switched off must repaint, or the old layer stays on screen');
+});
+
+// The constellation join. What this protects is legibility rather than
+// correctness: the old polyline "worked" in the sense that it drew something.
+
+const at = (x, y) => ({ x, y });
+const lengthOf = (edges) =>
+  edges.reduce((sum, [a, b]) => sum + Math.hypot(a.x - b.x, a.y - b.y), 0);
+
+test('a topic with fewer than two stars has nothing to join', () => {
+  assert.deepEqual(constellationEdges([]), []);
+  assert.deepEqual(constellationEdges([at(0, 0)]), []);
+});
+
+test('every star ends up connected, with no cycle', () => {
+  const pts = [at(0, 0), at(10, 0), at(20, 0), at(30, 0), at(0, 40)];
+  const edges = constellationEdges(pts);
+  // A spanning tree over n nodes has exactly n-1 edges.
+  assert.equal(edges.length, pts.length - 1);
+
+  const seen = new Set();
+  for (const [a, b] of edges) { seen.add(a); seen.add(b) }
+  assert.equal(seen.size, pts.length, 'every star is touched by an edge');
+});
+
+test('the join follows neighbours, not the order it was handed', () => {
+  // Four stars in a line, deliberately supplied in a scrambled order — which is
+  // what score order does. The old polyline joined them 0-2-3-1 and doubled back
+  // across itself; the tree joins each to its neighbour.
+  const a = at(0, 0), b = at(10, 0), c = at(20, 0), d = at(30, 0);
+  const edges = constellationEdges([a, c, d, b]);
+
+  assert.equal(lengthOf(edges), 30, 'total edge length is the span, walked once');
+  for (const [p, q] of edges) {
+    assert.equal(Math.hypot(p.x - q.x, p.y - q.y), 10, 'every edge joins adjacent stars');
+  }
+});
+
+test('the tree is shorter than the order it replaced', () => {
+  // The property that matters, stated directly: for any arrangement, the tree
+  // cannot be longer than the polyline through the same stars in array order.
+  const pts = [at(0, 0), at(90, 12), at(15, 30), at(80, 70), at(5, 65), at(70, 20)];
+
+  let polyline = 0;
+  for (let i = 1; i < pts.length; i++) {
+    polyline += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
+  }
+  assert.ok(lengthOf(constellationEdges(pts)) < polyline,
+    'a spanning tree over these points should beat the arbitrary order');
+});
+
+test('stars stacked on one spot do not break the join', () => {
+  const edges = constellationEdges([at(5, 5), at(5, 5), at(5, 5)]);
+  assert.equal(edges.length, 2, 'zero-length edges still connect every star');
+});
+
+test('edges reference the caller\'s stars, so they track relayout', () => {
+  const a = at(0, 0), b = at(10, 0);
+  const [[p, q]] = constellationEdges([a, b]);
+  assert.ok((p === a && q === b) || (p === b && q === a),
+    'the drawing code must read live positions, not a snapshot');
 });

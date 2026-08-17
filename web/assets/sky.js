@@ -33,7 +33,11 @@ const DEFAULT_SHOW = {
   dust: true,        // the two parallax dust layers
   milkyway: true,    // the galactic band, baked into bgLayer
   grid: true,        // the celestial graticule
-  lines: true,       // constellation joins and shared-star ties (never the labels)
+  // Constellation joins and shared-star ties (never the labels). The one layer
+  // that defaults off: at today's density the sky reads better without it, and a
+  // reader who wants the topic structure drawn can ask for it. §6 specifies the
+  // links, so this is a default, not a removal — see spec decision 18.
+  lines: false,
   meteors: true,     // the occasional streak
   motion: true,      // twinkle, pulse, glint rotation, view easing
 };
@@ -91,6 +95,28 @@ const HOT = { core: '255,240,210', mid: '255,214,140', halo: '255,190,90' };
 
 const MIN_SCALE = 0.55;
 const MAX_SCALE = 3.5;
+
+// The galactic band, as a photograph.
+//
+// Bundled next to the fonts and for the same reason: §6 requires the UI to render
+// offline, so nothing here is fetched from a host. It is baked into bgLayer once
+// per layout, so it costs a decode at startup and nothing per frame — the same
+// budget the procedural band had.
+//
+// drawMilkyWay is kept as the fallback rather than deleted. If the file is
+// missing or fails to decode, a sky with a hand-drawn band is a far better
+// outcome than a flat gradient, and it keeps the offline guarantee honest
+// instead of resting on one asset.
+const BAND_IMAGE_SRC = 'img/milky-way.webp';
+
+// How much of the photograph's light reaches the sky. It is composited
+// additively, so this scales the added light directly: halving it halves the
+// band's brightness, and 0 is the same as switching the layer off.
+//
+// Held at half its original 0.85 deliberately. The band is scenery — §6 asks the
+// stars to be what the eye lands on, and a photograph bright enough to admire is
+// bright enough to compete with the signals it exists behind.
+const BAND_STRENGTH = 0.42;
 
 // Deterministic PRNG: the same sky must look the same on every reload, or the
 // spatial memory §6 protects is worthless.
@@ -171,6 +197,7 @@ export class Sky {
     this.sprites = new Map();                // pre-baked star bitmaps, see spriteFor
     this.bgLayer = null;                     // background + nebula, screen space
     this.gridLayer = null;                   // celestial graticule, world space
+    this.bandImage = null;                   // the photographic band, see loadBand
 
     // The occasional meteor. Ambient, so unlike the sky layout it is deliberately
     // not seeded — seeing the identical streak at the identical moment on every
@@ -202,6 +229,7 @@ export class Sky {
     // the rAF callback, which skips the re-schedule at the end of frame() and
     // kills the loop permanently. It is a race, so it fails intermittently.
     this.layout();
+    this.loadBand();
     this.start();
 
     // A hidden tab should not render either. Browsers throttle rAF heavily when
@@ -526,6 +554,9 @@ export class Sky {
 
       this.constellations.push({
         centre, pts, shared, minOwnY,
+        // Computed here, not per frame: the positions and memberships behind it
+        // are fixed until the next rebuild.
+        edges: constellationEdges(pts),
         label: t.title.toUpperCase(),
         count: pts.length ? `· ${pts.length} ·` : '· no signal ·',
         dim: pts.length === 0,
@@ -754,14 +785,16 @@ export class Sky {
     for (const c of this.constellations) {
       const { centre, pts } = c;
 
-      if (lines && pts.length > 1) {
-        ctx.strokeStyle = 'rgba(56,78,140,.4)';
-        ctx.lineWidth = inv;
-        ctx.setLineDash([inv, 5 * inv]);
+      // The join, as a spanning tree rather than one polyline. Each edge is its
+      // own subpath: they branch, so there is no single stroke order through them.
+      if (lines && c.edges.length) {
+        ctx.strokeStyle = 'rgba(132,172,255,.5)';
+        ctx.lineWidth = 1.3 * inv;
+        ctx.setLineDash([2 * inv, 4 * inv]);
         ctx.beginPath();
-        for (let i = 0; i < pts.length; i++) {
-          if (i) ctx.lineTo(pts[i].x, pts[i].y);
-          else ctx.moveTo(pts[i].x, pts[i].y);
+        for (const [a, b] of c.edges) {
+          ctx.moveTo(a.x, a.y);
+          ctx.lineTo(b.x, b.y);
         }
         ctx.stroke();
         ctx.setLineDash([]);
@@ -770,7 +803,9 @@ export class Sky {
       // A shared star gets its own dashed tie to each constellation it belongs
       // to, so "between constellations" reads as membership, not as drift.
       if (lines && c.shared.length) {
-        ctx.strokeStyle = 'rgba(56,78,140,.28)';
+        // Dimmer than the join, and a finer dash: a tie states membership, the
+        // join states shape, and the two must not be mistaken for each other.
+        ctx.strokeStyle = 'rgba(132,172,255,.3)';
         ctx.lineWidth = inv;
         ctx.setLineDash([inv, 4 * inv]);
         for (const p of c.shared) {
@@ -836,7 +871,56 @@ export class Sky {
     ctx.restore();
   }
 
-  // A galactic band across the sky.
+  // Fetch the band photograph and re-bake the background once it decodes.
+  //
+  // Asynchronous, and the first layout has already run by the time it lands, so
+  // the sky opens on the procedural band and swaps to the photograph a frame or
+  // two later. That order is deliberate: it means a slow decode shows a finished
+  // sky rather than an empty one, and a failed decode simply never swaps.
+  loadBand() {
+    if (typeof Image === 'undefined') return;   // imported outside a browser
+    const img = new Image();
+    img.onload = () => {
+      this.bandImage = img;
+      this.buildLayers();
+      this.dirty = true;   // the frame loop may be idle; see frame()
+    };
+    // No onerror handling beyond leaving bandImage null: drawMilkyWay is the
+    // fallback and is what has already been drawn.
+    img.src = BAND_IMAGE_SRC;
+  }
+
+  // The photographic band, cover-fitted into the background layer.
+  //
+  // Drawn additively. The photograph is light on black, so 'lighter' lets the
+  // band and its star grain add to the gradient underneath while the empty sky
+  // between them contributes nothing. Source-over would paint that black over the
+  // gradient instead, flattening the depth the gradient and nebula exist to give
+  // — the picture would sit *on* the sky rather than be part of it.
+  //
+  // Cover rather than contain: the photograph's aspect will not match the
+  // viewport at most window sizes, and cropping a sky is much better than
+  // letterboxing one.
+  drawBandPhoto(c) {
+    const img = this.bandImage;
+    const iw = img.naturalWidth || img.width;
+    const ih = img.naturalHeight || img.height;
+    if (!iw || !ih) return;
+
+    const scale = Math.max(this.W / iw, this.H / ih);
+    const w = iw * scale, h = ih * scale;
+
+    c.save();
+    c.globalCompositeOperation = 'lighter';
+    c.globalAlpha = BAND_STRENGTH;
+    c.drawImage(img, (this.W - w) / 2, (this.H - h) / 2, w, h);
+    c.restore();
+  }
+
+  // A galactic band across the sky, drawn by hand.
+  //
+  // The fallback since the photograph landed — used when the image has not
+  // decoded yet, or cannot be.
   //
   // Baked into the background layer, so it costs nothing per frame — which is the
   // only reason it can afford to be this many gradients. Three ingredients do the
@@ -944,14 +1028,24 @@ export class Sky {
     c.fillStyle = bg;
     c.fillRect(0, 0, this.W, this.H);
 
-    const neb = c.createRadialGradient(this.W * 0.44, this.H * 0.28, 0,
-      this.W * 0.44, this.H * 0.28, Math.max(this.W, this.H) * 0.6);
-    neb.addColorStop(0, 'rgba(38,53,94,.30)');
-    neb.addColorStop(1, 'rgba(38,53,94,0)');
-    c.fillStyle = neb;
-    c.fillRect(0, 0, this.W, this.H);
+    // The soft nebula belongs to the hand-drawn sky. The photograph carries its
+    // own structure, and adding a broad blue lift underneath it flattens exactly
+    // the contrast that makes a real dust lane read as one — the band went hazy
+    // and the black between the stars stopped being black.
+    const usingPhoto = this.show.milkyway && this.bandImage;
+    if (!usingPhoto) {
+      const neb = c.createRadialGradient(this.W * 0.44, this.H * 0.28, 0,
+        this.W * 0.44, this.H * 0.28, Math.max(this.W, this.H) * 0.6);
+      neb.addColorStop(0, 'rgba(38,53,94,.30)');
+      neb.addColorStop(1, 'rgba(38,53,94,0)');
+      c.fillStyle = neb;
+      c.fillRect(0, 0, this.W, this.H);
+    }
 
-    if (this.show.milkyway) this.drawMilkyWay(c);
+    if (this.show.milkyway) {
+      if (this.bandImage) this.drawBandPhoto(c);
+      else this.drawMilkyWay(c);
+    }
 
     // Corner falloff. The single cheapest depth cue there is: a flat field reads
     // as paper, a darkened rim reads as a dome.
@@ -1496,6 +1590,54 @@ export function groupSignals(signals) {
     g.ageDays = Math.min(g.ageDays, s.age_days);
   }
   return [...byURL.values()];
+}
+
+// constellationEdges joins a topic's stars into an atlas-style figure.
+//
+// A minimum spanning tree over the stars, by screen distance: the shortest set of
+// edges that still connects every one of them.
+//
+// It replaced a polyline through `pts` in array order — which is the API's score
+// order, not a spatial one. On a 45-star topic that drew 44 segments zigzagging
+// back and forth across its own constellation, joining stars that are adjacent in
+// score and far apart on screen, and several topics' joins crossed the entire
+// canvas. It was only tolerable because it was drawn at 0.4 alpha, which hid it
+// rather than fixing it. §6 asks for "atlas-style links", and an atlas joins
+// neighbours.
+//
+// Prim's, O(n²), once per rebuild rather than per frame. n is one topic's star
+// count — 45 at today's top end — which is nothing beside relax(), already
+// quadratic over every star on the canvas.
+//
+// Returns pairs of the caller's own star objects, so the drawing code reads
+// current positions rather than a copy that could drift out of date.
+export function constellationEdges(pts) {
+  const n = pts.length;
+  if (n < 2) return [];
+
+  const inTree = new Array(n).fill(false);
+  const best = new Array(n).fill(Infinity);
+  const from = new Array(n).fill(-1);
+  const edges = [];
+
+  best[0] = 0;
+  for (let iter = 0; iter < n; iter++) {
+    // Nearest star not yet connected.
+    let k = -1;
+    for (let i = 0; i < n; i++) {
+      if (!inTree[i] && (k === -1 || best[i] < best[k])) k = i;
+    }
+    if (k === -1) break;
+    inTree[k] = true;
+    if (from[k] !== -1) edges.push([pts[from[k]], pts[k]]);
+
+    for (let i = 0; i < n; i++) {
+      if (inTree[i]) continue;
+      const d = Math.hypot(pts[i].x - pts[k].x, pts[i].y - pts[k].y);
+      if (d < best[i]) { best[i] = d; from[i] = k }
+    }
+  }
+  return edges;
 }
 
 // relax pushes overlapping stars apart.

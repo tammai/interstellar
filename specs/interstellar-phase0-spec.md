@@ -33,6 +33,8 @@
 | 14 | Which layers may be hidden | **Dust, Milky Way, graticule, constellation lines, meteors, motion** | Constellation **labels** and the **stars themselves**. The label is the only place the sky renders §10's "No signal today", so a switch that hid it would turn an acceptance criterion off; the stars are the product |
 | 15 | Motion toggle vs system preference | **OR, never override** — the switch can turn motion off, never on | Letting the switch win. §6's quality floor is a guarantee, not a default; a settings control must not be able to defeat `prefers-reduced-motion` |
 | 16 | Repainting a static sky | **Skip the frame when nothing can have changed** | Repainting unconditionally. With motion off and the view settled, every frame is identical to the one already on screen |
+| 18 | Constellation joins | **A minimum spanning tree over each topic's stars**, and the layer **defaults off** | A polyline in array order — which is score order, not spatial, so a 45-star topic zigzagged across itself and several topics' joins crossed the whole canvas. §6 specifies the links, so defaulting them off is a default and not a removal: at today's density the sky reads better without them, and the Layers panel turns them on |
+| 17 | The galactic band | **A bundled photograph**, composited additively into the baked background; the hand-drawn band stays as the fallback | Procedural-only. The photograph carries grain and dust structure no reasonable amount of arc-drawing reproduces, bakes in 3ms against 7.2ms, and adds 66KB to a 20MB binary. Bundled next to the fonts, never fetched — §6's offline rule covers images too |
 
 ## 1. Goal
 
@@ -239,6 +241,37 @@ filter change, relayout, resumed loop, and any change to the motion gate
 (including the system preference flipping mid-session). The view ease also had to
 learn to snap — it is asymptotic, so the view never becomes exactly the target
 and the sky would otherwise repaint forever over thousandths of a pixel.
+
+**The constellation join is a spanning tree now (decision 18).** §6 asks for
+"atlas-style links", and an atlas joins neighbours. The join was a polyline
+through the topic's stars in array order — the API's score order — so it linked
+stars that are adjacent in score and far apart on screen. It was only tolerable
+because it drew at 0.4 alpha, which concealed it rather than fixing it. A minimum
+spanning tree is the shortest set of edges that still connects every star, and it
+branches, which is what makes the figure read as a constellation. Computed once
+per rebuild alongside `relax`, never per frame.
+
+Still open, and visible the moment the joins stopped hiding it: a **shared star
+draws a tie to every topic centre it belongs to**, and it is anchored near its
+*primary* topic, so those ties can span the width of the sky. At 49 of them they
+are the remaining tangle. The information is real — it is §6's answer to "one
+signal matching multiple topics" — but a full-canvas line per membership is not
+how to state it.
+
+**The band is a photograph now (decision 17).** It is composited with `lighter`
+rather than painted over: the image is light on black, so additive blending lets
+the band and its grain add to the gradient underneath while the empty sky between
+the stars contributes nothing. Painting it source-over instead put the
+photograph's black *over* the gradient and flattened the depth — the picture sat
+on the sky rather than being part of it. For the same reason the procedural
+nebula is skipped when the photograph is in use: a broad blue lift underneath
+destroys the contrast that makes a real dust lane read as one. Verified by
+sampling the baked layer, not by eye — an empty corner measures the same with the
+photograph on or off, while the dust lane lifts and warms.
+
+`drawMilkyWay` is kept, not deleted. It is what renders before the image decodes
+and what renders if it never does, which is what keeps the offline guarantee from
+resting on a single asset.
 
 **§6's typography contract binds icons too.** The zoom controls were text
 characters, and U+2302 (⌂) is not in the bundled Noto Sans subset — it was
