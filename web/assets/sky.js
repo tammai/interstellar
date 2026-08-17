@@ -33,7 +33,7 @@ const DEFAULT_SHOW = {
   dust: true,        // the two parallax dust layers
   milkyway: true,    // the galactic band, baked into bgLayer
   grid: true,        // the celestial graticule
-  // Constellation joins and shared-star ties (never the labels). The one layer
+  // Constellation joins, never the labels. The one layer
   // that defaults off: at today's density the sky reads better without it, and a
   // reader who wants the topic structure drawn can ask for it. §6 specifies the
   // links, so this is a default, not a removal — see spec decision 18.
@@ -544,16 +544,15 @@ export class Sky {
 
       // The label is lifted by the topic's own stars only; a shared star sits
       // between constellations and must not drag the name away from where the
-      // reader learned it (§6, spatial memory).
+      // reader learned it (§6, spatial memory). This is the only thing the
+      // per-star `shared` flag is still read for.
       let minOwnY = centre.y;
-      const shared = [];
       for (const p of pts) {
-        if (p.shared) shared.push(p);
-        else if (p.y < minOwnY) minOwnY = p.y;
+        if (!p.shared && p.y < minOwnY) minOwnY = p.y;
       }
 
       this.constellations.push({
-        centre, pts, shared, minOwnY,
+        centre, pts, minOwnY,
         // Computed here, not per frame: the positions and memberships behind it
         // are fixed until the next rebuild.
         edges: constellationEdges(pts),
@@ -758,8 +757,6 @@ export class Sky {
   drawConstellations() {
     const ctx = this.ctx;
     const inv = 1 / this.view.s;
-    // Ties are drawn for this star only; see the tie block below.
-    const hovered = this.hoverStar;
 
     // Setting ctx.font re-parses the shorthand and re-resolves the webfont, and
     // it was being set once per topic with a size of 11.5 / view.s -- a fresh
@@ -778,10 +775,10 @@ export class Sky {
     ctx.font = this._fontStr;
     ctx.textAlign = 'center';
 
-    // Lines are toggleable; labels are not. §10 requires an empty topic to render
+    // Joins are toggleable; labels are not. §10 requires an empty topic to render
     // "No signal today" rather than disappear, and the label is the only place
     // the sky says that — so a switch that hid it would turn an acceptance
-    // criterion off. Joins and ties carry no such guarantee.
+    // criterion off. The joins carry no such guarantee.
     const lines = this.show.lines;
 
     for (const c of this.constellations) {
@@ -798,33 +795,6 @@ export class Sky {
           ctx.moveTo(a.x, a.y);
           ctx.lineTo(b.x, b.y);
         }
-        ctx.stroke();
-        ctx.setLineDash([]);
-      }
-
-      // A shared star gets a dashed tie to each constellation it belongs to, so
-      // "between constellations" reads as membership rather than as drift.
-      //
-      // Only the hovered star's ties are drawn. Every shared star's ties used to
-      // be on screen at once, and a shared star is anchored beside its *primary*
-      // topic while tying to every other topic it matched — so each tie could
-      // cross the whole sky, and 49 of them made a tangle that hid the joins
-      // rather than explaining anything. Membership is a question about one
-      // star, and it is now answered about the star being asked about.
-      //
-      // The tooltip already names the topics in text; what these add is *where*
-      // those constellations are, which is the part text cannot give. Brighter
-      // than the join, because a handful of transient lines should be read, not
-      // noticed — the opposite trade from the permanent version, which had to be
-      // faint precisely because there were too many of them.
-      const tie = hovered && c.shared.includes(hovered) ? hovered : null;
-      if (lines && tie) {
-        ctx.strokeStyle = 'rgba(158,195,255,.62)';
-        ctx.lineWidth = 1.2 * inv;
-        ctx.setLineDash([2 * inv, 3 * inv]);
-        ctx.beginPath();
-        ctx.moveTo(tie.x, tie.y);
-        ctx.lineTo(centre.x, centre.y);
         ctx.stroke();
         ctx.setLineDash([]);
       }

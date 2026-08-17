@@ -216,7 +216,7 @@ test('only a topic own stars lift its label', () => {
   // drag both topics' names toward each other until they overprint (§6).
   assert.equal(c.minOwnY, 40);
   assert.equal(c.pts.length, 2, 'it is still drawn as a member of this topic');
-  assert.deepEqual(c.shared, [shared], 'and still gets its own tie to the centre');
+  assert.ok(c.pts.includes(shared), 'and is still joined and counted like any other');
   assert.equal(c.count, '· 2 ·');
 });
 

@@ -34,7 +34,7 @@
 | 15 | Motion toggle vs system preference | **OR, never override** — the switch can turn motion off, never on | Letting the switch win. §6's quality floor is a guarantee, not a default; a settings control must not be able to defeat `prefers-reduced-motion` |
 | 16 | Repainting a static sky | **Skip the frame when nothing can have changed** | Repainting unconditionally. With motion off and the view settled, every frame is identical to the one already on screen |
 | 18 | Constellation joins | **A minimum spanning tree over each topic's stars**, and the layer **defaults off** | A polyline in array order — which is score order, not spatial, so a 45-star topic zigzagged across itself and several topics' joins crossed the whole canvas. §6 specifies the links, so defaulting them off is a default and not a removal: at today's density the sky reads better without them, and the Layers panel turns them on |
-| 19 | Shared-star ties | **Drawn for the hovered star only** | All of them at once. 49 sky-spanning lines stated every membership simultaneously and communicated none of them; the tooltip already names the topics, so the tie's job is to point at *where* they are, for one star at a time |
+| 19 | Shared-star ties | **Removed** | Drawing all 49 (a tangle), and drawing the hovered star's only (tried, still no value). §6's "place star between constellations" is met by *placement*; membership is already stated by the tooltip, the detail panel and both list groups. A line was never what carried it |
 | 17 | The galactic band | **A bundled photograph**, composited additively into the baked background; the hand-drawn band stays as the fallback | Procedural-only. The photograph carries grain and dust structure no reasonable amount of arc-drawing reproduces, bakes in 3ms against 7.2ms, and adds 66KB to a 20MB binary. Bundled next to the fonts, never fetched — §6's offline rule covers images too |
 
 ## 1. Goal
@@ -252,15 +252,28 @@ spanning tree is the shortest set of edges that still connects every star, and i
 branches, which is what makes the figure read as a constellation. Computed once
 per rebuild alongside `relax`, never per frame.
 
-**Shared-star ties are drawn on hover only (decision 19).** They were the tangle
-the joins had been hiding: a shared star is anchored beside its *primary* topic
-but tied to every topic it matched, so each tie could cross the sky, and 49 at
-once explained nothing. Membership is a question about one star, so it is now
-answered about the star being pointed at — 0 ties at rest, 2 while hovering a
-two-topic star, verified by counting the segments drawn rather than by eye. The
-tooltip already names those topics in text; what the ties add is *where* the
-other constellations are, which is the part text cannot give, and that is only
-worth drawing for the star actually being asked about.
+**Shared-star ties are gone (decision 19), and this is the second time they were
+cut back — read this before drawing them a third time.**
+
+They were the tangle the joins had been hiding. A shared star is anchored beside
+its *primary* topic but tied to every topic it matched, so each line could cross
+the sky, and 49 at once stated every membership simultaneously while
+communicating none of them. Narrowing them to the hovered star fixed the tangle
+exactly as intended — 0 lines at rest, 2 while pointing at a two-topic star — and
+the owner's verdict on the result was that it still showed nothing worth having.
+
+The lesson is worth keeping, because §6's second known build problem ("one signal
+matching multiple topics → place star between constellations") reads like an
+instruction to draw a line, and it is not. That requirement is met by
+**placement**: the star sits at the centroid of the topics it belongs to, capped
+so it stays anchored to its primary. Membership is then *stated*, in three places
+that all still do it — the tooltip names every topic, the detail panel lists
+them, and list view renders the signal under each. A line was never the thing
+carrying that information; it only added geometry on top of it.
+
+What remains of the mechanism is the per-star `shared` flag, still read for one
+thing: a shared star must not lift a constellation's label, or the two topics'
+names drift toward each other until they overprint.
 
 **The band is a photograph now (decision 17).** It is composited with `lighter`
 rather than painted over: the image is light on black, so additive blending lets
