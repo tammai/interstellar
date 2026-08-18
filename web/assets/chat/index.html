@@ -30,6 +30,11 @@
   </a>
   <div class="spacer"></div>
   <div class="budget" id="budget" aria-live="polite"></div>
+  <!-- Clearing is a real delete, not a swept screen: history reloads on every open,
+       so a local clear would put every question back on the next visit. Hidden until
+       there is something to clear. -->
+  <button type="button" class="clear-chat" id="clear" hidden
+          aria-label="Clear the whole conversation">Clear</button>
 </header>
 
 <main id="thread" aria-live="polite" aria-label="Questions and answers">
@@ -47,9 +52,17 @@
          Shift+Enter makes a new line. -->
     <textarea id="q" rows="1" placeholder="Ask about your signals…"
               aria-label="Your question" maxlength="2000"></textarea>
+    <!-- One button, two jobs, because while a question is in flight the only thing
+         worth doing in that corner is calling it off -- and a separate stop button
+         would sit dead for the 99% of the time nothing is running. Both icons ship in
+         the markup and CSS shows one: swapping SVG paths from script would put path
+         data in a parsed file for no gain. -->
     <button type="submit" id="send" aria-label="Send question">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <svg class="i-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M5 12h14M13 6l6 6-6 6"/>
+      </svg>
+      <svg class="i-stop" viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true">
+        <rect x="7" y="7" width="10" height="10" rx="2"/>
       </svg>
     </button>
   </div>

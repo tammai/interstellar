@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>Interstellar — Settings</title>
+<!-- A separate document, for the same reason the Ask screen is one: sky.js is 56KB
+     and a requestAnimationFrame loop, and editing a topic definition needs neither.
+     This page loads tokens.css and settings.css and nothing else — no app.js, no
+     sky.js, no panel.js, no list.js, no style.css — creates no canvas, and never
+     calls requestAnimationFrame.
+
+     It replaces the gear popover and the sliding sheet: six screens reached through
+     a popover meant the screen you wanted was always two clicks and a dismissed
+     overlay away, and the sheet covered the sky it was configuring. The tab strip
+     below states all six at once and switching between them costs one click.
+     Amends §6's "glass popover" — see spec rev 5, decision #20. -->
+<link rel="stylesheet" href="../tokens.css">
+<link rel="stylesheet" href="settings.css">
+<link rel="preload" href="../fonts/NotoSans-variable.woff2" as="font" type="font/woff2" crossorigin>
+</head>
+<body>
+
+<header>
+  <a class="back" href="../" aria-label="Back to the star map">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M15 18l-6-6 6-6"/>
+    </svg>
+    <span class="wordmark"><span class="glyph" aria-hidden="true">✦</span>Settings</span>
+  </a>
+  <div class="spacer"></div>
+  <!-- What the popover's footer note used to carry: the call budget, and whether
+       the instance is actually able to run. It belongs in view on every tab, not
+       only on the one screen that happened to show it. -->
+  <div class="run-state" id="runState" aria-live="polite"></div>
+</header>
+
+<!-- Horizontal tabs. Six real buttons rather than a menu: the whole point of the
+     move off the popover is that the shape of the configuration is visible without
+     opening anything. The strip scrolls sideways under ~560px rather than wrapping
+     — a wrapped strip eats a third of a small screen (§10 wants ~380px working). -->
+<nav class="tabs" id="tabs" role="tablist" aria-label="Settings screens"></nav>
+
+<main id="screen" role="tabpanel" tabindex="-1" aria-label="Settings"></main>
+
+<script type="module" src="settings.js"></script>
+</body>
+</html>

@@ -10,6 +10,10 @@
 // controls and the zoom buttons and swallowing wheel events so the list would not
 // scroll. The same trap put an inert "Min points" field into the RSS source form.
 // Both were silent: nothing renders, nothing throws, the element is just still there.
+//
+// The sheet itself is gone -- Settings is its own page now -- but the rule that
+// bit it is a property of CSS, not of that element, so the guards stay and the
+// two secondary pages carry a blanket [hidden] rule apiece.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -20,9 +24,9 @@ import { dirname, join } from 'node:path';
 const here = dirname(fileURLToPath(import.meta.url));
 
 // Every stylesheet and every script, including the ones in subdirectories. The
-// chat screen lives in assets/chat/, and a guard that only looked at the top level
-// would silently stop covering the newest code -- which is exactly when this trap
-// gets re-introduced.
+// Ask screen lives in assets/chat/ and Settings in assets/settings/, and a guard
+// that only looked at the top level would silently stop covering the newest code
+// -- which is exactly when this trap gets re-introduced.
 function collect(ext) {
   const out = [];
   const walk = (dir) => {
@@ -74,16 +78,22 @@ function selectorsGuardingHidden() {
   return found;
 }
 
-test('the settings sheet is actually hidden when hidden', () => {
-  // The showstopper, pinned directly: #sheet declares display:flex, and
-  // Settings.buildDOM only ever sets `.hidden`.
-  assert.match(rules, /#sheet\[hidden\][^{]*\{[^}]*display\s*:\s*none/,
-    '#sheet declares its own display, so it needs an explicit [hidden] rule or it never hides');
-});
-
 test('the min-points field is actually hidden when hidden', () => {
   assert.match(rules, /\.field\[hidden\][^{]*\{[^}]*display\s*:\s*none/,
     '.field declares display:block, so syncKind setting .hidden cannot hide it');
+});
+
+// The settings screens moved out of the sky's sheet and into their own document,
+// and the trap moved with them: settings.css gives .field, .card, .src-edit and
+// the tab strip their own `display`, and settings.js hides several of them by
+// class rather than by id -- which the id-based cross-reference below cannot see.
+// The blanket rule covers the whole page at once, including whatever gets added
+// to it next, exactly as it does on the chat screen.
+test('the settings stylesheet neutralises [hidden] for every element on the page', () => {
+  const settings = readFileSync(join(here, 'assets/settings/settings.css'), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '');
+  assert.match(settings, /\[hidden\]\s*\{[^}]*display\s*:\s*none\s*!important/,
+    'settings.css declares display on .field and .src-edit and settings.js hides them via .hidden; without a blanket [hidden] rule they are still laid out');
 });
 
 // The chat screen hides elements by class, not by id — sources, plan, answer,

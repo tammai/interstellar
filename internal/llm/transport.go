@@ -206,17 +206,50 @@ func call(ctx context.Context, client *http.Client, p Provider, model string, re
 	}, nil
 }
 
-// snippet trims a provider error body to something loggable. Error bodies can be
-// long HTML pages when a base_url is wrong.
+// snippet trims a provider error body to something loggable, preferring the
+// sentence a person can act on over the envelope it arrived in.
+//
+// OpenAI-compatible providers wrap their errors as {"error":{"message":"..."}},
+// and the message is the whole of the useful part: "this model requires a
+// subscription, upgrade for access" tells you what to do, while the JSON around
+// it tells you nothing and is long enough to push the message out of a truncated
+// banner entirely. That is not hypothetical -- a lapsed Ollama subscription
+// produced a 63-failure run whose banner was cut off mid-request-id.
+//
+// Falls back to the raw body, because a wrong base_url returns an HTML page with
+// no envelope at all, and that page's first line is the clue.
 func snippet(b []byte) string {
+	if msg := errorMessage(b); msg != "" {
+		return clip(msg)
+	}
 	s := strings.TrimSpace(string(b))
 	s = strings.ReplaceAll(s, "\n", " ")
-	const max = 200
-	if len(s) > max {
-		// ToValidUTF8 drops a rune the cut may have split. These strings are stored
-		// in llm_calls.error, so a broken one is persisted mojibake in the one place
-		// someone looks when diagnosing a provider.
-		return strings.ToValidUTF8(s[:max], "") + "..."
+	return clip(s)
+}
+
+// errorMessage digs the human-readable message out of an OpenAI-shaped error
+// body. Returns "" for anything else, including valid JSON of another shape --
+// guessing at an unknown schema would print something misleading with more
+// confidence than the raw body deserves.
+func errorMessage(b []byte) string {
+	var envelope struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
 	}
-	return s
+	if err := json.Unmarshal(b, &envelope); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(envelope.Error.Message)
+}
+
+func clip(s string) string {
+	const max = 200
+	if len(s) <= max {
+		return s
+	}
+	// ToValidUTF8 drops a rune the cut may have split. These strings are stored
+	// in llm_calls.error, so a broken one is persisted mojibake in the one place
+	// someone looks when diagnosing a provider.
+	return strings.ToValidUTF8(s[:max], "") + "..."
 }

@@ -17,6 +17,7 @@ package llm
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -29,7 +30,21 @@ type Provider struct {
 	// APIKeyEnv is the NAME of the environment variable holding the key -- never
 	// the key. Empty means keyless (Ollama), and no Authorization header is sent.
 	APIKeyEnv string `json:"api_key_env"`
+	// Disabled takes a provider out of service without deleting it. Deleting is
+	// the lossy option: it drops the base URL and the env var name, so switching
+	// a vendor off for an afternoon and back on again means retyping both.
+	//
+	// Stored as "disabled" rather than "enabled" so that ABSENT means ON. The
+	// registry is a JSON blob inside `settings` with no migration path, and every
+	// entry already written by every instance predates this field -- with an
+	// "enabled" flag, the zero value would read as off and a running instance
+	// would wake up with its whole registry switched off. The API inverts it back
+	// to `active`, matching topics and sources; see providerDTO.
+	Disabled bool `json:"disabled,omitempty"`
 }
+
+// Active reports whether this provider may be routed to.
+func (p Provider) Active() bool { return !p.Disabled }
 
 // Keyless reports whether this provider needs no credential.
 func (p Provider) Keyless() bool { return strings.TrimSpace(p.APIKeyEnv) == "" }
@@ -149,11 +164,27 @@ func ParseModelRefs(raw string) ([]ModelRef, error) {
 	return out, nil
 }
 
-// Resolve pairs a ref with its provider.
+// ErrProviderDisabled is returned by Resolve for a provider the owner has
+// switched off.
+//
+// A distinct error because the two failures deserve different treatment: a ref
+// naming a provider that is not in the registry is a mistake worth recording as
+// a failed attempt, while a ref naming one that is deliberately off is not a
+// failure at all and must not be written to llm_calls. See Client.CompleteAs.
+var ErrProviderDisabled = errors.New("provider is switched off")
+
+// Resolve pairs a ref with its provider, refusing one that is switched off.
+//
+// Lookup deliberately still returns disabled entries -- the settings screen has
+// to list them to switch them back on. Resolve is the routing path, and that is
+// where "off" has to mean something.
 func (r *Registry) Resolve(ref ModelRef) (Provider, error) {
 	p, ok := r.Lookup(ref.Provider)
 	if !ok {
 		return Provider{}, fmt.Errorf("no provider named %q in the registry", ref.Provider)
+	}
+	if p.Disabled {
+		return Provider{}, fmt.Errorf("%w: %s", ErrProviderDisabled, p.Name)
 	}
 	return p, nil
 }

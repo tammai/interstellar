@@ -1827,3 +1827,407 @@ func TestSavingTheWeeklyScheduleReloadsTheScheduler(t *testing.T) {
 		t.Error("the new weekly time was not picked up without a restart")
 	}
 }
+
+// The seeded registry ships every provider switched on, and the switch survives
+// a round trip through settings.
+func TestProviderToggleRoundTrips(t *testing.T) {
+	_, h, _ := testServer(t)
+
+	for _, p := range decode[settingsResponse](t, do(t, h, "GET", "/api/settings", "")).Providers {
+		if !p.Active {
+			t.Fatalf("seeded provider %q arrived switched off", p.Name)
+		}
+	}
+
+	// openrouter is in no role, so it is free to park.
+	w := do(t, h, "PATCH", "/api/providers/openrouter", `{"active":false}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("switching off = %d, body %s", w.Code, w.Body)
+	}
+	if active := providerActive(t, h, "openrouter"); active {
+		t.Error("openrouter still reports active after being switched off")
+	}
+	// Everything else is untouched: one endpoint, one entry.
+	if !providerActive(t, h, "deepseek") {
+		t.Error("switching openrouter off also switched deepseek off")
+	}
+
+	if w := do(t, h, "PATCH", "/api/providers/openrouter", `{"active":true}`); w.Code != http.StatusOK {
+		t.Fatalf("switching back on = %d, body %s", w.Code, w.Body)
+	}
+	if !providerActive(t, h, "openrouter") {
+		t.Error("openrouter did not come back on")
+	}
+}
+
+// The failure this switch could cause is a silent one: park the provider your
+// classifier runs on and the morning run stops, hours later, for a reason nobody
+// connects to a toggle. So it is refused at the moment of the click, naming what
+// stands on it.
+func TestSwitchingOffAProviderARoleNeedsIsRefused(t *testing.T) {
+	_, h, _ := testServer(t)
+
+	// Phase 0 seeds both roles onto deepseek.
+	w := do(t, h, "PATCH", "/api/providers/deepseek", `{"active":false}`)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body %s", w.Code, w.Body)
+	}
+	body := w.Body.String()
+	for _, want := range []string{"classifier", "synthesizer"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("refusal %q does not name the %s that depends on it", body, want)
+		}
+	}
+	if !providerActive(t, h, "deepseek") {
+		t.Error("a refused switch-off still changed the registry")
+	}
+
+	// Move the roles elsewhere and the same switch is allowed -- the guard is
+	// about what depends on it now, not about the provider being special.
+	put := `{"classifier_model":"ollama/x","synthesizer_model":"ollama/y","chat_model":"ollama/z"}`
+	if w := do(t, h, "PUT", "/api/settings", put); w.Code != http.StatusOK {
+		t.Fatalf("moving the roles = %d, body %s", w.Code, w.Body)
+	}
+	if w := do(t, h, "PATCH", "/api/providers/deepseek", `{"active":false}`); w.Code != http.StatusOK {
+		t.Fatalf("switching off after moving the roles = %d, body %s", w.Code, w.Body)
+	}
+}
+
+// A provider used only as a fallback is free to park: the chain is what runs
+// when something else has already failed, so a shorter chain is a choice, not a
+// breakage.
+func TestSwitchingOffAFallbackOnlyProviderIsAllowed(t *testing.T) {
+	_, h, _ := testServer(t)
+
+	put := `{"classifier_fallback":["openrouter/some-model"]}`
+	if w := do(t, h, "PUT", "/api/settings", put); w.Code != http.StatusOK {
+		t.Fatalf("setting the fallback = %d, body %s", w.Code, w.Body)
+	}
+	if w := do(t, h, "PATCH", "/api/providers/openrouter", `{"active":false}`); w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want the fallback-only provider to be parkable; body %s", w.Code, w.Body)
+	}
+}
+
+func TestProviderPatchRejectsUnknownProvider(t *testing.T) {
+	_, h, _ := testServer(t)
+	if w := do(t, h, "PATCH", "/api/providers/not-a-provider", `{"active":false}`); w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", w.Code)
+	}
+}
+
+func providerActive(t *testing.T, h http.Handler, name string) bool {
+	t.Helper()
+	for _, p := range decode[settingsResponse](t, do(t, h, "GET", "/api/settings", "")).Providers {
+		if p.Name == name {
+			return p.Active
+		}
+	}
+	t.Fatalf("no provider named %q", name)
+	return false
+}
+
+// The banner has to say what actually happened, not what was configured. A
+// keyless provider whose entitlement lapsed passes every readiness check and
+// fails every call; before this, the only symptom was an empty sky.
+func TestBannerReportsAWhollyFailingRole(t *testing.T) {
+	srv, h, db := testServer(t)
+
+	today := store.RunDate(time.Now().In(srv.Env.Location))
+	for i := 0; i < 63; i++ {
+		if err := db.RecordLLMCall(store.LLMCall{
+			RunDate: today, Role: "classifier", Provider: "ollama",
+			Model: "deepseek-v4-flash:cloud", OK: false,
+			Err: "ollama returned 403: this model requires a subscription",
+		}); err != nil {
+			t.Fatalf("record: %v", err)
+		}
+	}
+
+	got := decode[statusResponse](t, do(t, h, "GET", "/api/status", ""))
+	if len(got.Failures) != 1 || got.Failures[0].Role != "classifier" {
+		t.Fatalf("failures = %+v, want the classifier", got.Failures)
+	}
+	for _, want := range []string{"classifier", "63", "ollama/deepseek-v4-flash:cloud", "403"} {
+		if !strings.Contains(got.Banner, want) {
+			t.Errorf("banner %q does not mention %q", got.Banner, want)
+		}
+	}
+}
+
+// Chat failing means the Ask screen is broken, which is not the same as the
+// morning run being broken. It travels in the payload so Settings can show it,
+// but it must not dress itself up as a broken pipeline on the star map.
+func TestChatFailuresStayOutOfTheSkyBanner(t *testing.T) {
+	srv, h, db := testServer(t)
+
+	today := store.RunDate(time.Now().In(srv.Env.Location))
+	if err := db.RecordLLMCall(store.LLMCall{
+		RunDate: today, Role: "chat", Provider: "deepseek", Model: "deepseek-chat",
+		OK: false, Err: "402 insufficient balance",
+	}); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+
+	got := decode[statusResponse](t, do(t, h, "GET", "/api/status", ""))
+	if len(got.Failures) != 1 || got.Failures[0].Role != "chat" {
+		t.Fatalf("failures = %+v, want the chat role reported", got.Failures)
+	}
+	if strings.Contains(got.Banner, "chat") {
+		t.Errorf("banner %q raised a chat failure on the star map", got.Banner)
+	}
+}
+
+// A dead provider burns the daily budget on retries, so both conditions are true
+// at once -- and only one of them is the cause. Raising the cap on a model that
+// answers 403 just buys more 403s.
+func TestFailureBannerOutranksTheCapBanner(t *testing.T) {
+	srv, h, db := testServer(t)
+
+	if w := do(t, h, "PUT", "/api/settings", `{"max_calls_per_day":2}`); w.Code != http.StatusOK {
+		t.Fatalf("setting the cap = %d, body %s", w.Code, w.Body)
+	}
+	today := store.RunDate(time.Now().In(srv.Env.Location))
+	for i := 0; i < 3; i++ {
+		if err := db.RecordLLMCall(store.LLMCall{
+			RunDate: today, Role: "synthesizer", Provider: "p", Model: "m", OK: false, Err: "403 nope",
+		}); err != nil {
+			t.Fatalf("record: %v", err)
+		}
+	}
+
+	got := decode[statusResponse](t, do(t, h, "GET", "/api/status", ""))
+	if !strings.Contains(got.Banner, "403") {
+		t.Errorf("banner %q reported the cap rather than the cause", got.Banner)
+	}
+}
+
+// The delivery test reports three states for the webhook and only one of them is a
+// failure. An unset webhook used to come back as "no webhook URL set", which put a
+// red line about a channel the owner never asked for next to the result they were
+// actually reading -- and painted the whole report red even when the email went.
+//
+// No SMTP connection is made here: digest_to seeds empty, so the email half
+// short-circuits on Problem() before it dials. The webhook half is a local httptest
+// server, which is the only kind of endpoint this suite is allowed to reach.
+func TestDeliveryTestSeparatesAnUnsetWebhookFromABrokenOne(t *testing.T) {
+	_, h, db := testServer(t)
+
+	type testResult struct {
+		Email      bool   `json:"email"`
+		EmailError string `json:"email_error"`
+		Ping       bool   `json:"ping"`
+		PingError  string `json:"ping_error"`
+		PingNote   string `json:"ping_note"`
+	}
+	run := func() testResult {
+		w := do(t, h, "POST", "/api/delivery/test", "{}")
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+		}
+		return decode[testResult](t, w)
+	}
+
+	// A fresh instance: no webhook, switch off. Nothing to test is not a failure.
+	res := run()
+	if res.PingError != "" {
+		t.Errorf("an unconfigured webhook reported a failure: %q", res.PingError)
+	}
+	if res.PingNote == "" {
+		t.Error("an unconfigured webhook reported nothing at all")
+	}
+
+	// Switched on with nowhere to send IS a failure: the round-up will try.
+	if err := db.SetSettings(map[string]string{store.KeyPingEnabled: "1"}); err != nil {
+		t.Fatalf("SetSettings: %v", err)
+	}
+	res = run()
+	if res.PingError == "" {
+		t.Error("a webhook switched on with no URL was not reported as a problem")
+	}
+	if res.PingNote != "" {
+		t.Errorf("a real problem was reported as a note: %q", res.PingNote)
+	}
+
+	// And a URL that answers.
+	var hits int
+	hook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer hook.Close()
+	if err := db.SetSettings(map[string]string{store.KeyPingURL: hook.URL}); err != nil {
+		t.Fatalf("SetSettings: %v", err)
+	}
+	res = run()
+	if !res.Ping || res.PingError != "" {
+		t.Errorf("ping = %v, error = %q", res.Ping, res.PingError)
+	}
+	if hits != 1 {
+		t.Errorf("the webhook was called %d times, want 1", hits)
+	}
+
+	// The email half never dialled: it has no destination, and says so.
+	if res.EmailError == "" {
+		t.Error("no destination and no email problem reported")
+	}
+}
+
+// Sending a written round-up costs no model call and does not rewrite it.
+//
+// That is the whole reason POST /api/weekly/send exists next to /api/weekly/run: the
+// button sends the prose on screen, works when the synthesizer does not, and cannot
+// replace what the owner just read with a different draft.
+func TestWeeklySendDeliversTheStoredRoundUp(t *testing.T) {
+	_, h, db := testServer(t)
+
+	// Nothing written yet.
+	if w := do(t, h, "POST", "/api/weekly/send", "{}"); w.Code != http.StatusNotFound {
+		t.Errorf("status with no round-up = %d, want 404", w.Code)
+	}
+
+	if _, err := db.SaveWeeklyDigest(store.WeeklyDigest{
+		WeekStart: "2026-08-10", WeekEnd: "2026-08-16",
+		Body:    "1. Story number A\n   What changed.\n   4 sources · Agents · 2026-08-10\n",
+		Signals: 9, Topics: 2,
+	}); err != nil {
+		t.Fatalf("SaveWeeklyDigest: %v", err)
+	}
+
+	// Written, but both channels off: a configuration state, reported as such rather
+	// than as a failure or a 500.
+	res := decode[pipeline.WeeklyRunResult](t, do(t, h, "POST", "/api/weekly/send", "{}"))
+	if res.Delivered {
+		t.Error("something was sent with both channels off")
+	}
+	if res.DeliverNote == "" {
+		t.Error("nothing was sent and nothing said why")
+	}
+
+	// Webhook on. Email stays off deliberately: this suite must never open an SMTP
+	// connection, and the two channels are independent by design.
+	var hits int
+	hook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer hook.Close()
+	if err := db.SetSettings(map[string]string{
+		store.KeyPingEnabled: "1", store.KeyPingURL: hook.URL,
+	}); err != nil {
+		t.Fatalf("SetSettings: %v", err)
+	}
+
+	res = decode[pipeline.WeeklyRunResult](t, do(t, h, "POST", "/api/weekly/send", "{}"))
+	if !res.Delivered || !res.PingSent {
+		t.Errorf("delivered=%v ping=%v error=%q", res.Delivered, res.PingSent, res.PingError)
+	}
+	if hits != 1 {
+		t.Errorf("the webhook was called %d times, want 1", hits)
+	}
+	if res.WeekStart != "2026-08-10" {
+		t.Errorf("week = %q, want the latest stored round-up", res.WeekStart)
+	}
+
+	// No model call: sending is not composing. This is what makes the button usable on
+	// the day the provider is the reason the send has to be retried.
+	if n := countLLMCalls(t, db); n != 0 {
+		t.Errorf("%d model calls billed for a send", n)
+	}
+
+	// And the send is recorded against the digest, so a retry is distinguishable from
+	// a first attempt.
+	stored, err := db.WeeklyDigestFor("2026-08-10")
+	if err != nil {
+		t.Fatalf("WeeklyDigestFor: %v", err)
+	}
+	if stored.SentAt == "" || stored.SentVia != "ping" {
+		t.Errorf("sent_at=%q sent_via=%q", stored.SentAt, stored.SentVia)
+	}
+	// The body must be untouched -- sending is not composing.
+	if !strings.Contains(stored.Body, "1. Story number A") {
+		t.Errorf("the stored round-up changed when it was sent:\n%s", stored.Body)
+	}
+}
+
+// A week that has no round-up is a 404, not an empty send.
+func TestWeeklySendValidatesTheWeek(t *testing.T) {
+	_, h, db := testServer(t)
+	if _, err := db.SaveWeeklyDigest(store.WeeklyDigest{
+		WeekStart: "2026-08-10", WeekEnd: "2026-08-16", Body: "Body.", Signals: 1, Topics: 1,
+	}); err != nil {
+		t.Fatalf("SaveWeeklyDigest: %v", err)
+	}
+
+	if w := do(t, h, "POST", "/api/weekly/send", `{"week":"not-a-date"}`); w.Code != http.StatusBadRequest {
+		t.Errorf("status for a malformed week = %d, want 400", w.Code)
+	}
+	if w := do(t, h, "POST", "/api/weekly/send", `{"week":"2026-01-05"}`); w.Code != http.StatusNotFound {
+		t.Errorf("status for a week with no round-up = %d, want 404", w.Code)
+	}
+}
+
+func countLLMCalls(t *testing.T, db *store.DB) int {
+	t.Helper()
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM llm_calls`).Scan(&n); err != nil {
+		t.Fatalf("count llm_calls: %v", err)
+	}
+	return n
+}
+
+// Clearing the transcript deletes the turns and refunds nothing.
+//
+// Both halves matter. A clear that only emptied the screen would put every question
+// back on the next open, since the page loads its history each time; and a clear that
+// reset the day's chat budget would be a way to spend the cap twice, because the calls
+// really were made and the provider really did bill them.
+func TestClearChatHistoryKeepsTheCostLog(t *testing.T) {
+	_, h, db := testServer(t)
+
+	for _, q := range []string{"what happened?", "and yesterday?"} {
+		if _, err := db.SaveChatTurn(store.ChatTurn{
+			RunDate: "2026-08-18", Question: q, Answer: "Something did.", HitCount: 2, Calls: 1,
+		}); err != nil {
+			t.Fatalf("SaveChatTurn: %v", err)
+		}
+	}
+	if err := db.RecordLLMCall(store.LLMCall{
+		RunDate: "2026-08-18", Role: "chat", Provider: "deepseek", Model: "deepseek-chat",
+		TokensIn: 900, TokensOut: 120, OK: true,
+	}); err != nil {
+		t.Fatalf("RecordLLMCall: %v", err)
+	}
+
+	before := decode[chatHistoryResponse](t, do(t, h, "GET", "/api/chat/history", ""))
+	if len(before.Turns) != 2 {
+		t.Fatalf("%d turns before clearing, want 2", len(before.Turns))
+	}
+	if before.ChatCallsToday != 1 {
+		t.Fatalf("chat_calls_today = %d before clearing, want 1", before.ChatCallsToday)
+	}
+
+	w := do(t, h, "DELETE", "/api/chat/history", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+	if cleared := decode[map[string]int64](t, w)["cleared"]; cleared != 2 {
+		t.Errorf("cleared = %d, want 2", cleared)
+	}
+
+	after := decode[chatHistoryResponse](t, do(t, h, "GET", "/api/chat/history", ""))
+	if len(after.Turns) != 0 {
+		t.Errorf("%d turns survived the clear", len(after.Turns))
+	}
+	// The budget is read from llm_calls, so it must be untouched.
+	if after.ChatCallsToday != 1 {
+		t.Errorf("chat_calls_today = %d after clearing, want the spend to stand at 1", after.ChatCallsToday)
+	}
+	if n := countLLMCalls(t, db); n != 1 {
+		t.Errorf("%d rows in the cost log after clearing, want 1", n)
+	}
+
+	// Clearing an empty transcript is a no-op, not an error.
+	if w := do(t, h, "DELETE", "/api/chat/history", ""); w.Code != http.StatusOK {
+		t.Errorf("clearing an empty transcript = %d", w.Code)
+	}
+}

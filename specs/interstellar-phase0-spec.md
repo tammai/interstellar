@@ -3,6 +3,7 @@
 > Personal AI news intelligence tool. Per-user, self-contained, runs locally via Docker.
 > **Revision 3 — FINAL for build.** Supersedes rev 2. Companion artifact: `interstellar-starmap-prototype.html` (approved UI concept).
 > **Revision 4 — amends rev 3, 2026-08-17.** Closes §6's canvas-performance build problem with what measurement actually found, and records the sky-layer preferences it produced. Rev 3's text stands as written; rev 4 is additive — see §0 "Added in rev 4" and §11.
+> **Revision 5 — amends rev 3, 2026-08-18.** Moves Settings out of the star map's popover-and-sheet and onto its own page with horizontal tabs, and widens the signal detail panel. Both **supersede** parts of §6 rather than adding to it — see §0 "Changed in rev 5", "Also changed in rev 5", and the note under §6's Settings bullet.
 
 ## 0. Decision log
 
@@ -36,6 +37,18 @@
 | 18 | Constellation joins | **A minimum spanning tree over each topic's stars**, and the layer **defaults off** | A polyline in array order — which is score order, not spatial, so a 45-star topic zigzagged across itself and several topics' joins crossed the whole canvas. §6 specifies the links, so defaulting them off is a default and not a removal: at today's density the sky reads better without them, and the Layers panel turns them on |
 | 19 | Shared-star ties | **Removed** | Drawing all 49 (a tangle), and drawing the hovered star's only (tried, still no value). §6's "place star between constellations" is met by *placement*; membership is already stated by the tooltip, the detail panel and both list groups. A line was never what carried it |
 | 17 | The galactic band | **A bundled photograph**, composited additively into the baked background; the hand-drawn band stays as the fallback | Procedural-only. The photograph carries grain and dust structure no reasonable amount of arc-drawing reproduces, bakes in 3ms against 7.2ms, and adds 66KB to a 20MB binary. Bundled next to the fonts, never fetched — §6's offline rule covers images too |
+
+### Changed in rev 5 — cause: six screens behind a menu, over the surface they configure
+| # | Decision | Choice | Rejected |
+|---|----------|--------|----------|
+| 20 | Where Settings lives | **Its own document at `/settings/`, with a horizontal tab strip** — the same shape as the Ask screen, sharing only `tokens.css` | The gear popover into a sliding sheet, as §6 specified. Two faults, both structural rather than cosmetic. The sheet was a 560px overlay on the right of the star map, so the sky being configured was behind the thing configuring it — and the panel that shows a signal's detail occupies that same corner. And the popover listed the six screens one line each, so the shape of the configuration was recitable but never visible: every screen was a click into a menu and a click out of it. A tab strip states all six at once and switching costs one click. Two further things fall out of it, neither the reason but both real: `app.js` stops importing 1,700 lines of forms to draw a canvas (measured: the sky now loads six assets, the settings page three, and it calls `requestAnimationFrame` zero times), and each screen gets an address — `settings/#model` — which is how the sky's "needs attention" banner now opens the screen that can fix it |
+| 21 | What replaces the sheet's close button | **The back link in the header, and the browser's own Back** | A close button. A page is left the way pages are left; the fragment router means Back steps between screens first and then to the sky, which is the order you arrived in |
+
+### Also changed in rev 5 — cause: the panel is where a signal is actually read
+| # | Decision | Choice | Rejected |
+|---|----------|--------|----------|
+| 22 | Detail panel width | **`min(560px, 100vw - 32px)`** — full width to a 560px cap | Two rejections, not one. The prototype's `min(430px, …)`, which §6 makes a contract and this therefore supersedes: the panel's content is a title, a paragraph of reasoning and one line per source, the source list is the part anyone reads, and at 430px each outlet wrapped to two or three lines while the reasoning ran eight words to a line — the card was mostly re-reading. And **800px, which was tried first**: it fixed the wrapping and lost the point of the panel, which is that it sits over the sky. At that width it reads as a page in front of the stars, and the star it describes is behind it. 560 is where the source lines stop wrapping and the sky is still the screen. The ≤640px rule — full-width sheet from the bottom edge — is untouched by any of it |
+
 
 ## 1. Goal
 
@@ -148,8 +161,10 @@ Reference implementation: `interstellar-starmap-prototype.html`. Contract, not s
 - **Star rendering:** color-temperature variation for normal stars; tapered diffraction spikes (vertical pair longer); rotating glint on hot stars; hard bright core. 
 - **Navigation:** wheel zoom to cursor (clamp 0.55–3.5×), drag pan, double-click/⌂ reset, touch pan + pinch; **two-layer parallax dust** (0.25× / 0.55×). **No 3D rotation** — rejected: no third data dimension; breaks glanceability and spatial memory.
 - **Detail panel:** floating frosted-glass card (blur ≥ 16px, translucent gradient, glow border, top hairline highlight), fade + zoom open/close with slight overshoot, origin right-center, Esc closes.
+  > **rev 5 widens this.** The prototype's 430px becomes `min(560px, 100vw - 32px)` — see §0 decision #22, which also records why it is not 800. Everything else in this bullet stands, including the glass, the overshoot and the origin.
 - **List view:** same visual language (dot size/gold/fade), grouped by topic, empty topic renders "No signal today".
 - **Settings:** gear button by Sky/List toggle → glass popover → screens for Topics CRUD, Sources CRUD, Model config, Schedule.
+  > **rev 5 supersedes this line.** The gear is now a link to `/settings/`, its own document, and the screens sit behind a horizontal tab strip rather than a popover and a sheet — see §0 decision #20. Everything else in this bullet stands: the same screens, the same CRUD, and the same visual language, which is why the cards, fields, switches and tables moved across verbatim.
 - **Typography: Noto Sans for UI/body (400/500/600) + system fallback; Playfair Display 600 for display (wordmark, panel titles). Both OFL-licensed — font files BUNDLED in the image, no hotlinking, renders offline.**
 - **Quality floor:** `prefers-reduced-motion` disables twinkle/pulse/glint/parallax easing; keyboard focus visible; responsive to ~380px.
 

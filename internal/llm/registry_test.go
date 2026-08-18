@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -234,4 +235,82 @@ func openTempStore(t *testing.T) *store.DB {
 	}
 	t.Cleanup(func() { db.Close() })
 	return db
+}
+
+// Absent means ON. The registry is an unmigrated JSON blob, so every entry
+// written before the flag existed has no "disabled" key -- and reading those as
+// off would switch a running instance's whole registry off on upgrade.
+func TestProviderWithoutTheFlagIsActive(t *testing.T) {
+	r, err := ParseRegistry(`[{"name":"p","base_url":"https://x","api_key_env":"K"}]`)
+	if err != nil {
+		t.Fatalf("ParseRegistry: %v", err)
+	}
+	p, _ := r.Lookup("p")
+	if !p.Active() {
+		t.Error("a provider entry with no disabled flag came back switched off")
+	}
+	if _, err := r.Resolve(ModelRef{"p", "m"}); err != nil {
+		t.Errorf("Resolve refused an entry with no disabled flag: %v", err)
+	}
+}
+
+// Lookup still sees a disabled provider -- the settings screen has to list it to
+// switch it back on -- while Resolve, the routing path, refuses it.
+func TestDisabledProviderListsButDoesNotResolve(t *testing.T) {
+	r, err := ParseRegistry(`[{"name":"p","base_url":"https://x","api_key_env":"K","disabled":true}]`)
+	if err != nil {
+		t.Fatalf("ParseRegistry: %v", err)
+	}
+	if _, ok := r.Lookup("p"); !ok {
+		t.Fatal("a switched-off provider vanished from Lookup, so nothing could switch it back on")
+	}
+	if len(r.Providers()) != 1 {
+		t.Fatalf("Providers() returned %d entries, want the switched-off one listed", len(r.Providers()))
+	}
+	_, err = r.Resolve(ModelRef{"p", "m"})
+	if !errors.Is(err, ErrProviderDisabled) {
+		t.Errorf("Resolve error = %v, want ErrProviderDisabled", err)
+	}
+}
+
+// A role standing on a switched-off provider is not ready, and says what to do.
+func TestReadinessExplainsASwitchedOffProvider(t *testing.T) {
+	t.Setenv("PRESENT_KEY", "sk-here")
+	cfg, err := LoadConfig(map[string]string{
+		store.KeyProviders:        `[{"name":"p","base_url":"https://x","api_key_env":"PRESENT_KEY","disabled":true}]`,
+		store.KeyClassifierModel:  "p/a",
+		store.KeySynthesizerModel: "p/b",
+	})
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.Ready() {
+		t.Error("a role on a switched-off provider reported ready")
+	}
+	got := cfg.RoleReadiness(RoleClassifier).Problem
+	if !strings.Contains(got, "switched off") || !strings.Contains(got, "p") {
+		t.Errorf("problem = %q, should name the provider and say it is switched off", got)
+	}
+}
+
+// Only the primary counts. A provider that appears solely in a fallback chain is
+// free to switch off -- that is the ordinary use of the switch.
+func TestRolesUsingCountsPrimariesOnly(t *testing.T) {
+	cfg, err := LoadConfig(map[string]string{
+		store.KeyProviders: `[{"name":"a","base_url":"https://x","api_key_env":"K"},
+		                      {"name":"b","base_url":"https://y","api_key_env":"K"}]`,
+		store.KeyClassifierModel:    "a/one",
+		store.KeyClassifierFallback: `["b/two"]`,
+		store.KeySynthesizerModel:   "a/three",
+	})
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if got := cfg.RolesUsing("b"); len(got) != 0 {
+		t.Errorf("RolesUsing(fallback-only provider) = %v, want none", got)
+	}
+	got := cfg.RolesUsing("a")
+	if len(got) != 2 || got[0] != RoleClassifier || got[1] != RoleSynthesizer {
+		t.Errorf("RolesUsing = %v, want classifier and synthesizer in that order", got)
+	}
 }

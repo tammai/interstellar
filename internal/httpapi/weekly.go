@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/tammai/interstellar/internal/config"
@@ -140,6 +141,67 @@ func (s *Server) handleWeeklyRun(w http.ResponseWriter, r *http.Request) {
 	s.json(w, http.StatusOK, result)
 }
 
+type weeklySendRequest struct {
+	// Week is an optional YYYY-MM-DD inside a week that already has a round-up.
+	// Defaults to the most recent one, which is the one the screen is showing.
+	Week string `json:"week"`
+}
+
+// handleWeeklySend delivers a round-up that has already been written.
+//
+// Separate from POST /api/weekly/run: that one composes, and composing to send would
+// replace the prose the owner just read with a different draft. This sends what is
+// stored, costs no model call, and works when the synthesizer does not -- which is
+// exactly the state a manual retry is for.
+func (s *Server) handleWeeklySend(w http.ResponseWriter, r *http.Request) {
+	var req weeklySendRequest
+	if r.ContentLength > 0 {
+		if err := decodeJSON(w, r, &req); err != nil {
+			s.error(w, http.StatusBadRequest, "invalid JSON body", nil)
+			return
+		}
+	}
+
+	week := strings.TrimSpace(req.Week)
+	if week == "" {
+		latest, err := s.DB.WeeklyDigests(1)
+		if err != nil {
+			s.error(w, http.StatusInternalServerError, "could not read the round-ups", err)
+			return
+		}
+		if len(latest) == 0 {
+			s.error(w, http.StatusNotFound, "there is no round-up to send yet — write one first", nil)
+			return
+		}
+		week = latest[0].WeekStart
+	} else if _, err := time.ParseInLocation("2006-01-02", week, s.Env.Location); err != nil {
+		s.error(w, http.StatusBadRequest, "week must be YYYY-MM-DD", nil)
+		return
+	}
+
+	runner := pipeline.NewWeeklyRunner(s.DB, s.Env, s.Log, func() time.Time {
+		return time.Now().In(s.Env.Location)
+	})
+
+	result, err := runner.Deliver(r.Context(), week)
+	if errors.Is(err, store.ErrNotFound) {
+		s.error(w, http.StatusNotFound, "no round-up has been written for that week", nil)
+		return
+	}
+	if err != nil {
+		if errors.Is(err, r.Context().Err()) && r.Context().Err() != nil {
+			return
+		}
+		s.error(w, http.StatusBadGateway, "could not send the round-up: "+err.Error(), err)
+		return
+	}
+
+	// 200 even when nothing went out. Both channels off is a configuration state, not
+	// a server error, and the note says which it was -- the screen reports it rather
+	// than the status code.
+	s.json(w, http.StatusOK, result)
+}
+
 // handleDeliveryTest sends a test message, so a relay can be verified without
 // waiting a week to find out it was wrong.
 //
@@ -157,6 +219,11 @@ func (s *Server) handleDeliveryTest(w http.ResponseWriter, r *http.Request) {
 		EmailError string `json:"email_error,omitempty"`
 		Ping       bool   `json:"ping"`
 		PingError  string `json:"ping_error,omitempty"`
+		// PingNote is the third state: there was nothing to test. A webhook is off by
+		// default and most instances will never have one, so reporting the absence of
+		// a URL as an error puts a red line about a feature the owner never asked for
+		// next to the one thing they were actually testing.
+		PingNote string `json:"ping_note,omitempty"`
 	}
 	var out result
 
@@ -181,7 +248,12 @@ func (s *Server) handleDeliveryTest(w http.ResponseWriter, r *http.Request) {
 		out.EmailError = smtpCfg.Problem()
 	}
 
-	if cfg.PingURL != "" {
+	// Three cases, and only one of them is a failure. A URL that is switched on and
+	// empty is a real misconfiguration -- the round-up will try to ping nowhere -- and
+	// the same thing describeDelivery reports on the screen. An empty URL with the
+	// switch off is just a channel nobody set up.
+	switch {
+	case cfg.PingURL != "":
 		err := notify.SendPing(r.Context(), cfg.PingURL, notify.PingPayload{
 			Event: "test", Summary: "Test ping from Interstellar.",
 		})
@@ -190,8 +262,10 @@ func (s *Server) handleDeliveryTest(w http.ResponseWriter, r *http.Request) {
 		} else {
 			out.Ping = true
 		}
-	} else {
-		out.PingError = "no webhook URL set"
+	case cfg.PingEnabled:
+		out.PingError = "switched on with no webhook URL set"
+	default:
+		out.PingNote = "not set up"
 	}
 
 	s.json(w, http.StatusOK, out)

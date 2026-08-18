@@ -1,4 +1,13 @@
-// Settings: the gear popover and the four screens behind it (§6).
+// Settings: its own document at /settings/, and the six screens behind the tab
+// strip (§6, as amended by rev 5 decision #20).
+//
+// It used to be a gear popover over the star map with a sheet sliding in from the
+// right. Two things were wrong with that. The sheet covered the sky it was
+// configuring, and every screen was two clicks away behind a menu that listed
+// them one line each -- so the shape of the configuration was never visible, only
+// recitable. Tabs state all six at once and cost one click. The move also takes
+// this file off the star map's critical path entirely: app.js no longer imports
+// 1700 lines to render a canvas.
 //
 // The Model screen is the substantial one. §3.1 promises that either role can
 // run on any model from any provider, switched here without touching code or
@@ -15,64 +24,157 @@ const SOURCE_KINDS = [
   ['youtube_rss', 'YouTube channel'],
 ];
 
-export class Settings {
-  constructor({ onChanged, onRefreshRequested }) {
-    this.onChanged = onChanged;
-    this.onRefreshRequested = onRefreshRequested;
+// Tab order is deliberate: it runs from what you change most often to what you
+// only read. Topics and Sources are the daily edits, Model and Schedule the rare
+// ones, and Signal quality is a measurement rather than a setting at all.
+const TABS = [
+  ['topics', 'Topics'],
+  ['sources', 'Sources'],
+  ['model', 'Model'],
+  ['schedule', 'Schedule'],
+  ['weekly', 'Weekly'],
+  ['quality', 'Signal quality'],
+];
+
+const DEFAULT_TAB = 'topics';
+
+// The screen is addressed by the fragment, so the browser's Back button steps
+// between tabs, a tab can be linked to, and a reload lands where you were. It is
+// also how the sky's banner opens this page straight on Model.
+function screenFromHash() {
+  const want = location.hash.replace(/^#/, '');
+  return TABS.some(([key]) => key === want) ? want : DEFAULT_TAB;
+}
+
+class Settings {
+  constructor() {
     this.status = null;
     this.settings = null;
-    this.quality = null;    // last /api/topics/stats response, for the popover row
+    this.quality = null;    // last /api/topics/stats response
     this.qualityDays = 7;
     this.screen = null;
     this.modelSig = null;   // signature of the last Model render, see refreshModel
+    this.tabButtons = new Map();
 
-    this.buildDOM();
-    this.bindGlobal();
+    this.screenEl = el('screen');
+    this.buildTabs();
+
+    addEventListener('hashchange', () => this.showScreen(screenFromHash()));
   }
 
   // ---------- shell ----------
 
-  buildDOM() {
-    this.popover = document.createElement('div');
-    this.popover.id = 'settings';
-    this.popover.setAttribute('role', 'menu');
-    this.popover.setAttribute('aria-label', 'Settings');
-    document.body.append(this.popover);
+  buildTabs() {
+    const strip = el('tabs');
+    for (const [key, label] of TABS) {
+      // A real link, not a button: middle-click and copy-link work, and the
+      // fragment it points at is the same thing showScreen reads back.
+      const tab = document.createElement('a');
+      tab.className = 'tab';
+      tab.href = `#${key}`;
+      tab.id = `tab-${key}`;
+      tab.setAttribute('role', 'tab');
+      tab.setAttribute('aria-selected', 'false');
+      tab.setAttribute('aria-controls', 'screen');
+      tab.tabIndex = -1;          // roving; the selected tab gets 0 in markSelected
 
-    this.sheet = document.createElement('div');
-    this.sheet.id = 'sheet';
-    this.sheet.setAttribute('role', 'dialog');
-    this.sheet.setAttribute('aria-modal', 'true');
-    this.sheet.hidden = true;
-    document.body.append(this.sheet);
+      const text = document.createElement('span');
+      text.textContent = label;
+      tab.append(text);
+
+      tab.addEventListener('keydown', (e) => this.onTabKey(e, key));
+      strip.append(tab);
+      this.tabButtons.set(key, tab);
+    }
   }
 
-  bindGlobal() {
-    document.addEventListener('click', (e) => {
-      if (this.popover.classList.contains('open') &&
-          !this.popover.contains(e.target) &&
-          !el('btnSettings').contains(e.target)) {
-        this.closePopover();
-      }
-    });
-    addEventListener('keydown', (e) => {
-      if (e.key !== 'Escape') return;
-      if (this.screen) this.closeSheet();
-      else if (this.popover.classList.contains('open')) this.closePopover();
-    });
+  // Arrow keys move between tabs, per the tablist pattern: with roving tabindex
+  // Tab alone reaches the strip once and then leaves for the screen, which is the
+  // point -- otherwise getting from the header to a topic definition is six tabs
+  // of chrome.
+  onTabKey(e, key) {
+    const keys = TABS.map(([k]) => k);
+    const i = keys.indexOf(key);
+    let next = null;
+    if (e.key === 'ArrowRight') next = keys[(i + 1) % keys.length];
+    else if (e.key === 'ArrowLeft') next = keys[(i - 1 + keys.length) % keys.length];
+    else if (e.key === 'Home') next = keys[0];
+    else if (e.key === 'End') next = keys[keys.length - 1];
+    if (!next) return;
+    e.preventDefault();
+    location.hash = `#${next}`;
+    this.tabButtons.get(next)?.focus();
   }
+
+  markSelected(screen) {
+    for (const [key, tab] of this.tabButtons) {
+      const on = key === screen;
+      tab.classList.toggle('on', on);
+      tab.setAttribute('aria-selected', String(on));
+      tab.tabIndex = on ? 0 : -1;
+    }
+    this.screenEl.setAttribute('aria-labelledby', `tab-${screen}`);
+  }
+
+  // ---------- status ----------
 
   setStatus(status) {
     this.status = status;
-    if (this.popover.classList.contains('open')) this.renderPopover();
+    this.renderRunState();
+    // A tab whose screen cannot work says so on the tab itself. The popover
+    // carried this as a "needs attention" row; here it has to survive being on a
+    // different screen, because nothing else would ever bring you back to Model.
+    //
+    // Two different questions, one dot: readiness is whether the configuration
+    // COULD work, failures are whether it DID. A keyless provider always passes
+    // the first and can fail every call of the second, which is the case this dot
+    // used to be blind to.
+    const broken = status && (!status.ready || (status.failures || []).length > 0);
+    this.tabButtons.get('model')?.classList.toggle('attention', !!broken);
     if (this.screen === 'model') this.refreshModel();
+  }
+
+  // The header line: what the popover's footer note said, minus the "no restart"
+  // reassurance, which now lives on the screens that actually change a schedule.
+  renderRunState() {
+    const box = el('runState');
+    const s = this.status;
+    if (!s) { box.textContent = ''; return }
+
+    box.replaceChildren();
+    // Shortened to match the sky's header exactly, hover text included. The two are
+    // separate implementations on purpose (app.js imports nothing from here), so the
+    // only thing keeping them one voice is that a change to either is made to both.
+    const add = (text, title, cls) => {
+      const span = document.createElement('span');
+      if (cls) span.className = cls;
+      span.textContent = text;
+      span.title = title;
+      box.append(span);
+    };
+
+    const running = s.run?.stage && s.run.stage !== 'idle';
+    if (running) add(`${s.run.stage}…`, `Run in progress: ${s.run.stage}`, 'rs-run');
+    if (s.calls_today != null) {
+      add(`${s.calls_today} / ${s.call_cap_day} calls`, 'LLM calls today, against the daily cap');
+    }
+    if (s.ready === false) {
+      add('not ready', 'not ready to run — a role has no model or no key', 'rs-warn');
+    }
+    // Named, not counted: "1 role failing" sends you looking, "Ask failing" tells
+    // you where. The provider's own words are on the Model screen, beside the
+    // field that changes them.
+    const failing = (s.failures || []).map((f) => f.role === 'chat' ? 'Ask' : f.role);
+    if (failing.length) {
+      add(`${failing.join(', ')} failing`,
+        'every call for this role failed on its most recent day — see the Model screen', 'rs-warn');
+    }
   }
 
   // The Model screen draws nothing from `status` -- it was re-rendered on every
   // poll purely to keep the per-provider key badges live. But renderModel goes
-  // through sheetFrame, which replaceChildren()s the sheet and builds a fresh
-  // .sheet-body, and .sheet-body is the scroller. So every status poll threw
-  // away the scroll position: every 20s while idle, every 1.5s during a run.
+  // through screenFrame, which replaceChildren()s the screen. So every status poll
+  // threw away the scroll position: every 20s while idle, every 1.5s during a run.
   //
   // The badges still need to go green the moment a key resolves, so the refresh
   // stays -- it just has to earn the rebuild.
@@ -80,7 +182,7 @@ export class Settings {
     // Never rebuild under the user's hands. A poll landing mid-edit would take
     // the field, its caret and whatever was typed into it.
     const active = document.activeElement;
-    if (active && this.sheet.contains(active) && /^(INPUT|SELECT|TEXTAREA)$/.test(active.tagName)) {
+    if (active && this.screenEl.contains(active) && /^(INPUT|SELECT|TEXTAREA)$/.test(active.tagName)) {
       return;
     }
 
@@ -90,33 +192,12 @@ export class Settings {
     await this.rerenderCurrent();
   }
 
-  // Everything renderModel draws. /api/settings carries no timestamp or other
-  // volatile field, so an unchanged signature really does mean an identical
-  // render.
+  // Everything renderModel draws -- which now includes the failing-role notes, so
+  // they are in here too. Neither half carries a timestamp or any other field
+  // that moves on its own, so an unchanged signature really does mean an
+  // identical render.
   modelSignature() {
-    return this.settings ? JSON.stringify(this.settings) : '';
-  }
-
-  toggle() {
-    if (this.popover.classList.contains('open')) this.closePopover();
-    else this.open();
-  }
-
-  async open(screen) {
-    await this.loadSettings();
-    // The popover's quality row needs a number to show. Fetched alongside
-    // settings rather than on every status poll: it changes once a run, and the
-    // popover is the only thing reading it until the screen opens.
-    this.quality = await fetchJSON(`/api/topics/stats?days=${this.qualityDays}`);
-    this.popover.classList.add('open');
-    el('btnSettings').setAttribute('aria-expanded', 'true');
-    this.renderPopover();
-    if (screen) this.openSheet(screen);
-  }
-
-  closePopover() {
-    this.popover.classList.remove('open');
-    el('btnSettings').setAttribute('aria-expanded', 'false');
+    return JSON.stringify([this.settings ?? null, this.status?.failures ?? []]);
   }
 
   async loadSettings() {
@@ -128,85 +209,24 @@ export class Settings {
     }
   }
 
-  renderPopover() {
-    const s = this.settings;
-    this.popover.replaceChildren();
-
-    // Counts come from /api/status. Until the first status lands they are
-    // genuinely unknown, and an em dash says that honestly -- but it used to be
-    // hardcoded on both rows, so it never became a number no matter what the
-    // server said.
-    const count = (n, one, many) =>
-      n == null ? '—' : `${n} ${n === 1 ? one : many}`;
-
-    const h = document.createElement('h3');
-    h.textContent = 'Configuration';
-    this.popover.append(h);
-
-    const rows = [
-      { key: 'topics', label: 'Topics', value: count(this.status?.topics_count, 'topic', 'topics') },
-      { key: 'sources', label: 'Sources', value: count(this.status?.sources_count, 'source', 'sources') },
-      {
-        key: 'model', label: 'Model',
-        value: s ? shortModel(s.classifier_model) + ' · ' + shortModel(s.synthesizer_model) : '—',
-        warn: this.status && !this.status.ready,
-      },
-      {
-        key: 'schedule', label: 'Schedule',
-        value: s ? `${s.schedule_ingest} · ${s.schedule_synthesize}` : '—',
-      },
-      // The hit rate is the one number here that is measured rather than
-      // configured, so the row shows it directly -- the point is to notice it in
-      // passing, not to have to go looking.
-      {
-        key: 'weekly', label: 'Weekly round-up',
-        value: s ? (s.digest_enabled ? 'emailed ' + (s.schedule_weekly_day || 'off')
-                                     : (s.schedule_weekly_day ? 'written ' + s.schedule_weekly_day : 'off')) : '—',
-      },
-      {
-        key: 'quality', label: 'Signal quality',
-        value: this.quality?.ready ? formatRate(this.quality.hit_rate) + ' matched' : 'no data yet',
-      },
-    ];
-
-    for (const row of rows) {
-      const div = document.createElement('div');
-      div.className = 'set-row';
-      div.tabIndex = 0;
-      div.setAttribute('role', 'menuitem');
-
-      const label = document.createElement('span');
-      label.textContent = row.label;
-
-      const value = document.createElement('span');
-      value.className = 'v' + (row.warn ? ' warn' : '');
-      value.textContent = row.warn ? 'needs attention' : row.value;
-
-      div.append(label, value);
-      div.addEventListener('click', () => this.openSheet(row.key));
-      div.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); this.openSheet(row.key) }
-      });
-      this.popover.append(div);
-    }
-
-    const note = document.createElement('div');
-    note.className = 'set-note';
-    note.textContent = this.status?.calls_today != null
-      ? `${this.status.calls_today} LLM calls today, cap ${this.status.call_cap_day}. Changes apply on the next run — no restart.`
-      : 'Changes apply on the next run — no restart.';
-    this.popover.append(note);
+  // Something on a screen changed the instance. Nothing here has to repaint a
+  // sky -- that is a different document, and it reloads when you go back to it --
+  // but the header's call count and readiness are stale the moment a save lands.
+  changed() {
+    loadStatus();
   }
 
-  // ---------- sheet ----------
+  // ---------- screens ----------
 
-  openSheet(screen) {
+  async showScreen(screen) {
+    if (screen === this.screen) return;
     this.screen = screen;
-    this.sheet.hidden = false;
-    requestAnimationFrame(() => this.sheet.classList.add('open'));
-    this.closePopover();
-
-    this.renderScreen(screen);
+    this.markSelected(screen);
+    // A fresh screen starts at the top, and the reader's focus goes with it:
+    // without this, changing tab leaves the caret wherever it was in the strip
+    // and a screen reader announces nothing.
+    this.screenEl.scrollTop = 0;
+    await this.renderScreen(screen);
   }
 
   renderScreen(screen) {
@@ -223,70 +243,95 @@ export class Settings {
 
   // Re-render the open screen in place, keeping the reader where they were.
   //
-  // Every render goes through sheetFrame, which replaceChildren()s the sheet and
-  // builds a fresh .sheet-body -- and .sheet-body is the scroller, so a rebuild
-  // always lands back at the top. Adding a topic to a list you had scrolled to
-  // the bottom of threw you back to the first one, which is precisely the moment
-  // you least want to lose your place.
+  // Every render goes through screenFrame, which replaceChildren()s the screen, so
+  // a rebuild always lands back at the top. Adding a topic to a list you had
+  // scrolled to the bottom of threw you back to the first one, which is precisely
+  // the moment you least want to lose your place.
   //
-  // Restoring after the await matters: these renders fetch before they append,
-  // so scrollTop set any earlier lands on an empty element and does not stick.
+  // Restoring after the await matters: these renders fetch before they append, so
+  // scrollTop set any earlier lands on an empty element and does not stick.
   async rerenderCurrent() {
     if (!this.screen) return;
-    const prev = this.sheet.querySelector('.sheet-body')?.scrollTop ?? 0;
+    const prev = this.screenEl.scrollTop;
     await this.renderScreen(this.screen);
-    const body = this.sheet.querySelector('.sheet-body');
-    if (body) body.scrollTop = prev;
+    this.screenEl.scrollTop = prev;
   }
 
-  closeSheet() {
-    this.screen = null;
-    this.sheet.classList.remove('open');
-    setTimeout(() => { if (!this.screen) this.sheet.hidden = true }, 240);
-  }
+  // Every screen gets the same frame: a title, an optional line of orientation,
+  // and a column that stops widening at a readable measure. There is no close
+  // button and no sticky head -- the tab strip above is always visible and always
+  // says which screen this is, which is the job the sheet's sticky title was
+  // doing.
+  screenFrame(title, subtitle) {
+    const inner = document.createElement('div');
+    inner.className = 'screen-inner';
 
-  // Every screen gets the same frame: a sticky head carrying the title and the
-  // close button, and a scrolling body. The sheets are long \u2014 Model in particular
-  // \u2014 and losing the heading part-way down leaves you unsure which screen you are
-  // editing.
-  sheetFrame(title, subtitle) {
-    this.sheet.replaceChildren();
-
-    const head = document.createElement('div');
-    head.className = 'sheet-head';
-
-    const close = document.createElement('button');
-    close.className = 'p-close';
-    close.setAttribute('aria-label', 'Close');
-    close.textContent = '\u00d7'; // U+00D7, inside the bundled latin subset
-    close.onclick = () => this.closeSheet();
-
-    const h = document.createElement('h2');
-    h.className = 'sheet-title';
+    const h = document.createElement('h1');
+    h.className = 'screen-title';
     h.textContent = title;
+    inner.append(h);
 
-    head.append(close, h);
-    this.sheet.append(head);
-
-    const body = document.createElement('div');
-    body.className = 'sheet-body';
-
-    // The subtitle scrolls with the body. It is orientation you read once, not
-    // something worth permanently occupying the top of a small screen.
     if (subtitle) {
       const p = document.createElement('p');
-      p.className = 'sheet-sub';
+      p.className = 'screen-sub';
       p.textContent = subtitle;
-      body.append(p);
+      inner.append(p);
     }
 
-    this.sheet.append(body);
-    return body;
+    this.screenEl.replaceChildren(inner);
+    return inner;
   }
 
   // A labelled switch. Returns the element; the caller supplies what flipping it
   // means. Kept here rather than duplicated per screen because topics and sources
   // must not drift apart on something this visible.
+  // A delivery channel and its settings in one card, with the switch in the title.
+  //
+  // The switch owns the fields below it: off disables them rather than hiding them, so
+  // the card still says what the channel WOULD use -- which is the thing you want to
+  // read when working out why nothing arrived. Flipping it enables them in place; a
+  // rebuild here would go through screenFrame and replaceChildren() away the very
+  // confirmation the flip produced, the trap the Model screen hit twice.
+  //
+  // The trade this accepts: the fields cannot be filled in before the channel is
+  // switched on. "Send a test" still works either way, so the verify-before-you-commit
+  // path is switch on, fill in, test -- one extra click, in exchange for a card whose
+  // state is never ambiguous.
+  channelCard(title, label, on, fields, save) {
+    const card = document.createElement('div');
+    card.className = 'card channel';
+
+    const head = document.createElement('div');
+    head.className = 'channel-head';
+
+    const heading = document.createElement('span');
+    heading.className = 'channel-title';
+    heading.textContent = title;
+
+    const setEnabled = (enabled) => {
+      card.classList.toggle('off', !enabled);
+      for (const el of fields.querySelectorAll('input, select, textarea')) {
+        el.disabled = !enabled;
+      }
+    };
+
+    const toggle = this.switchControl(on, label, async (next) => {
+      const ok = await save(next);
+      if (ok) setEnabled(next);
+      return ok;
+    });
+
+    head.append(heading, toggle);
+
+    const bodyEl = document.createElement('div');
+    bodyEl.className = 'channel-body';
+    bodyEl.append(fields);
+
+    card.append(head, bodyEl);
+    setEnabled(on);
+    return card;
+  }
+
   switchControl(initial, label, onFlip) {
     // Mutable, and deliberately so: the switch is not re-rendered after a flip,
     // so its own idea of the current state is the only one there is.
@@ -335,7 +380,7 @@ export class Settings {
   // ---------- topics ----------
 
   async renderTopics() {
-    const body = this.sheetFrame('Topics',
+    const body = this.screenFrame('Topics',
       'A definition is what the classifier judges against. Write it the way you would explain the topic to a colleague — what counts, and what does not.');
 
     const topics = await fetchJSON('/api/topics') || [];
@@ -352,7 +397,7 @@ export class Settings {
         method: 'POST',
         body: JSON.stringify({ title: 'New topic', definition: '' }),
       });
-      if (created) { this.rerenderCurrent(); this.onChanged() }
+      if (created) { this.rerenderCurrent(); this.changed() }
     };
     body.append(add);
   }
@@ -390,7 +435,7 @@ export class Settings {
       const ok = await fetchJSON(`/api/topics/${topic.id}`, {
         method: 'PATCH', body: JSON.stringify({ active: next }),
       });
-      if (ok) { topic.active = next; this.onChanged() }
+      if (ok) { topic.active = next; this.changed() }
       return !!ok;
     });
 
@@ -406,7 +451,7 @@ export class Settings {
       save.disabled = false;
       save.textContent = ok ? 'Saved' : 'Failed';
       setTimeout(() => (save.textContent = 'Save'), 1400);
-      if (ok) this.onChanged();
+      if (ok) this.changed();
     };
 
     const del = document.createElement('button');
@@ -416,7 +461,7 @@ export class Settings {
       // Deleting a topic drops its matches and signals with it, so confirm.
       if (!confirm(`Delete "${topic.title}"? Its signals go too.`)) return;
       await fetch(`/api/topics/${topic.id}`, { method: 'DELETE' });
-      this.rerenderCurrent(); this.onChanged();
+      this.rerenderCurrent(); this.changed();
     };
 
     actions.append(toggle, save, del);
@@ -428,7 +473,7 @@ export class Settings {
   // ---------- sources ----------
 
   async renderSources() {
-    const body = this.sheetFrame('Sources',
+    const body = this.screenFrame('Sources',
       'Feeds to watch. A source that keeps failing shows its last successful run here rather than disappearing quietly.');
 
     const sources = await fetchJSON('/api/sources') || [];
@@ -458,24 +503,54 @@ export class Settings {
     value.className = 'field';
     value.placeholder = 'Feed URL';
     value.setAttribute('aria-label', 'Source location');
-    kind.onchange = () => {
-      value.placeholder = kind.value === 'hn_search' ? 'Search query'
+    // Adding a Hacker News keyword is not adding a source, so the name field goes
+    // away for it: the keyword joins the existing Hacker News row.
+    const syncAdd = () => {
+      const hn = kind.value === 'hn_search' && !!existingHN();
+      value.placeholder = kind.value === 'hn_search' ? 'Search keyword'
         : kind.value === 'youtube_rss' ? 'Channel ID (UC...)' : 'Feed URL';
+      name.hidden = hn;
+      create.textContent = hn ? 'Add keyword' : 'Add source';
     };
+    const existingHN = () => sources.find((s) => s.kind === 'hn_search');
+    kind.onchange = syncAdd;
 
     const create = document.createElement('button');
     create.className = 'btn-primary';
     create.textContent = 'Add source';
     create.onclick = async () => {
-      const config = kind.value === 'hn_search' ? { query: value.value }
-        : kind.value === 'youtube_rss' ? { channel_id: value.value }
-        : { url: value.value };
+      const text = value.value.trim();
+      if (!text) return;
+
+      // A second Hacker News row would undo migration 007 one keyword at a time:
+      // source_count counts DISTINCT source_id, so two HN rows make one story
+      // look like two outlets. The keyword joins the row that is already there.
+      const hn = kind.value === 'hn_search' ? existingHN() : null;
+      if (hn) {
+        const queries = hnQueries(hn.config);
+        if (queries.some((q) => q.query.toLowerCase() === text.toLowerCase())) {
+          value.value = '';
+          return; // already watching it
+        }
+        queries.push({ query: text });
+        const ok = await fetchJSON(`/api/sources/${hn.id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ config: { queries } }),
+        });
+        if (ok) { this.rerenderCurrent(); this.changed() }
+        return;
+      }
+
+      const config = kind.value === 'hn_search' ? { queries: [{ query: text }] }
+        : kind.value === 'youtube_rss' ? { channel_id: text }
+        : { url: text };
       const ok = await fetchJSON('/api/sources', {
         method: 'POST',
         body: JSON.stringify({ kind: kind.value, name: name.value, config }),
       });
-      if (ok) { this.rerenderCurrent(); this.onChanged() }
+      if (ok) { this.rerenderCurrent(); this.changed() }
     };
+    syncAdd();
 
     add.append(kind, name, value, create);
     body.append(add);
@@ -489,7 +564,7 @@ export class Settings {
   // are already looking at breaks neither.
   pasteLink() {
     const section = document.createElement('section');
-    section.className = 'sheet-section transfer';
+    section.className = 'screen-section transfer';
 
     const h = document.createElement('h3');
     h.textContent = 'Save a link';
@@ -544,7 +619,7 @@ export class Settings {
       // read, rather than a URL having been written down.
       result.textContent = `${data.new ? 'Saved' : 'Already saved'}: ${data.title}`;
       url.value = '';
-      this.onChanged();
+      this.changed();
     };
 
     save.onclick = submit;
@@ -563,7 +638,7 @@ export class Settings {
   // reason, rather than live or silently dropped.
   sourceTransfer() {
     const section = document.createElement('section');
-    section.className = 'sheet-section transfer';
+    section.className = 'screen-section transfer';
 
     const h = document.createElement('h3');
     h.textContent = 'Move this list';
@@ -631,7 +706,7 @@ export class Settings {
       result.textContent = parts.join(' · ');
 
       this.rerenderCurrent();
-      this.onChanged();
+      this.changed();
     };
 
     const importBtn = document.createElement('button');
@@ -666,7 +741,13 @@ export class Settings {
       : `${source.item_count ?? 0} items · never completed a run`;
     if (!source.last_run_at) meta.classList.add('warn');
 
-    main.append(name, detail, meta);
+    // Hidden until something goes wrong; settings.css's blanket [hidden] rule is what
+    // keeps it out of the flow.
+    const failure = document.createElement('div');
+    failure.className = 'test-result bad';
+    failure.hidden = true;
+
+    main.append(name, detail, meta, failure);
 
     const actions = document.createElement('div');
     actions.className = 'card-actions';
@@ -689,16 +770,26 @@ export class Settings {
     const del = document.createElement('button');
     del.className = 'btn-danger';
     del.textContent = 'Delete';
+    // The response is checked rather than discarded, and the failure is reported
+    // into the card rather than swallowed. A delete that 500s used to look exactly
+    // like one that worked -- the screen re-rendered and the row was simply still
+    // there, with nothing on the page saying why.
     del.onclick = async () => {
       if (!confirm(`Delete "${source.name}"?`)) return;
-      await fetch(`/api/sources/${source.id}`, { method: 'DELETE' });
-      this.rerenderCurrent(); this.onChanged();
+      const ok = await fetchJSON(`/api/sources/${source.id}`, { method: 'DELETE' });
+      if (!ok) {
+        // Not rerenderCurrent(): it would replace the card this just wrote into.
+        failure.textContent = 'Could not delete this source. It is still here.';
+        failure.hidden = false;
+        return;
+      }
+      this.rerenderCurrent(); this.changed();
     };
 
     actions.append(toggle, editBtn, del);
     // The editor is built on first click, not here. Building one per card meant 68
-    // hidden forms and 272 form controls in a single scrolling sheet — controls are
-    // among the most expensive elements to lay out, and it was the sheet's scroll
+    // hidden forms and 272 form controls in one scrolling screen — controls are
+    // among the most expensive elements to lay out, and it was the screen's scroll
     // cost. Almost none of them are ever opened.
     let editor = null;
     editBtn.onclick = () => {
@@ -743,19 +834,86 @@ export class Settings {
     location.className = 'field';
     location.setAttribute('aria-label', 'Source location');
 
-    // hn_search carries a second knob: its own points floor, which overrides the
-    // global one so a broad query and a niche one can coexist.
-    const points = document.createElement('input');
-    points.className = 'field';
-    points.type = 'number';
-    points.min = '0';
-    points.placeholder = 'Min points';
-    points.setAttribute('aria-label', 'Minimum points for this query');
+    // Hacker News is one source carrying many keywords, so it gets a list editor
+    // instead of the single location field. Each keyword keeps its own points
+    // floor: a broad term needs a higher bar than a niche one, and one shared
+    // threshold either floods the sky or silences half the list.
+    // The keyword-less pass. Its own control rather than a keyword row, because
+    // it is not a keyword: it is "everything above this score, whatever it is
+    // about", and the classifier decides. Deliberately set HIGH while the keyword
+    // floor below is set LOW -- they cover opposite failures.
+    const firehose = document.createElement('div');
+    firehose.className = 'firehose';
+
+    const fireLabel = document.createElement('label');
+    fireLabel.className = 'field-label';
+    fireLabel.textContent = 'Also take everything scoring at least';
+
+    const firePoints = document.createElement('input');
+    firePoints.className = 'field';
+    firePoints.type = 'number';
+    firePoints.min = '0';
+    firePoints.placeholder = 'off';
+    firePoints.setAttribute('aria-label', 'Firehose minimum points, blank for off');
+
+    const fireNote = document.createElement('p');
+    fireNote.className = 'note';
+    fireNote.textContent = 'points, with no keyword at all — catches the big story ' +
+      'no keyword anticipated. Leave blank to switch it off.';
+
+    firehose.append(fireLabel, firePoints, fireNote);
+
+    const floorLabel = document.createElement('label');
+    floorLabel.className = 'field-label';
+    floorLabel.textContent = 'Keywords';
+
+    const keywords = document.createElement('div');
+    keywords.className = 'keywords';
+
+    const addKeyword = (q = { query: '', min_points: 0 }) => {
+      const row = document.createElement('div');
+      row.className = 'keyword-row';
+
+      const query = document.createElement('input');
+      query.className = 'field';
+      query.placeholder = 'Keyword';
+      query.value = q.query || '';
+      query.setAttribute('aria-label', 'Search keyword');
+
+      const floor = document.createElement('input');
+      floor.className = 'field';
+      floor.type = 'number';
+      floor.min = '0';
+      floor.placeholder = 'Min points';
+      floor.value = q.min_points ? String(q.min_points) : '';
+      floor.setAttribute('aria-label', `Minimum points for ${q.query || 'this keyword'}`);
+
+      const remove = document.createElement('button');
+      remove.className = 'btn-quiet';
+      remove.type = 'button';
+      remove.textContent = 'Remove';
+      remove.setAttribute('aria-label', `Remove keyword ${q.query || ''}`);
+      remove.onclick = () => row.remove();
+
+      row.append(query, floor, remove);
+      keywords.append(row);
+      return query;
+    };
+
+    const addBtn = document.createElement('button');
+    addBtn.className = 'btn-quiet';
+    addBtn.type = 'button';
+    addBtn.textContent = 'Add keyword';
+    addBtn.onclick = () => addKeyword().focus();
 
     const syncKind = () => {
-      location.placeholder = kind.value === 'hn_search' ? 'Search query'
-        : kind.value === 'youtube_rss' ? 'Channel ID (UC...)' : 'Feed URL';
-      points.hidden = kind.value !== 'hn_search';
+      const hn = kind.value === 'hn_search';
+      location.placeholder = kind.value === 'youtube_rss' ? 'Channel ID (UC...)' : 'Feed URL';
+      location.hidden = hn;
+      keywords.hidden = !hn;
+      addBtn.hidden = !hn;
+      firehose.hidden = !hn;
+      floorLabel.hidden = !hn;
     };
     kind.onchange = syncKind;
 
@@ -763,8 +921,10 @@ export class Settings {
       const cfg = source.config || {};
       name.value = source.name;
       kind.value = source.kind;
-      location.value = cfg.url || cfg.query || cfg.channel_id || '';
-      points.value = cfg.min_points ?? '';
+      location.value = cfg.url || cfg.channel_id || '';
+      keywords.replaceChildren();
+      for (const q of hnQueries(cfg)) addKeyword(q);
+      firePoints.value = cfg.firehose_min_points ? String(cfg.firehose_min_points) : '';
       syncKind();
     };
 
@@ -781,13 +941,38 @@ export class Settings {
     save.textContent = 'Save';
     save.onclick = async () => {
       const value = location.value.trim();
-      const config = kind.value === 'hn_search' ? { query: value }
-        : kind.value === 'youtube_rss' ? { channel_id: value }
-        : { url: value };
-      // Only send min_points when it has one, so clearing the box falls back to
-      // the global setting rather than pinning the query at zero.
-      if (kind.value === 'hn_search' && points.value !== '') {
-        config.min_points = Number(points.value);
+      let config;
+      if (kind.value === 'hn_search') {
+        // Read the rows rather than a model: the rows ARE the state, so a keyword
+        // typed and not blurred still saves. Blank ones are dropped -- an empty
+        // query asks Algolia for the entire front page.
+        const queries = [];
+        for (const row of keywords.querySelectorAll('.keyword-row')) {
+          const [q, floor] = row.querySelectorAll('input');
+          const text = q.value.trim();
+          if (!text) continue;
+          const entry = { query: text };
+          // Only send min_points when it has one, so clearing the box falls back
+          // to the global setting rather than pinning the keyword at zero.
+          if (floor.value !== '') entry.min_points = Number(floor.value);
+          queries.push(entry);
+        }
+        config = { queries };
+        // Blank means off, and must be sent as absent rather than 0 so the shape
+        // stays the one the Go side treats as "no firehose".
+        if (firePoints.value !== '' && Number(firePoints.value) > 0) {
+          config.firehose_min_points = Number(firePoints.value);
+        }
+        // The source-level floor every keyword without its own bar falls back to.
+        // Preserved rather than rebuilt, so editing keywords does not silently
+        // reset it to the global setting.
+        if (source.config && source.config.min_points) {
+          config.min_points = source.config.min_points;
+        }
+      } else if (kind.value === 'youtube_rss') {
+        config = { channel_id: value };
+      } else {
+        config = { url: value };
       }
 
       save.disabled = true;
@@ -806,12 +991,12 @@ export class Settings {
       detailEl.textContent = describeSource(source);
       card.classList.remove('editing');
       editBtn.textContent = 'Edit';
-      this.onChanged();
+      this.changed();
     };
 
     pair.append(name, kind);
     rowActions.append(cancel, save);
-    box.append(pair, location, points, rowActions);
+    box.append(pair, location, firehose, floorLabel, keywords, addBtn, rowActions);
     return { box, fill, focus: () => name.focus() };
   }
 
@@ -825,39 +1010,51 @@ export class Settings {
     // change nothing.
     this.modelSig = this.modelSignature();
 
-    const body = this.sheetFrame('Model',
+    const body = this.screenFrame('Model',
       'Either role can run on any provider. Changes take effect on the next run — nothing to restart.');
 
-    // Providers, each with a badge saying whether its key actually resolves.
-    // The registry stores the variable NAME; the value never leaves the
-    // environment, which is why this shows a state rather than a secret.
+    // Providers: three columns, mark then endpoint then state.
+    //
+    // The mark replaces the name because a row of six identical text labels is
+    // six things to read where a glyph is one thing to recognise -- and the name
+    // is not lost, it is the mark's accessible label and its tooltip. For a
+    // provider the owner added, providerMark falls back to a monogram of that
+    // same name, so an unrecognised entry still identifies itself.
+    //
+    // The badge says whether the key actually resolves. The registry stores the
+    // variable NAME; the value never leaves the environment, which is why this
+    // shows a state rather than a secret.
     const provSection = section(body, 'Providers');
     for (const p of s.providers) {
       const row = document.createElement('div');
-      row.className = 'card row';
+      row.className = 'card prov-row';
 
-      const main = document.createElement('div');
-      main.className = 'card-main';
-
-      const name = document.createElement('div');
-      name.className = 'card-name';
-      name.textContent = p.name;
+      const body2 = document.createElement('div');
+      body2.className = 'prov-body';
 
       const url = document.createElement('div');
-      url.className = 'card-detail';
+      url.className = 'prov-url';
       url.textContent = p.base_url;
 
       const key = document.createElement('div');
-      key.className = 'card-detail dim';
-      key.textContent = p.keyless ? 'no key required' : p.api_key_env;
+      key.className = 'prov-key';
+      if (p.keyless) {
+        key.textContent = 'no key required';
+      } else {
+        // The variable name is what the owner has to set on the container, so it
+        // is typed the way they will type it, not woven into a sentence.
+        const code = document.createElement('code');
+        code.textContent = p.api_key_env;
+        key.append(code);
+      }
 
-      main.append(name, url, key);
+      body2.append(url, key);
 
       const badge = document.createElement('span');
       badge.className = 'badge ' + (p.resolved ? 'ok' : 'bad');
       badge.textContent = p.keyless ? 'ready' : (p.resolved ? 'key set' : 'key missing');
 
-      row.append(main, badge);
+      row.append(providerMark(p.name), body2, badge);
       provSection.append(row);
     }
 
@@ -867,31 +1064,88 @@ export class Settings {
       'Keys are read from the environment by name and never stored. To add one, set the variable on the container and restart it — everything else here changes live.';
     provSection.append(provNote);
 
-    // Roles.
-    for (const [role, current, fallback] of [
-      ['classifier', s.classifier_model, s.classifier_fallback],
-      ['synthesizer', s.synthesizer_model, s.synthesizer_fallback],
+    // Roles. All three of them -- chat included, which it was not.
+    //
+    // The Ask screen has always had its own role, its own settings key and its own
+    // entry in the test endpoint; it just had no section here, so `chat_model` was
+    // reachable only by PUTting JSON at the API by hand. An owner whose credit ran
+    // out at the provider Phase 0 seeds could not move the Ask screen off it from
+    // the UI at all. §3.1 says either role can be switched in settings without
+    // touching code; a role the settings screen does not draw fails that.
+    for (const [role, title, current, fallback, hint] of [
+      ['classifier', 'Classifier', s.classifier_model, s.classifier_fallback,
+        'Scores every item against every topic. This is where most of the cost goes, so a cheap model earns its place here.'],
+      ['synthesizer', 'Synthesizer', s.synthesizer_model, s.synthesizer_fallback,
+        'Groups matched items into stories. The hardest judgment in the pipeline.'],
+      // Named for the screen it serves, not for the settings key behind it: the
+      // owner knows this as Ask. The key stays `chat_model`, which is what the
+      // note below says so the two can be connected.
+      ['chat', 'Ask', s.chat_model, s.chat_fallback,
+        'Answers questions on the Ask screen, in prose, from your own signals. ' +
+        'Budgeted separately from the runs and deliberately outside the readiness check — ' +
+        'clearing this stops Ask working, and must never stop the morning run.'],
     ]) {
-      const roleSection = section(body, role === 'classifier' ? 'Classifier' : 'Synthesizer');
+      const roleSection = section(body, title);
 
-      const hint = document.createElement('p');
-      hint.className = 'note';
-      hint.textContent = role === 'classifier'
-        ? 'Scores every item against every topic. This is where most of the cost goes, so a cheap model earns its place here.'
-        : 'Groups matched items into stories. The hardest judgment in the pipeline.';
-      roleSection.append(hint);
+      // No provider mark here, though it was tried: the field two lines below
+      // already says `ollama/glm-5.2` in full, so a mark beside the hint was a
+      // second answer to a question nothing had asked, floating next to a
+      // paragraph with no label of its own.
+      const note = document.createElement('p');
+      note.className = 'note';
+      note.textContent = hint;
+      roleSection.append(note);
 
+      // What actually happened, if it went wrong. The provider's own words, next
+      // to the field that changes them -- the whole failure mode this addresses
+      // is that the answer lived only in the database while the screen said the
+      // configuration was fine.
+      const failure = (this.status?.failures || []).find((f) => f.role === role);
+      if (failure) {
+        const bad = document.createElement('div');
+        bad.className = 'test-result bad';
+        bad.textContent =
+          `Every call failed on ${failure.run_date} (${failure.failed}) — ` +
+          `${failure.ref}: ${failure.error}`;
+        roleSection.append(bad);
+      }
+
+      // Labels, not placeholders. A placeholder is gone the moment the field has
+      // a value, so a populated fallback chain was two identical monospace boxes
+      // with nothing saying which was which.
       const input = document.createElement('input');
       input.className = 'field mono';
       input.value = current;
       input.placeholder = 'provider/model';
-      input.setAttribute('aria-label', `${role} model`);
+      input.id = `${role}-model`;
 
       const fb = document.createElement('input');
       fb.className = 'field mono';
       fb.value = (fallback || []).join(', ');
-      fb.placeholder = 'fallbacks, comma separated (may use other providers)';
-      fb.setAttribute('aria-label', `${role} fallback chain`);
+      fb.placeholder = 'none';
+      fb.id = `${role}-fallback`;
+
+      roleSection.append(
+        labelledField(input, 'Model', 'A provider from the list above, then a model it serves.'),
+        labelledField(fb, 'Fallback chain',
+          'Tried in order when the model above fails. Comma separated, and may cross providers — every attempt is logged separately.'),
+      );
+
+      // Chat's daily allowance belongs here rather than on Schedule, for the same
+      // reason it is a separate budget at all: a question is not a run. Schedule's
+      // two caps govern the morning pass; this one governs an evening of curiosity,
+      // and keeping them apart is what stops one starving the other.
+      let chatCap = null;
+      if (role === 'chat') {
+        chatCap = document.createElement('input');
+        chatCap.className = 'field';
+        chatCap.type = 'number';
+        chatCap.min = '0';
+        chatCap.value = s.max_chat_calls_per_day;
+        chatCap.id = 'chat-cap';
+        roleSection.append(labelledField(chatCap, 'Max questions per day',
+          'Its own allowance, separate from the run caps on the Schedule screen, so questions cannot eat what tomorrow morning needs.'));
+      }
 
       const actions = document.createElement('div');
       actions.className = 'card-actions wide';
@@ -906,17 +1160,23 @@ export class Settings {
         const payload = {};
         payload[`${role}_model`] = input.value.trim();
         payload[`${role}_fallback`] = fb.value.split(',').map((v) => v.trim()).filter(Boolean);
+        if (chatCap) payload.max_chat_calls_per_day = Number(chatCap.value);
         const res = await fetch('/api/settings', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
         });
         if (res.ok) {
-          result.textContent = 'Saved. It applies on the next run.';
+          // Chat is not a run, and telling someone their new Ask model "applies
+          // on the next run" invites them to wait for 09:30 before asking
+          // anything. It applies to the next question.
+          result.textContent = role === 'chat'
+            ? 'Saved. It applies to your next question.'
+            : 'Saved. It applies on the next run.';
           result.className = 'test-result ok';
 
           // Adopt the saved state as what this screen already shows, before
-          // onChanged kicks off a status load. Otherwise the poll finds settings
+          // changed() kicks off a status load. Otherwise the poll finds settings
           // that differ from the last render, rebuilds the screen, and wipes the
           // confirmation within milliseconds of the reader seeing it -- and the
           // rebuild is redundant anyway, since the fields already hold exactly
@@ -924,7 +1184,7 @@ export class Settings {
           await this.loadSettings();
           this.modelSig = this.modelSignature();
 
-          this.onChanged();
+          this.changed();
         } else {
           const err = await res.json().catch(() => ({}));
           result.textContent = err.error || 'Could not save';
@@ -955,7 +1215,7 @@ export class Settings {
       };
 
       actions.append(save, test);
-      roleSection.append(input, fb, actions, result);
+      roleSection.append(actions, result);
     }
 
     // The escalation ladder is an operator runbook, not code (§3.1).
@@ -981,43 +1241,65 @@ export class Settings {
     const s = this.settings;
     if (!s) return;
 
-    const body = this.sheetFrame('Schedule',
+    const body = this.screenFrame('Schedule',
       `Times are local to the container (${s.timezone}). The aim is a fresh sky before you look at it.`);
 
-    const grid = document.createElement('div');
-    grid.className = 'grid';
-
-    const fields = [
-      ['schedule_ingest', 'Ingest', s.schedule_ingest, 'time', 'When to fetch feeds.'],
-      ['schedule_synthesize', 'Synthesize', s.schedule_synthesize, 'time', 'When to classify and compose.'],
-      ['max_calls_per_run', 'Max LLM calls per run', s.max_calls_per_run, 'number', 'A runaway run stops here.'],
-      ['max_calls_per_day', 'Max LLM calls per day', s.max_calls_per_day, 'number', 'Survives a restart.'],
-      ['sky_days', 'Days of sky', s.sky_days, 'number', 'How far back the star map reaches.'],
-      ['hn_min_points', 'HN minimum points', s.hn_min_points, 'number', 'Below this, Hacker News is noise.'],
-      ['transcripts_per_run', 'Videos transcribed per run', s.transcripts_per_run, 'number',
-        'Captions fetched and summarized so the classifier can judge a video on what was said, not its title. 0 turns it off.'],
+    // Two groups of four columns. The split is not cosmetic: the first group is
+    // everything about the run itself -- when it happens and what it may spend --
+    // and those four are read together, because moving a time and raising a cap
+    // are the same decision about how much work happens each morning. The rest
+    // tune what gets gathered and how far back the sky reaches, and are touched
+    // once and then rarely.
+    //
+    // Help text is written short deliberately. In a quarter-width column a
+    // sentence of explanation becomes eight ragged lines, and the field it
+    // belongs to disappears under it.
+    const groups = [
+      ['The run', [
+        ['schedule_ingest', 'Ingest', s.schedule_ingest, 'time', 'When feeds are fetched.'],
+        ['schedule_synthesize', 'Synthesize', s.schedule_synthesize, 'time', 'When they are classified and composed.'],
+        ['max_calls_per_run', 'Max LLM calls per run', s.max_calls_per_run, 'number', 'A runaway run stops here.'],
+        ['max_calls_per_day', 'Max LLM calls per day', s.max_calls_per_day, 'number', 'Survives a restart.'],
+      ]],
+      ['What it gathers', [
+        ['sky_days', 'Days of sky', s.sky_days, 'number', 'How far back the star map reaches.'],
+        ['hn_min_points', 'HN minimum points', s.hn_min_points, 'number', 'Below this, Hacker News is noise.'],
+        ['transcripts_per_run', 'Videos transcribed per run', s.transcripts_per_run, 'number',
+          'Captions summarized, so a video is judged on what was said. 0 turns it off.'],
+      ]],
     ];
 
-    for (const [key, label, value, type, help] of fields) {
-      const wrap = document.createElement('label');
-      wrap.className = 'field-wrap';
+    // One node holding every input, so the save below still reads them all with a
+    // single querySelectorAll no matter how the groups are arranged.
+    const grid = document.createElement('div');
 
-      const l = document.createElement('span');
-      l.className = 'field-label';
-      l.textContent = label;
+    for (const [title, fields] of groups) {
+      const wrap = section(grid, title);
+      const row = document.createElement('div');
+      row.className = 'grid quad';
 
-      const input = document.createElement('input');
-      input.className = 'field';
-      input.type = type;
-      input.value = value;
-      input.dataset.key = key;
+      for (const [key, label, value, type, help] of fields) {
+        const cell = document.createElement('label');
+        cell.className = 'field-wrap';
 
-      const h = document.createElement('span');
-      h.className = 'field-help';
-      h.textContent = help;
+        const l = document.createElement('span');
+        l.className = 'field-label';
+        l.textContent = label;
 
-      wrap.append(l, input, h);
-      grid.append(wrap);
+        const input = document.createElement('input');
+        input.className = 'field';
+        input.type = type;
+        input.value = value;
+        input.dataset.key = key;
+
+        const h = document.createElement('span');
+        h.className = 'field-help';
+        h.textContent = help;
+
+        cell.append(l, input, h);
+        row.append(cell);
+      }
+      wrap.append(row);
     }
     body.append(grid);
 
@@ -1041,7 +1323,7 @@ export class Settings {
       if (res.ok) {
         result.textContent = 'Saved. The schedule was rebuilt — no restart needed.';
         result.className = 'test-result ok';
-        this.onChanged();
+        this.changed();
       } else {
         const err = await res.json().catch(() => ({}));
         result.textContent = err.error || 'Could not save';
@@ -1049,10 +1331,33 @@ export class Settings {
       }
     };
 
+    // "Run now" used to close the sheet, because the sheet was covering the sky
+    // it had just told to refresh. Nothing is covered here, so the button reports
+    // where it stands instead: this page has no stars to show, and bouncing the
+    // reader back to the star map to find out whether the run started is worse
+    // than one line of text.
     const now = document.createElement('button');
     now.className = 'btn-quiet';
     now.textContent = 'Run now';
-    now.onclick = () => { this.onRefreshRequested(); this.closeSheet() };
+    now.onclick = async () => {
+      now.disabled = true;
+      result.className = 'test-result';
+      result.textContent = 'Starting…';
+      const res = await fetch('/api/refresh', { method: 'POST' }).catch(() => null);
+      now.disabled = false;
+      if (!res) {
+        result.className = 'test-result bad';
+        result.textContent = 'Could not reach the server.';
+        return;
+      }
+      result.className = 'test-result ok';
+      // 409 is not a failure: it means a run is already going, which is the state
+      // the button was asking for.
+      result.textContent = res.status === 409
+        ? 'A run is already going. Watch it in the header.'
+        : 'Started. Watch it in the header, and the sky when it finishes.';
+      this.changed();
+    };
 
     const actions = document.createElement('div');
     actions.className = 'card-actions wide';
@@ -1079,7 +1384,7 @@ export class Settings {
   // topic that matched 2 of 4 items and one that matched 2 of 400 is invisible.
   // Both look like "2 matches"; only one is a definition that needs rewriting.
   async renderQuality() {
-    const body = this.sheetFrame('Signal quality',
+    const body = this.screenFrame('Signal quality',
       'How much of what the classifier read, it judged relevant. A very low rate usually means a topic definition is drawn too tight; a very high one means it is too loose and everything gets through.');
 
     const data = await fetchJSON(`/api/topics/stats?days=${this.qualityDays}`);
@@ -1160,7 +1465,7 @@ export class Settings {
 
   // Constellation history, on the same screen as the hit rate.
   //
-  // Its own screen would be a fifth sheet for two tables that answer the same
+  // Its own tab would be a seventh screen for two tables that answer the same
   // question — is this topic working — from opposite ends: the hit rate says what
   // the classifier is doing now, the history says what came of it over weeks.
   async renderHistory(body) {
@@ -1262,7 +1567,7 @@ export class Settings {
     const s = this.settings;
     if (!s) return;
 
-    const body = this.sheetFrame('Weekly round-up',
+    const body = this.screenFrame('Weekly round-up',
       'One written pass over the week\'s signals. Reading it here needs nothing configured; ' +
       'having it emailed needs a relay and an API key in the environment.');
 
@@ -1318,8 +1623,8 @@ export class Settings {
         : `Nothing written: ${res.skipped || 'no signals that week'}.`;
 
       // Update the prose in place rather than calling rerenderCurrent(). A rebuild
-      // goes through sheetFrame, which replaceChildren()s the sheet -- destroying the
-      // confirmation set two lines above. That is the same trap the Model screen hit:
+      // goes through screenFrame, which replaceChildren()s the screen -- destroying
+      // the confirmation set two lines above. Same trap the Model screen hit:
       // a save whose own refresh wipes the message telling you it worked.
       if (res.written) {
         const fresh = await fetchJSON('/api/weekly');
@@ -1328,9 +1633,54 @@ export class Settings {
       }
     };
 
+    // Sends what is on screen. Deliberately a different endpoint from the button
+    // above rather than the same one with deliver:true -- that one composes first, so
+    // it would replace the prose being read with a different draft, bill a synthesizer
+    // call to send something already written, and send nothing at all on a week it
+    // decides not to rewrite.
+    const sendNow = document.createElement('button');
+    sendNow.className = 'btn-quiet';
+    sendNow.textContent = 'Send it now';
+    sendNow.disabled = !data?.latest;
+    if (!data?.latest) sendNow.title = 'Nothing written yet';
+    sendNow.onclick = async () => {
+      const to = data.delivery?.email_enabled ? (data.delivery.email_to || 'the configured address') : null;
+      const channels = [to && `email to ${to}`, data.delivery?.ping_enabled && 'the webhook']
+        .filter(Boolean).join(' and ');
+      if (!channels) {
+        runResult.className = 'test-result bad';
+        runResult.textContent = 'Both channels are off — switch one on below first.';
+        return;
+      }
+      // Same guard as deleting a topic, for the same reason: it leaves the instance
+      // and cannot be recalled.
+      if (!confirm(`Send the round-up for ${data.latest.week_start} by ${channels}?`)) return;
+
+      sendNow.disabled = true;
+      runResult.className = 'test-result';
+      runResult.textContent = 'Sending…';
+      const res = await fetchJSON('/api/weekly/send', {
+        method: 'POST', body: JSON.stringify({ week: data.latest.week_start }),
+      });
+      sendNow.disabled = false;
+      if (!res) {
+        runResult.className = 'test-result bad';
+        runResult.textContent = 'Could not send it.';
+        return;
+      }
+      const lines = [];
+      if (res.email_sent) lines.push('Emailed.');
+      else if (res.email_error) lines.push(`Email: ${res.email_error}`);
+      if (res.ping_sent) lines.push('Webhook pinged.');
+      else if (res.ping_error) lines.push(`Webhook: ${res.ping_error}`);
+      if (!lines.length) lines.push(res.deliver_note || 'Nothing was sent.');
+      runResult.className = 'test-result' + (res.delivered ? ' ok' : ' bad');
+      runResult.textContent = lines.join(' · ');
+    };
+
     const runActions = document.createElement('div');
     runActions.className = 'card-actions wide';
-    runActions.append(runNow);
+    runActions.append(runNow, sendNow);
     latest.append(runActions, runResult);
 
     // --- when ---
@@ -1352,67 +1702,65 @@ export class Settings {
     note.className = 'note';
     note.style.marginTop = '0';
     note.textContent = 'Both off by default — the app is the front door. ' +
+      'Switch a channel on to edit what it uses. ' +
       'The SMTP password is read from the named environment variable at send time and never stored.';
     out.append(note);
 
-    const dgrid = document.createElement('div');
-    dgrid.className = 'grid';
-    dgrid.append(
+    // One card per channel, each owning its own fields. The switch sits in the card's
+    // title because that is what it governs: with both toggles collected at the bottom
+    // of one long form, nothing said which of the seven fields either of them turned
+    // on, and the webhook URL sat in a grid of SMTP settings it has nothing to do with.
+    //
+    // Two columns inside the email card, fixed. These are pairs by nature -- the two
+    // addresses, then the host and its port, then the username and the variable holding
+    // its password -- and a grid that reflowed to three would break every pair apart.
+    const emailFields = document.createElement('div');
+    emailFields.className = 'grid duo';
+    emailFields.append(
       field('digest_to', 'Email to', s.digest_to, 'text', 'Comma-separated for more than one.'),
       field('digest_from', 'Email from', s.digest_from, 'text',
-        'Must be a Resend-verified sender. onboarding@resend.dev works to your own address.'),
+        'A display name is fine: Interstellar <you@your-domain>. Must be a Resend-verified sender.'),
       field('smtp_host', 'SMTP host', s.smtp_host, 'text', 'smtp.resend.com'),
       field('smtp_port', 'SMTP port', s.smtp_port, 'number', '587 for STARTTLS, 465 for TLS.'),
       field('smtp_username', 'SMTP username', s.smtp_username, 'text', 'Resend expects "resend".'),
       field('smtp_password_env', 'Password env var', s.smtp_password_env, 'text',
         s.smtp_password_resolved ? 'Set in the environment.' : 'NOT set — nothing will send.'),
-      field('ping_url', 'Webhook URL', s.ping_url, 'text',
-        'Posted a small JSON payload. The round-up itself stays in the app.'),
     );
-    out.append(dgrid);
 
     if (!s.smtp_password_resolved) {
       const warn = document.createElement('p');
       warn.className = 'test-result bad';
+      warn.style.margin = '4px 0 10px';
       warn.textContent = `${s.smtp_password_env || 'The password variable'} is not set in the environment. ` +
         'Adding it needs a container restart, because the environment is fixed at boot.';
-      out.append(warn);
+      emailFields.append(warn);
     }
 
-    // Each switch gets a visible label, not just an aria-label. Two identical
-    // "Active" toggles side by side are indistinguishable by sight, and which one is
-    // email matters -- one of them sends mail.
-    const labelled = (text, control) => {
-      const wrap = document.createElement('div');
-      wrap.className = 'switch-row';
-      const l = document.createElement('span');
-      l.className = 'switch-label';
-      l.textContent = text;
-      wrap.append(l, control);
-      return wrap;
-    };
+    const webhookFields = document.createElement('div');
+    webhookFields.className = 'grid duo';
+    webhookFields.append(
+      field('ping_url', 'Webhook URL', s.ping_url, 'text',
+        'Posted a small JSON payload. The round-up itself stays in the app.'),
+    );
 
-    const toggles = document.createElement('div');
-    toggles.className = 'switch-group';
-    toggles.append(
-      labelled('Email it', this.switchControl(s.digest_enabled, 'Email the round-up', async (next) => {
+    out.append(
+      this.channelCard('Email', 'Email the round-up', s.digest_enabled, emailFields, async (next) => {
         const ok = await fetchJSON('/api/settings', {
           method: 'PUT', body: JSON.stringify({ digest_enabled: next }),
         });
         if (!ok) return false;
         this.settings = ok;
         return true;
-      })),
-      labelled('Ping a webhook', this.switchControl(s.ping_enabled, 'Ping a webhook', async (next) => {
+      }),
+      this.channelCard('Webhook', 'Ping a webhook', s.ping_enabled, webhookFields, async (next) => {
         const ok = await fetchJSON('/api/settings', {
           method: 'PUT', body: JSON.stringify({ ping_enabled: next }),
         });
         if (!ok) return false;
         this.settings = ok;
         return true;
-      })),
+      }),
     );
-    out.append(toggles);
 
     const testResult = document.createElement('div');
     testResult.className = 'test-result';
@@ -1432,7 +1780,7 @@ export class Settings {
       if (res.ok) {
         testResult.className = 'test-result ok';
         testResult.textContent = 'Saved. The schedule was rebuilt — no restart needed.';
-        this.onChanged();
+        this.changed();
       } else {
         const err = await res.json().catch(() => ({}));
         testResult.className = 'test-result bad';
@@ -1456,10 +1804,17 @@ export class Settings {
         testResult.textContent = 'Could not run the test.';
         return;
       }
+      // Red when something actually failed, not merely when something is off. A
+      // webhook nobody set up used to report "Ping: no webhook URL set" and paint
+      // the whole line red next to a perfectly good email — the report has to
+      // separate "broken" from "not configured" or it trains you to ignore it.
       const lines = [];
       lines.push(res.email ? 'Email sent.' : `Email: ${res.email_error}`);
-      lines.push(res.ping ? 'Ping sent.' : `Ping: ${res.ping_error}`);
-      testResult.className = 'test-result' + (res.email || res.ping ? ' ok' : ' bad');
+      if (res.ping) lines.push('Ping sent.');
+      else if (res.ping_error) lines.push(`Ping: ${res.ping_error}`);
+      else if (res.ping_note) lines.push(`Webhook: ${res.ping_note}.`);
+      const failed = !!(res.email_error || res.ping_error);
+      testResult.className = 'test-result' + (failed ? ' bad' : ' ok');
       testResult.textContent = lines.join(' · ');
     };
 
@@ -1491,6 +1846,80 @@ export class Settings {
   }
 }
 
+// ---------- provider marks ----------
+
+// The vendors' own artwork, bundled. A row of six endpoints is six shapes to
+// recognise rather than six words to read, and a mark only does that job if it is
+// the mark people already know -- a drawn approximation is a shape you have to
+// learn, which is the thing it was meant to save you.
+//
+// Fetched once from each vendor and committed to web/assets/img/providers/, never
+// hotlinked: §6 requires the UI to render offline, and a logo CDN is exactly the
+// dependency that rule exists to refuse. See that directory's README for where
+// each file came from and the trademark position.
+//
+// `file` is relative to this document (/settings/). `color` is only the monogram
+// fallback's colour -- the artwork carries its own.
+const PROVIDER_MARKS = {
+  deepseek:   { file: '../img/providers/deepseek.svg' },
+  anthropic:  { file: '../img/providers/anthropic.svg' },
+  google:     { file: '../img/providers/google.svg' },
+  openrouter: { file: '../img/providers/openrouter.svg' },
+  litellm:    { file: '../img/providers/litellm.svg' },
+  ollama:     { file: '../img/providers/ollama.svg' },
+};
+
+// The registry name is the owner's to choose, so an entry called
+// "anthropic-work" or "google-vertex" should still get its mark. Exact match
+// first, then the longest preset name the entry starts with -- longest so a
+// shorter key cannot claim a name that merely begins with it.
+function markFor(name) {
+  const key = (name || '').toLowerCase();
+  if (PROVIDER_MARKS[key]) return PROVIDER_MARKS[key];
+  const hit = Object.keys(PROVIDER_MARKS)
+    .filter((k) => key.startsWith(k))
+    .sort((a, b) => b.length - a.length)[0];
+  return hit ? PROVIDER_MARKS[hit] : null;
+}
+
+// The first column of a provider row. Always labelled with the provider's name:
+// the artwork is what you recognise, the label is what a screen reader reads and
+// what a hover confirms.
+function providerMark(name) {
+  const tile = document.createElement('span');
+  tile.className = 'prov-mark';
+  tile.title = name;
+
+  const mark = markFor(name);
+  if (mark) {
+    // An <img>, not inlined markup: the files are full-colour brand artwork with
+    // their own gradients, so there is nothing for currentColor to do, and this
+    // keeps 14KB of path data out of a script the browser has to parse.
+    const img = document.createElement('img');
+    img.src = mark.file;
+    // The alt IS the provider name -- with the name gone from the row, this and
+    // the tooltip are the only places it is stated, so it is never empty.
+    img.alt = name;
+    // Not lazy, deliberately. Six 22px marks at the top of the screen have nothing
+    // to defer, and deferring them meant the first row could still be blank after
+    // the page had otherwise settled.
+    img.decoding = 'async';
+    tile.append(img);
+    return tile;
+  }
+
+  // No preset: a monogram of the name, which is the most identifying thing left.
+  // Two letters rather than one, because "litellm-eu" and "litellm-us" differ
+  // later than the first character and both are plausible entries.
+  tile.setAttribute('role', 'img');
+  tile.setAttribute('aria-label', name);
+  const mono = document.createElement('span');
+  mono.className = 'prov-mono';
+  mono.textContent = (name || '?').slice(0, 2).toUpperCase();
+  tile.append(mono);
+  return tile;
+}
+
 // ---------- helpers ----------
 
 // field builds a labelled input carrying its settings key, the shape the Schedule
@@ -1517,9 +1946,29 @@ function field(key, label, value, type, help) {
   return wrap;
 }
 
+// Wraps an already-built control in a label and a line of help. field() below
+// builds its own input from a settings key; this one takes a control the caller
+// needs a reference to, which is every field with a Save button beside it.
+function labelledField(control, label, help) {
+  const wrap = document.createElement('label');
+  wrap.className = 'field-wrap';
+  wrap.htmlFor = control.id;
+
+  const l = document.createElement('span');
+  l.className = 'field-label';
+  l.textContent = label;
+
+  const h = document.createElement('span');
+  h.className = 'field-help';
+  h.textContent = help;
+
+  wrap.append(l, control, h);
+  return wrap;
+}
+
 function section(parent, title) {
   const wrap = document.createElement('section');
-  wrap.className = 'sheet-section';
+  wrap.className = 'screen-section';
   const h = document.createElement('h3');
   h.textContent = title;
   wrap.append(h);
@@ -1667,17 +2116,31 @@ function quietTag(text) {
   return tag;
 }
 
-function shortModel(ref) {
-  if (!ref) return 'unset';
-  const [provider] = ref.split('/');
-  return provider;
+// hnQueries folds either config shape into the list the editor works on, mirroring
+// sources.HNConfig.Normalized on the Go side. The single-query shape is what every
+// row carried before migration 007, and a hand-edited config may still use it.
+function hnQueries(cfg = {}) {
+  const out = [];
+  for (const q of cfg.queries || []) {
+    if ((q?.query || '').trim()) out.push({ query: q.query.trim(), min_points: q.min_points || 0 });
+  }
+  if ((cfg.query || '').trim()) out.push({ query: cfg.query.trim(), min_points: cfg.min_points || 0 });
+  return out;
 }
 
 function describeSource(source) {
   const cfg = source.config || {};
   if (source.kind === 'hn_search') {
-    const floor = cfg.min_points ? ` · ${cfg.min_points}+ points` : '';
-    return `Hacker News · "${cfg.query || ''}"${floor}`;
+    const queries = hnQueries(cfg);
+    const fire = cfg.firehose_min_points > 0
+      ? ` · everything over ${cfg.firehose_min_points} points`
+      : '';
+    if (!queries.length) return `Hacker News${fire || ' · no keywords yet'}`;
+    // The first few in full, then a count. The whole list is a paragraph at
+    // twenty keywords, and the card is one line.
+    const shown = queries.slice(0, 3).map((q) => `"${q.query}"`).join(', ');
+    const rest = queries.length > 3 ? ` +${queries.length - 3} more` : '';
+    return `Hacker News · ${shown}${rest}${fire}`;
   }
   if (source.kind === 'youtube_rss') return `YouTube · ${cfg.channel_id || cfg.url || 'no channel set'}`;
   return cfg.url || '';
@@ -1691,3 +2154,39 @@ function formatWhen(iso) {
   if (hours < 24) return `${Math.round(hours)}h ago`;
   return `${Math.round(hours / 24)}d ago`;
 }
+
+// ---------- boot ----------
+
+const settings = new Settings();
+
+// Status drives the header line, the Model tab's attention dot, the Schedule
+// screen's "next runs" and the wording Signal quality uses when there is nothing
+// to show. Polled on the same cadence as the star map's: fast while a run is
+// going, because that is the only time anything changes on its own.
+let statusTimer = null;
+
+async function loadStatus() {
+  try {
+    const res = await fetch('/api/status');
+    if (!res.ok) { scheduleStatus(20000); return }
+    const status = await res.json();
+    settings.setStatus(status);
+    const running = status.run?.stage && status.run.stage !== 'idle';
+    scheduleStatus(running ? 1500 : 20000);
+  } catch {
+    scheduleStatus(20000);
+  }
+}
+
+function scheduleStatus(ms) {
+  clearTimeout(statusTimer);
+  statusTimer = setTimeout(loadStatus, ms);
+}
+
+settings.showScreen(screenFromHash());
+loadStatus();
+
+// The same deliberate handle app.js keeps on the star map: this is a single-user
+// tool the owner runs on their own machine, and being able to ask the open screen
+// what it thinks the settings are is worth more than hiding it.
+window.interstellarSettings = settings;

@@ -19,9 +19,15 @@ import (
 // test here -- verifying real STARTTLS against Resend needs Resend, which is what
 // POST /api/delivery/test is for.
 type fakeRelay struct {
-	addr     string
-	mu       sync.Mutex
+	addr string
+	mu   sync.Mutex
+	// received holds message bodies, commands the protocol lines that carried them.
+	// The envelope is only visible in the second: a display name that is perfectly
+	// fine in a From: header is a 501 in MAIL FROM, and a fake that recorded only
+	// bodies could not tell the two apart -- which is how that bug got past this
+	// file once already.
 	received []string
+	commands []string
 	rejectAt string // command to answer with 550, or empty
 	ln       net.Listener
 }
@@ -80,6 +86,10 @@ func (r *fakeRelay) handle(conn net.Conn) {
 		}
 
 		upper := strings.ToUpper(trimmed)
+		r.mu.Lock()
+		r.commands = append(r.commands, trimmed)
+		r.mu.Unlock()
+
 		switch {
 		case strings.HasPrefix(upper, "EHLO"), strings.HasPrefix(upper, "HELO"):
 			// AUTH advertised so smtp.PlainAuth is willing to run over plaintext…
@@ -91,6 +101,15 @@ func (r *fakeRelay) handle(conn net.Conn) {
 		case r.rejectAt != "" && strings.HasPrefix(upper, r.rejectAt):
 			w("550 rejected")
 		case strings.HasPrefix(upper, "MAIL FROM"), strings.HasPrefix(upper, "RCPT TO"):
+			// Strict on purpose, and this is the whole point of the fake. A real
+			// relay answers an envelope path carrying a display name with 501 "Bad
+			// sender address syntax" -- Resend does, correctly -- so a fake that
+			// answered 250 to anything made the send look fine in tests while every
+			// send from a fresh instance failed.
+			if !bareEnvelopePath(trimmed) {
+				w(`501 Error: Bad sender address syntax`)
+				continue
+			}
 			w("250 ok")
 		case strings.HasPrefix(upper, "DATA"):
 			inData = true
@@ -104,10 +123,38 @@ func (r *fakeRelay) handle(conn net.Conn) {
 	}
 }
 
+// bareEnvelopePath reports whether an SMTP command's argument is an RFC 5321 path:
+// one bracketed addr-spec, no display name, no nested brackets, no spaces.
+func bareEnvelopePath(line string) bool {
+	_, arg, ok := strings.Cut(line, ":")
+	if !ok {
+		return false
+	}
+	arg = strings.TrimSpace(arg)
+	// ESMTP parameters (SIZE=, BODY=8BITMIME) follow the path, space-separated.
+	if i := strings.IndexByte(arg, ' '); i > 0 {
+		arg = arg[:i]
+	}
+	if !strings.HasPrefix(arg, "<") || !strings.HasSuffix(arg, ">") {
+		return false
+	}
+	inner := arg[1 : len(arg)-1]
+	if strings.ContainsAny(inner, "<> \"") {
+		return false
+	}
+	return strings.Count(inner, "@") == 1
+}
+
 func (r *fakeRelay) messages() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]string(nil), r.received...)
+}
+
+func (r *fakeRelay) sent() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.commands...)
 }
 
 func relayConfig(t *testing.T, relay *fakeRelay) SMTPConfig {
@@ -138,8 +185,11 @@ func TestSendEmailDeliversAWellFormedMessage(t *testing.T) {
 	msg := msgs[0]
 
 	for _, want := range []string{
-		"From: Interstellar <onboarding@resend.dev>",
-		"To: owner@example.test",
+		// Quoted and bracketed because mail.Address.String() renders it, which is
+		// what makes a non-ASCII display name arrive encoded rather than raw. A
+		// client shows "Interstellar" either way.
+		`From: "Interstellar" <onboarding@resend.dev>`,
+		"To: <owner@example.test>",
 		"Content-Type: text/plain; charset=utf-8",
 		"MIME-Version: 1.0",
 		"First line.",
@@ -206,8 +256,107 @@ func TestSendEmailSplitsMultipleRecipients(t *testing.T) {
 		t.Fatalf("SendEmail: %v", err)
 	}
 	msg := relay.messages()[0]
-	if !strings.Contains(msg, "one@example.test, two@example.test") {
+	if !strings.Contains(msg, "<one@example.test>, <two@example.test>") {
 		t.Errorf("To header = wrong:\n%s", msg)
+	}
+}
+
+// The envelope takes the bare address and the header takes the display name. This is
+// the bug the strict relay above exists for: digest_from seeds to
+// `Interstellar <onboarding@resend.dev>`, and sending that string down MAIL FROM
+// meant every send from a fresh instance came back 501 "Bad sender address syntax".
+func TestSendEmailSendsBareAddressesInTheEnvelope(t *testing.T) {
+	relay := newFakeRelay(t, "")
+	cfg := relayConfig(t, relay)
+	// A comma inside a display name, which is legal and is why the recipient list is
+	// parsed rather than split on commas. This is ONE recipient.
+	cfg.To = `"Mai, Tam" <owner@example.test>`
+
+	if err := SendEmail(context.Background(), cfg, "Test", "Body."); err != nil {
+		t.Fatalf("SendEmail: %v", err)
+	}
+
+	var envelope []string
+	for _, line := range relay.sent() {
+		if u := strings.ToUpper(line); strings.HasPrefix(u, "MAIL FROM") || strings.HasPrefix(u, "RCPT TO") {
+			envelope = append(envelope, line)
+		}
+	}
+	joined := strings.Join(envelope, "\n")
+
+	if !strings.Contains(joined, "MAIL FROM:<onboarding@resend.dev>") {
+		t.Errorf("envelope sender is not a bare address:\n%s", joined)
+	}
+	if !strings.Contains(joined, "RCPT TO:<owner@example.test>") {
+		t.Errorf("envelope recipient is not a bare address:\n%s", joined)
+	}
+	if n := strings.Count(joined, "RCPT TO"); n != 1 {
+		t.Errorf("%d recipients from a display name containing a comma:\n%s", n, joined)
+	}
+	// The display name must not reach the envelope at all, under any quoting.
+	for _, line := range envelope {
+		if strings.Contains(line, "Interstellar") || strings.Contains(line, "Mai") {
+			t.Errorf("a display name reached the envelope: %q", line)
+		}
+	}
+	// And it must still reach the header, which is where it belongs.
+	if msg := relay.messages()[0]; !strings.Contains(msg, "Interstellar") {
+		t.Errorf("the display name was lost from the From header:\n%s", msg)
+	}
+}
+
+// §9 keeps topic definitions in Vietnamese, and an owner naming their instance in it
+// gets a display name that is illegal in a header as raw bytes.
+func TestSendEmailEncodesANonASCIIFromName(t *testing.T) {
+	relay := newFakeRelay(t, "")
+	cfg := relayConfig(t, relay)
+	cfg.From = "Tin tức <onboarding@resend.dev>"
+
+	if err := SendEmail(context.Background(), cfg, "Test", "Body."); err != nil {
+		t.Fatalf("SendEmail: %v", err)
+	}
+	msg := relay.messages()[0]
+	if strings.Contains(msg, "From: Tin tức") {
+		t.Errorf("the From name was sent as raw UTF-8:\n%s", msg)
+	}
+	if !strings.Contains(msg, "From: =?utf-8?") {
+		t.Errorf("the From name is not RFC 2047 encoded:\n%s", msg)
+	}
+	// Encoding the name must not touch the address.
+	if !strings.Contains(strings.Join(relay.sent(), "\n"), "MAIL FROM:<onboarding@resend.dev>") {
+		t.Error("the envelope sender changed when the display name was encoded")
+	}
+}
+
+// A malformed address is caught before a connection is made, so the Weekly screen can
+// say what is wrong instead of relaying a numeric SMTP code.
+func TestSMTPConfigProblemCatchesMalformedAddresses(t *testing.T) {
+	t.Setenv("SET_KEY", "value")
+	base := SMTPConfig{
+		Host: "smtp.resend.com", Port: 587, Username: "resend", PasswordEnv: "SET_KEY",
+		From: "Interstellar <onboarding@resend.dev>", To: "owner@example.test",
+	}
+	if p := base.Problem(); p != "" {
+		t.Fatalf("a display-name From is legal and reported %q", p)
+	}
+
+	for name, mutate := range map[string]func(*SMTPConfig){
+		"from is not an address": func(c *SMTPConfig) { c.From = "Interstellar" },
+		"from has two addresses": func(c *SMTPConfig) { c.From = "a@b.test, c@d.test" },
+		"to is not an address":   func(c *SMTPConfig) { c.To = "owner at example" },
+	} {
+		c := base
+		mutate(&c)
+		if c.Problem() == "" {
+			t.Errorf("%s: no problem reported", name)
+		}
+	}
+
+	// A trailing comma is a typo, not a reason to refuse to send.
+	ok := base
+	ok.To = "one@example.test, two@example.test, "
+	if p := ok.Problem(); p != "" {
+		t.Errorf("a trailing comma reported %q", p)
 	}
 }
 

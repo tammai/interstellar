@@ -146,6 +146,22 @@ type chatHistoryResponse struct {
 	ChatCapDay     int `json:"chat_cap_day"`
 }
 
+// handleClearChat empties the transcript.
+//
+// A real delete rather than a screen the page clears locally: history is reloaded on
+// every open, so clearing only the DOM would put every question back on the next
+// visit. It does not touch llm_calls, so the day's chat budget is unchanged -- the
+// calls happened, and a clear button that refunded them would be a way to spend the
+// cap twice.
+func (s *Server) handleClearChat(w http.ResponseWriter, r *http.Request) {
+	n, err := s.DB.DeleteChatTurns()
+	if err != nil {
+		s.error(w, http.StatusInternalServerError, "could not clear the chat history", err)
+		return
+	}
+	s.json(w, http.StatusOK, map[string]int64{"cleared": n})
+}
+
 // handleChatHistory is what the page loads on open: past turns plus whether
 // asking will work at all.
 func (s *Server) handleChatHistory(w http.ResponseWriter, r *http.Request) {

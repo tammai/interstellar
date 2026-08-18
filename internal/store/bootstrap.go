@@ -190,13 +190,59 @@ var seedSources = []struct {
 	{"rss", "Answer.AI", `{"url":"https://www.answer.ai/index.xml"}`, true},
 	{"rss", "Vicki Boykis", `{"url":"https://vickiboykis.com/index.xml"}`, true},
 
+	// --- press ---
+	//
+	// The trade press earns its place through source_count, not through being first:
+	// these four are the outlets that carry the SAME story as each other and as the
+	// labs' own posts, and a story three of them ran is what §6's gold star is for.
+	// The practitioner feeds above rarely corroborate each other -- one person writes
+	// one post -- so before these, source_count came almost entirely from Hacker News.
+	//
+	// One row per outlet, for exactly the reason migration 007 collapsed Hacker News:
+	// two rows on one masthead make one story look like two independent reports.
+	// These are section feeds rather than the whole site, which is what keeps them to
+	// ~7-20 items a day instead of the several hundred a general tech feed carries.
+	{"rss", "TechCrunch · AI", `{"url":"https://techcrunch.com/category/artificial-intelligence/feed/"}`, true},
+	// Note the URL shape: /rss/<section>/index.xml, not /<section>/rss/index.xml. The
+	// obvious guess 404s.
+	{"rss", "The Verge · AI", `{"url":"https://www.theverge.com/rss/ai-artificial-intelligence/index.xml"}`, true},
+	{"rss", "MIT Technology Review · AI", `{"url":"https://www.technologyreview.com/topic/artificial-intelligence/feed/"}`, true},
+	{"rss", "VentureBeat · AI", `{"url":"https://venturebeat.com/category/ai/feed/"}`, true},
+
 	// --- software roles and practice ---
 	{"rss", "Martin Fowler", `{"url":"https://martinfowler.com/feed.atom"}`, true},
 	{"rss", "ByteByteGo", `{"url":"https://blog.bytebytego.com/feed"}`, true},
 
 	// --- labs and open weights ---
+	// Anthropic, through two UNOFFICIAL feeds, and the qualifier matters. Anthropic
+	// publishes none of its own: no <link rel="alternate"> on either page, and 404 at
+	// /rss.xml, /news/rss.xml, /news/rss, /news/feed and /feed.xml (checked
+	// 2026-08-18). Both rows below are third-party mirrors of first-party pages, and
+	// both were run through the real fetcher -- the openrss.org mirror was tried
+	// first and rejected, because it answers 200 with an HTML page, which is the
+	// "200 in a browser, zero items in the parser" trap this convention exists for.
+	//
+	// They are TWO ROWS because they are two publications, not one outlet twice:
+	// claude.com/blog carries product and customer writing, anthropic.com/news
+	// carries corporate and research announcements, and their item links go to those
+	// two different first-party domains. The cost to know about: an announcement
+	// cross-posted to both counts twice toward source_count. That cannot reach the
+	// gold threshold on its own (§6 wants >= 3) but it does mean one press pickup is
+	// enough to gild an Anthropic cross-post. Park one row if that starts showing up.
+	//
+	// Being mirrors is the standing risk, and it is the acceptable kind: a mirror
+	// that stops updating goes quiet rather than wrong, and §10's per-source
+	// try/continue means one that disappears cannot take a run down. A mirror can
+	// also rewrite a title or a link, which no first-party feed can -- worth knowing
+	// before either row is trusted for anything but reading.
+	{"rss", "Anthropic · News (unofficial mirror)", `{"url":"https://rsshub.bestblogs.dev/anthropic/news"}`, true},
+	{"rss", "Claude Blog (unofficial mirror)", `{"url":"https://tim-hilde.github.io/anthropic-rss/rss.xml"}`, true},
+
 	{"rss", "Hugging Face", `{"url":"https://huggingface.co/blog/feed.xml"}`, true},
-	{"rss", "OpenAI", `{"url":"https://openai.com/blog/rss.xml"}`, true},
+	// openai.com/news. The old /blog/rss.xml 307s here, so this is the same feed
+	// under its current address -- NOT a second one to add alongside it. Two rows on
+	// one publisher inflate source_count, which is the whole lesson of migration 007.
+	{"rss", "OpenAI", `{"url":"https://openai.com/news/rss.xml"}`, true},
 	{"rss", "Google AI", `{"url":"https://blog.google/technology/ai/rss/"}`, true},
 	{"rss", "DeepMind", `{"url":"https://deepmind.google/blog/rss.xml"}`, true},
 	{"rss", "Qwen", `{"url":"https://qwenlm.github.io/blog/index.xml"}`, true},
@@ -250,26 +296,52 @@ var seedSources = []struct {
 	{"rss", "GitHub · Arize-ai/phoenix (high volume)", `{"url":"https://github.com/Arize-ai/phoenix/releases.atom"}`, false},
 	{"rss", "GitHub · langfuse/langfuse (high volume)", `{"url":"https://github.com/langfuse/langfuse/releases.atom"}`, false},
 
-	// Hacker News. Queries are deliberately broad single concepts: Algolia does
-	// literal matching, so a phrase like "open weights LLM" matches almost
-	// nothing. Breadth plus the points threshold is what produces signal --
-	// narrow phrasing plus a threshold produces silence, which is what the first
-	// seed list did.
+	// Hacker News: ONE source, two mechanisms behind it.
 	//
-	// min_points is per query: a broad term needs a higher bar to stay useful,
-	// while a niche one would go quiet at the same threshold.
-	{"hn_search", "HN · LLM", `{"query":"LLM","min_points":100}`, true},
-	{"hn_search", "HN · AI agents", `{"query":"agent","min_points":75}`, true},
-	{"hn_search", "HN · open weights", `{"query":"open weight model","min_points":25}`, true},
-	{"hn_search", "HN · local LLM", `{"query":"local LLM","min_points":25}`, true},
-	{"hn_search", "HN · Claude", `{"query":"Claude","min_points":50}`, true},
-	{"hn_search", "HN · coding agents", `{"query":"coding agent","min_points":25}`, true},
-	{"hn_search", "HN · MCP", `{"query":"MCP","min_points":25}`, true},
-	{"hn_search", "HN · evals", `{"query":"eval","min_points":50}`, true},
-	{"hn_search", "HN · speech and voice", `{"query":"speech recognition","min_points":25}`, true},
-	{"hn_search", "HN · text to speech", `{"query":"text to speech","min_points":25}`, true},
-	{"hn_search", "HN · inference", `{"query":"inference","min_points":50}`, true},
-	{"hn_search", "HN · AI engineer", `{"query":"AI engineer","min_points":25}`, true},
+	// It is one row because source_count is `count(DISTINCT source_id)` and a row
+	// per keyword made one story look like several outlets -- see migration 007.
+	//
+	// The keywords run at a LOW bar and the firehose at a HIGH one, because they
+	// cover opposite failures. Keywords only find vocabulary someone thought of,
+	// and what they find rarely trends: the median AI-shaped story on HN scores 3,
+	// and 1,435 of 1,549 in a 30-day sample sat under 50 points, so a popularity
+	// bar throws away the model releases this exists to catch. The firehose finds
+	// the big story no keyword anticipated, but it cannot be the whole answer --
+	// at 50 points it sees 7% of the AI-shaped stories, and dropping it to 1 point
+	// means reading 1,008 stories a day of which ~95% are not about AI.
+	//
+	// Keywords are single concepts, not phrases: Algolia needs every word present,
+	// so "open weight model" matched almost nothing while "Qwen" matches cleanly.
+	// Acronyms are safe here ONLY because hnSearch turns typo tolerance off; with
+	// it on, "MoE" returned 554 stories containing no such term.
+	{"hn_search", "Hacker News", `{
+		"min_points": 10,
+		"firehose_min_points": 100,
+		"queries": [
+			{"query":"agent"},
+			{"query":"coding agent"},
+			{"query":"MCP"},
+			{"query":"Claude"},
+			{"query":"Cursor"},
+			{"query":"Copilot"},
+			{"query":"eval"},
+			{"query":"observability"},
+			{"query":"LLM"},
+			{"query":"local LLM"},
+			{"query":"open-weight"},
+			{"query":"inference"},
+			{"query":"Qwen"},
+			{"query":"DeepSeek"},
+			{"query":"Kimi"},
+			{"query":"GLM"},
+			{"query":"Mistral"},
+			{"query":"Llama"},
+			{"query":"vLLM"},
+			{"query":"Hugging Face"},
+			{"query":"voice agent"},
+			{"query":"AI startup"}
+		]
+	}`, true},
 
 	// YouTube. Every ID below was resolved from the channel's rel="canonical" link
 	// and then verified against the <title> its own feed returns -- not scraped
@@ -287,6 +359,14 @@ var seedSources = []struct {
 	{"youtube_rss", "YouTube · Two Minute Papers", `{"channel_id":"UCbfYPyITQ-7l4upoX8nvctg"}`, true},
 	{"youtube_rss", "YouTube · IndyDevDan", `{"channel_id":"UC_x36zCEGilGpB1m-V4gmjg"}`, true},
 	{"youtube_rss", "YouTube · ThePrimeagen", `{"channel_id":"UC8ENHE5xdFSwx71u3fDH5Xw"}`, true},
+	// Added 2026-08-18. Every id below was run through `make feedcheck` and
+	// confirmed against the title the feed itself returns, per the convention --
+	// YouTube answers a rate-limited request with a 404 or a 500 that looks
+	// exactly like a wrong channel id, so each one was probed until it answered.
+	{"youtube_rss", "YouTube · Lex Fridman", `{"channel_id":"UCSHZKyawb77ixDdsGog4iWA"}`, true},
+	{"youtube_rss", "YouTube · AI Explained", `{"channel_id":"UCNJ1Ymd5yFuUPtn21xtRbbw"}`, true},
+	{"youtube_rss", "YouTube · Matt Wolfe", `{"channel_id":"UChpleBmo18P08aKCIgti38g"}`, true},
+	{"youtube_rss", "YouTube · Fireship", `{"channel_id":"UCsBjURrPoezykLs9EqgamOA"}`, true},
 
 	// Inactive on purpose, and kept even though seven real channels now ship: it
 	// is the only place the youtube_rss config shape is discoverable in Settings

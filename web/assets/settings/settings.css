@@ -1,0 +1,459 @@
+/* The Settings screen. Palette and fonts come from ../tokens.css.
+   Nothing here draws a star: like the Ask screen, the background is one static
+   gradient rather than a canvas, which is what makes this page cost nothing to
+   render.
+
+   Most of this file moved out of style.css when Settings became its own document
+   (spec rev 5, decision #20). The cards, fields, buttons, switches and tables are
+   verbatim — §6 locks the visual language and this is the same language, on a page
+   instead of behind a sheet. What is new is the shell: header, tab strip, and a
+   screen that scrolls itself. */
+
+* { margin: 0; padding: 0; box-sizing: border-box }
+html, body { height: 100% }
+html, body { overscroll-behavior: none }
+
+/* An author `display` declaration beats the user-agent `[hidden] { display: none }`
+   rule -- origin wins over specificity -- so anything this file gives a `display`
+   stays laid out even after JS sets `.hidden = true`. That trap has shipped twice
+   in this project (see web/css.test.js) and this page is where it shipped the first
+   time: `.field { display: block }` left an inert "Min points" box in every RSS
+   source form. One blanket rule instead of a per-selector guard the next control
+   added here would silently miss. */
+[hidden] { display: none !important }
+
+body {
+  background:
+    radial-gradient(1100px 700px at 78% -8%, rgba(29,44,92,.55) 0%, rgba(6,10,24,0) 62%),
+    radial-gradient(900px 620px at 8% 108%, rgba(21,33,72,.45) 0%, rgba(6,10,24,0) 60%),
+    var(--space-0);
+  color: var(--ink);
+  font-family: 'Noto Sans', system-ui, -apple-system, sans-serif;
+  display: flex; flex-direction: column;
+}
+
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px }
+
+/* ---------- header ---------- */
+
+/* Deliberately identical to the Ask screen's, down to the back chevron: two
+   secondary screens that look like two different apps is exactly what tokens.css
+   exists to prevent. */
+header {
+  flex: none; display: flex; align-items: center; gap: 12px;
+  padding: 16px 24px 14px;
+  background: rgba(6,10,24,.72); backdrop-filter: blur(10px);
+}
+.back {
+  display: flex; align-items: center; gap: 8px;
+  color: var(--ink-dim); text-decoration: none;
+}
+.back:hover { color: var(--star-white) }
+.back svg { width: 18px; height: 18px; flex: none }
+.wordmark {
+  font-family: 'Playfair Display', Georgia, serif; font-weight: 600;
+  font-size: 22px; letter-spacing: .02em; color: var(--star-white);
+  display: flex; align-items: baseline; gap: 9px;
+}
+.wordmark .glyph { color: var(--hot-gold); font-size: 17px; align-self: center }
+.spacer { flex: 1 }
+
+.run-state {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap; justify-content: flex-end;
+  font-size: 11.5px; letter-spacing: .04em; color: var(--ink-faint); text-align: right;
+}
+.run-state .rs-warn { color: var(--hot-gold) }
+.run-state .rs-run { color: var(--accent) }
+
+/* ---------- tabs ---------- */
+
+/* The strip is the navigation and the orientation at once: it names all six
+   screens and marks which one you are on, which is the job the sheet's sticky
+   title used to do one screen at a time.
+
+   It scrolls sideways rather than wrapping. Six labels do not fit at 380px, and a
+   wrapped strip would take two rows of a screen §10 already asks to work at that
+   width. -webkit-overflow-scrolling gives it momentum on iOS. */
+.tabs {
+  flex: none; display: flex; gap: 2px;
+  padding: 0 24px; margin-bottom: -1px;
+  overflow-x: auto; -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  border-bottom: 1px solid var(--grid);
+  background: rgba(6,10,24,.72); backdrop-filter: blur(10px);
+}
+.tabs::-webkit-scrollbar { display: none }
+
+/* Centred by auto margins on the end tabs, NOT by justify-content: center — and
+   the difference is the whole reason this is written out. A centred flex line
+   that overflows its container overflows in both directions, and the leading
+   overflow is unreachable: there is no negative scroll position, so the first tab
+   is simply gone. Auto margins collapse to zero the moment free space runs out,
+   so the strip is centred while the six labels fit and scrolls from the first tab
+   the moment they do not. That is exactly the case this page has, since the strip
+   is built to scroll under ~560px. */
+.tabs .tab:first-child { margin-left: auto }
+.tabs .tab:last-child { margin-right: auto }
+
+.tab {
+  position: relative; flex: none;
+  padding: 11px 15px 12px;
+  font-size: 12.5px; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--ink-dim); text-decoration: none; white-space: nowrap;
+  border-bottom: 2px solid transparent;
+}
+.tab:hover { color: var(--ink) }
+/* The selected tab is marked twice over -- an underline and a colour -- because
+   colour alone is not a state anyone should have to distinguish. */
+.tab.on { color: var(--star-white); border-bottom-color: var(--accent) }
+.tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 6px 6px 0 0 }
+
+/* The popover carried "needs attention" as a word on the Model row. On a tab strip
+   there is no room for the word, and no guarantee you are on that screen to read
+   it -- so it becomes a dot that is visible from every other tab. aria carries it
+   for anyone not seeing the dot: the label says so in words. */
+.tab.attention::after {
+  content: ''; position: absolute; top: 8px; right: 6px;
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--hot-gold); box-shadow: 0 0 8px rgba(255,201,107,.8);
+}
+
+/* ---------- screen ---------- */
+
+/* The scroller is this element, not the body: the header and the tab strip must
+   stay put, and a page that scrolls as a whole loses the tab strip -- which is
+   the only thing saying which screen you are reading. */
+#screen {
+  flex: 1 1 auto; min-height: 0;
+  overflow-y: auto; overscroll-behavior: none;
+  padding: 30px 24px 80px;
+}
+#screen:focus { outline: none }
+
+/* A measure, not a column of full-width form fields. The sheet was 560px wide and
+   that was about right for reading; the page is not, so the content keeps the
+   width and the page keeps the air. */
+.screen-inner { max-width: 780px; margin: 0 auto }
+
+.screen-title {
+  font-family: 'Playfair Display', Georgia, serif; font-weight: 600;
+  font-size: 28px; color: var(--star-white); margin-bottom: 8px;
+}
+.screen-sub { font-size: 13px; color: var(--ink-dim); line-height: 1.6; margin-bottom: 26px; max-width: 62ch }
+.screen-section { margin-bottom: 28px }
+.screen-section h3 { font-size: 11px; letter-spacing: .16em; text-transform: uppercase; color: var(--accent); font-weight: 500; margin-bottom: 12px }
+
+/* ---------- cards, fields, buttons ---------- */
+
+.card { background: rgba(6,10,24,.4); border: 1px solid var(--grid); border-radius: 12px; padding: 14px; margin-bottom: 12px }
+.card.row { display: flex; align-items: flex-start; gap: 14px; justify-content: space-between; flex-wrap: wrap }
+.card-main { min-width: 0; flex: 1 }
+.card-name { font-size: 14px; color: var(--star-white); margin-bottom: 3px }
+.card-detail { font-size: 11.5px; color: var(--ink-dim); overflow-wrap: anywhere; line-height: 1.5 }
+.card-detail.dim { color: var(--ink-faint); margin-top: 2px }
+.card-meta { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; font-size: 11.5px; color: var(--ink-faint); flex-wrap: wrap }
+.card-actions { display: flex; gap: 8px; flex: none }
+.card-actions.wide { margin-top: 10px }
+
+.field {
+  display: block; width: 100%; background: var(--space-0); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px;
+  font: inherit; font-size: 13px; margin-bottom: 8px;
+}
+.field:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent }
+.field.title { font-size: 15px }
+.field.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px }
+textarea.field { resize: vertical; line-height: 1.55 }
+select.field { appearance: none }
+/* Kept alongside the blanket rule above, not replaced by it: this is the exact
+   pair web/css.test.js pins, and syncKind hides this field by id-less `.hidden`. */
+.field[hidden] { display: none }
+
+.field-wrap { display: block; margin-bottom: 4px }
+.field-label { display: block; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 6px }
+.field-help { display: block; font-size: 11.5px; color: var(--ink-faint); margin: -2px 0 12px; line-height: 1.5 }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0 16px }
+/* Fixed column counts, not auto-fit, where the grouping is the point: auto-fit
+   reflows on available width, so the same four fields could be 4, 3 or 2 across
+   depending on the window, and a group whose shape changes is no longer a group.
+   align-items:start keeps a cell with two lines of help from stretching its
+   neighbours' boxes to match. */
+.grid.quad { grid-template-columns: repeat(4, minmax(0, 1fr)); align-items: start }
+.grid.duo { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start }
+/* Room for two lines of label whether or not this one needs it, so every input in
+   a row starts at the same height. At quarter width "Videos transcribed per run"
+   wraps and its neighbours' labels do not, which dropped its box half a line below
+   the rest of the row -- and a grid whose boxes do not line up stops reading as a
+   grid. Cheaper and steadier than a subgrid: the labels are one line or two, never
+   three, at every width these columns are used at. */
+.grid.quad .field-label, .grid.duo .field-label { min-height: 2.5em; line-height: 1.25 }
+
+/* Stepping down rather than collapsing straight to one: four quarter-width
+   columns stop holding a time input and its label somewhere around 700px. */
+@media (max-width: 860px) { .grid.quad { grid-template-columns: repeat(2, minmax(0, 1fr)) } }
+@media (max-width: 460px) {
+  .grid.quad, .grid.duo { grid-template-columns: minmax(0, 1fr) }
+}
+
+.btn-primary, .btn-quiet, .btn-danger, .btn-add {
+  font: inherit; font-size: 12.5px; border-radius: 8px; padding: 8px 14px;
+  border: 1px solid transparent; cursor: pointer;
+}
+.btn-primary { background: var(--star-white); color: var(--space-0); font-weight: 500 }
+.btn-primary:hover { background: var(--hot-core) }
+.btn-primary:disabled { opacity: .5; cursor: default }
+.btn-quiet { background: none; border-color: var(--line); color: var(--ink) }
+.btn-quiet:hover { border-color: var(--ink-dim); color: var(--star-white) }
+.btn-danger { background: none; border-color: transparent; color: var(--ink-faint) }
+.btn-danger:hover { color: var(--danger) }
+.btn-add { background: none; border: 1px dashed var(--line); color: var(--ink-dim); width: 100%; padding: 12px }
+.btn-add:hover { border-color: var(--ink-dim); color: var(--star-white) }
+
+.badge { font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; border-radius: 999px; padding: 4px 10px; border: 1px solid; white-space: nowrap; flex: none }
+.badge.ok { color: #9BE6B4; border-color: rgba(155,230,180,.35) }
+.badge.bad { color: var(--hot-gold); border-color: rgba(255,201,107,.4) }
+
+.warn { color: var(--hot-gold) }
+.note { font-size: 11.5px; color: var(--ink-faint); line-height: 1.6; margin-top: 10px }
+.test-result { font-size: 12px; color: var(--ink-dim); margin-top: 8px; line-height: 1.5; min-height: 1.2em }
+.test-result.ok { color: #9BE6B4 }
+.test-result.bad { color: var(--hot-gold) }
+.ladder { font-size: 12px; color: var(--ink-dim); line-height: 1.7; padding-left: 18px }
+.ladder li { margin-bottom: 4px }
+.add-source { border-style: dashed }
+
+/* ---------- providers (Model screen) ---------- */
+
+/* Three columns: mark, endpoint, state. A flex row rather than a grid because
+   only the middle column may take the slack -- the mark is a fixed tile and the
+   badge is as wide as its word, and both look wrong stretched. */
+.prov-row {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  padding: 12px 14px;
+}
+
+/* Column 1. A fixed tile, so six rows line their glyphs up on one axis and the
+   list can be read down the left edge. Neutral surround, colour only in the
+   glyph: tinting the tile too would put six competing blocks of colour on the
+   screen, and the point of the colour is to tell them apart, not to shout. */
+.prov-mark {
+  flex: none; width: 38px; height: 38px; border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(143,184,255,.06); border: 1px solid var(--grid);
+  color: var(--accent);
+}
+/* The artwork is square and pre-centred on its own ink (each file was re-framed
+   to a square viewBox around its bounding box), so one size fits all six and they
+   sit on a common optical axis. object-fit guards the one that is a raster. */
+.prov-mark img { width: 22px; height: 22px; object-fit: contain; display: block }
+/* The fallback for a provider with no preset mark. Playfair, matching the stat
+   tiles: a monogram is a figure to be recognised, not a label to be read. */
+.prov-mono {
+  font-family: 'Playfair Display', Georgia, serif; font-size: 14px;
+  letter-spacing: .04em; color: var(--accent);
+}
+
+/* Column 2. min-width:0 is what lets a long base URL wrap instead of forcing the
+   row wider than the card -- a flex item's default min-width is its content. */
+.prov-body { flex: 1 1 auto; min-width: 0 }
+.prov-url { font-size: 12.5px; color: var(--ink); overflow-wrap: anywhere; line-height: 1.45 }
+.prov-key { font-size: 11.5px; color: var(--ink-faint); margin-top: 3px }
+/* The env var is typed the way the owner will type it into their container. */
+.prov-key code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px;
+  color: var(--ink-dim); background: rgba(6,10,24,.6);
+  border: 1px solid var(--grid); border-radius: 5px; padding: 1px 6px;
+  overflow-wrap: anywhere;
+}
+
+/* Column 3 is .badge, which needs nothing here beyond the flex:none it already
+   carries. */
+
+/* At the narrow end the badge drops under the endpoint rather than squeezing it:
+   "key missing" is the one thing on this row that must never wrap to two lines,
+   since it is the thing you came to check. */
+@media (max-width: 460px) {
+  .prov-body { flex-basis: calc(100% - 52px) }
+  .prov-row .badge { margin-left: 52px }
+}
+
+/* ---------- toggle switch ---------- */
+
+/* Replaces a button that said "Active" — which read as *do this* rather than
+   *this is the state*, so nobody could tell whether they were looking at a status
+   or an instruction. A switch has a position, and a position cannot be misread as
+   a command. */
+.switch {
+  display: inline-flex; align-items: center; gap: 9px;
+  background: none; border: 0; padding: 0; cursor: pointer;
+  font: inherit; font-size: 11px; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--ink-faint); flex: none;
+}
+.switch .track {
+  position: relative; width: 34px; height: 19px; border-radius: 999px;
+  background: var(--space-2); border: 1px solid var(--line);
+  transition: background .16s ease, border-color .16s ease;
+  flex: none;
+}
+.switch .knob {
+  position: absolute; top: 2px; left: 2px; width: 13px; height: 13px;
+  border-radius: 50%; background: var(--ink-faint);
+  transition: transform .18s var(--ease-overshoot), background .16s ease;
+}
+.switch[aria-checked="true"] { color: var(--accent) }
+.switch[aria-checked="true"] .track { background: rgba(143,184,255,.24); border-color: rgba(143,184,255,.55) }
+.switch[aria-checked="true"] .knob { transform: translateX(15px); background: var(--star-white) }
+.switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px }
+.switch .lbl { min-width: 4.2em; text-align: left }
+
+@media (prefers-reduced-motion: reduce) {
+  .switch .track, .switch .knob { transition: none }
+}
+
+/* ---------- source edit ---------- */
+
+.card.editing { border-color: rgba(143,184,255,.34) }
+/* flex-basis 100% puts the form on its own line: .card.row is a flex row, and
+   without this the editor is laid out as a third column beside the name and the
+   buttons, which overflows the card on a phone. */
+.src-edit { display: none; gap: 8px; margin-top: 12px; flex-direction: column; flex: 1 0 100% }
+.card.editing .src-edit { display: flex }
+.card.editing .card-main .card-detail { display: none }
+.src-edit .pair { display: flex; gap: 8px; flex-wrap: wrap }
+.src-edit .pair .field { flex: 1 1 150px; min-width: 0 }
+.src-edit .row-actions { display: flex; gap: 8px; justify-content: flex-end }
+
+/* The keyword-less firehose pass. Sits above the keyword list because it is read
+   first: it says what arrives without anyone naming it. */
+.firehose { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px }
+.firehose .field-label { flex: 0 0 auto; margin: 0 }
+.firehose .field[type="number"] { flex: 0 0 90px; min-width: 0 }
+/* The note always takes its own line. Measured: the label and input leave under
+   200px inside the card even at 900px wide, so a shared line was never actually
+   reachable -- and a help line that sometimes wraps and sometimes does not moves
+   the keyword list under it by half a row when the window changes. */
+.firehose .note { flex: 1 1 100%; margin: 0 }
+
+/* Hacker News keyword list. One source, many keywords, each with its own points
+   floor -- a broad term needs a higher bar than a niche one. */
+.keywords { display: flex; flex-direction: column; gap: 8px }
+.keyword-row { display: flex; gap: 8px; align-items: center }
+/* The keyword takes the room; the threshold is a three-digit number and asking
+   for more space than that pushes the keyword itself into a sliver. */
+.keyword-row .field:first-child { flex: 1 1 auto; min-width: 0 }
+.keyword-row .field[type="number"] { flex: 0 0 104px; min-width: 0 }
+.keyword-row .btn-quiet { flex: 0 0 auto }
+
+/* At narrow widths the row stacks rather than crushing the keyword: §10 requires
+   the layout to work to ~380px, and three controls on one line does not. */
+@media (max-width: 460px) {
+  .keyword-row { flex-wrap: wrap }
+  .keyword-row .field:first-child { flex: 1 1 100% }
+  .keyword-row .field[type="number"] { flex: 1 1 auto }
+}
+
+/* ---------- signal quality (per-topic hit rate) ---------- */
+
+.window-picker { display: flex; gap: 8px; margin-bottom: 18px }
+.window-picker .btn-quiet.on { border-color: var(--glass-border); color: var(--star-white); background: rgba(143,184,255,.1) }
+
+.quality-summary { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 22px }
+.stat-tile {
+  flex: 1 1 120px; min-width: 110px;
+  border: 1px solid var(--grid); border-radius: 10px; padding: 12px 14px;
+  background: rgba(6,10,24,.4);
+}
+/* Playfair for the figure, matching the panel's stat treatment: these are numbers
+   to be read at a glance, not fields to be edited. */
+.stat-value { display: block; font-family: 'Playfair Display', Georgia, serif; font-size: 22px; color: var(--star-white); line-height: 1.15 }
+.stat-label { display: block; font-size: 10.5px; letter-spacing: .07em; text-transform: uppercase; color: var(--ink-faint); margin-top: 5px }
+
+.quality-table { border: 1px solid var(--grid); border-radius: 10px; overflow: hidden }
+.qt-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) 56px 62px 62px 62px;
+  gap: 10px; align-items: baseline;
+  padding: 10px 13px; font-size: 12.5px;
+  border-top: 1px solid var(--grid);
+}
+.qt-row:first-child { border-top: 0 }
+.qt-head { font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-faint); background: rgba(6,10,24,.5) }
+.qt-topic { color: var(--ink); overflow-wrap: anywhere; display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px }
+.qt-n, .qt-rate { text-align: right; font-variant-numeric: tabular-nums; color: var(--ink-dim) }
+.qt-rate { color: var(--star-white) }
+/* The two shapes worth acting on. Colour is a hint, never the only carrier: each
+   also gets a title explaining what to do, and the number itself is the message. */
+.qt-rate.bad { color: var(--hot-gold) }
+.qt-rate.loose { color: var(--accent) }
+.qt-rate.quiet { color: var(--ink-faint) }
+.qt-tag { font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-faint); border: 1px solid var(--grid); border-radius: 999px; padding: 1px 6px; white-space: nowrap }
+/* Recurring stories are three columns, not five. */
+.qt-row.recurring { grid-template-columns: minmax(0, 1fr) 40px 96px }
+
+/* ---------- move this list (source export/import) ---------- */
+
+.transfer { margin-top: 26px; padding-top: 20px; border-top: 1px solid var(--grid) }
+/* The export is an <a download>, not a button, so it needs the button's box. */
+.transfer a.btn-quiet { display: inline-flex; align-items: center; text-decoration: none }
+
+/* ---------- weekly round-up ---------- */
+
+.weekly-body {
+  font-size: 13.5px; line-height: 1.75; color: var(--ink);
+  white-space: pre-wrap; margin: 10px 0 4px;
+  padding: 14px; border: 1px solid var(--grid); border-radius: 10px;
+  background: rgba(6,10,24,.4);
+}
+/* A delivery channel and its settings in one card, the switch in the title because
+   that is what it governs. Padding moves to .channel-body so the head can carry a
+   full-width rule under it. */
+.channel { padding: 0; overflow: hidden }
+.channel-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 14px;
+  padding: 11px 14px; border-bottom: 1px solid var(--grid);
+  background: rgba(143,184,255,.05);
+}
+.channel-title {
+  font-family: 'Playfair Display', Georgia, serif; font-size: 15px;
+  color: var(--star-white);
+}
+.channel-body { padding: 14px 14px 2px }
+/* Off is stated by the fields going quiet, not by them disappearing: a hidden field
+   cannot be read, and reading the relay a channel would use is exactly what you want
+   when working out why nothing arrived. */
+.channel.off .channel-body { opacity: .45 }
+.channel-body input:disabled { cursor: not-allowed }
+.switch-group { display: flex; flex-wrap: wrap; gap: 10px 26px; margin: 16px 0 4px }
+.switch-row { display: flex; align-items: center; gap: 10px }
+.switch-label { font-size: 12.5px; color: var(--ink) }
+
+/* ---------- quality floor (§6) ---------- */
+
+/* The switch's own transitions are already killed where it is defined, above.
+   Nothing else on this page moves: there is no canvas, no twinkle and no sheet
+   sliding in from the right — which is one thing the move off the popover got
+   for free. */
+
+@media (max-width: 640px) {
+  header { padding: 13px 15px 12px }
+  .wordmark { font-size: 21px }
+  .tabs { padding: 0 15px }
+  #screen { padding: 24px 15px 70px }
+  .screen-title { font-size: 24px }
+}
+
+/* §10 wants the layout working to ~380px. The Signals column is the one that can
+   go: matches and rate carry the judgment, and signals-per-topic is already on
+   the Topics screen. */
+@media (max-width: 460px) {
+  .card-actions { flex-wrap: wrap }
+  /* The call count is the first thing to go: it is a number you look up, not one
+     you monitor, and at this width it pushes the wordmark off the line. */
+  .run-state { display: none }
+  .tab { padding: 10px 12px 11px; font-size: 11.5px; letter-spacing: .08em }
+}
+
+@media (max-width: 420px) {
+  .qt-row { grid-template-columns: minmax(0, 1fr) 46px 52px 52px; font-size: 12px; padding: 9px 10px }
+  .qt-row > :last-child { display: none }
+  .stat-value { font-size: 19px }
+}

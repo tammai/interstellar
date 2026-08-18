@@ -14,6 +14,11 @@ const state = {
   callsToday: 0,
   capDay: 0,
   busy: false,
+  // The in-flight request, so the send button can call it off. Null when idle.
+  controller: null,
+  // Whether the transcript has anything in it, which is what the Clear button waits
+  // for -- an empty conversation with a Clear button is a control that does nothing.
+  hasTurns: false,
 };
 
 const EXAMPLES = [
@@ -28,6 +33,15 @@ init();
 
 async function init() {
   bindComposer();
+  bindClear();
+
+  // Focused HERE, before the history fetch -- not only after it.
+  //
+  // init() awaits /api/chat/history, so a caret placed at the end of this function
+  // arrives however long that request takes: the page is on screen and typeable, and
+  // the first keystrokes go nowhere. The textarea exists at this point (a module script
+  // runs after the document is parsed), so there is nothing to wait for.
+  focusFromHash();
 
   const history = await getJSON('/api/chat/history?limit=20');
   if (history) {
@@ -42,6 +56,7 @@ async function init() {
     for (const turn of turns) renderStoredTurn(turn);
     if (turns.length) {
       el('intro').hidden = true;
+      state.hasTurns = true;
       scrollToEnd();
     }
   }
@@ -49,6 +64,32 @@ async function init() {
   renderExamples();
   renderBudget();
   renderHint();
+  renderClear();
+
+  // And again, because renderHint() decides whether the composer is usable at all: it
+  // disables the textarea when chat has no model, and a disabled element cannot take
+  // focus. This is the call that lands once the answer to that is known.
+  focusFromHash();
+}
+
+// focusFromHash puts the caret in the composer when the fragment asked for it.
+//
+// The star map's ask dock links to #ask, and the caret belongs where the click was
+// aiming. Only on that fragment: arriving any other way -- a bookmark, Back from an
+// article, a reload while reading -- must not throw a keyboard over the transcript on a
+// phone. Bound to hashchange as well, for a link followed while already on this page,
+// where the document does not reload and init() never runs again.
+function focusFromHash() {
+  if (location.hash === '#ask') focusComposer();
+}
+
+window.addEventListener('hashchange', focusFromHash);
+
+function focusComposer() {
+  const q = el('q');
+  // Disabled means chat has no usable model, and the gold hint under the composer says
+  // so. Focusing it would be impossible anyway; the message is the useful thing.
+  if (!q.disabled) q.focus();
 }
 
 function bindComposer() {
@@ -69,12 +110,45 @@ function bindComposer() {
 
   el('composer').addEventListener('submit', (e) => {
     e.preventDefault();
+    // While a question is in flight this button is the stop button, so a submit is a
+    // cancel. Handled here rather than by swapping the handler: one path, and the
+    // Enter key gets the same behaviour as the click for free.
+    if (state.busy) {
+      stopAsking();
+      return;
+    }
     const question = q.value.trim();
-    if (!question || state.busy) return;
+    if (!question) return;
     q.value = '';
     q.style.height = 'auto';
     ask(question);
   });
+}
+
+function bindClear() {
+  el('clear').onclick = async () => {
+    // Same guard as deleting a topic or a source. This one cannot be undone either,
+    // and the transcript is the only record of what was asked.
+    if (!confirm('Clear the whole conversation? The questions and answers are deleted.')) return;
+
+    const btn = el('clear');
+    btn.disabled = true;
+    const res = await fetch('/api/chat/history', { method: 'DELETE' });
+    btn.disabled = false;
+    if (!res.ok) return;
+
+    // The thread is rebuilt rather than emptied, because #intro lives inside it and
+    // an empty screen with no invitation on it reads as a broken page.
+    for (const turn of [...el('thread').querySelectorAll('.turn')]) turn.remove();
+    el('intro').hidden = false;
+    state.hasTurns = false;
+    renderClear();
+    focusComposer();
+  };
+}
+
+function renderClear() {
+  el('clear').hidden = !state.hasTurns;
 }
 
 function renderExamples() {
@@ -94,8 +168,9 @@ function renderExamples() {
 
 async function ask(question) {
   state.busy = true;
+  state.controller = new AbortController();
   el('intro').hidden = true;
-  el('send').disabled = true;
+  setSendMode('stop');
 
   const turn = openTurn(question);
   scrollToEnd();
@@ -112,8 +187,21 @@ async function ask(question) {
     turn.setSources(found.hits, { provisional: true });
   });
 
-  const res = await postJSON('/api/ask', { question });
+  const res = await postJSON('/api/ask', { question }, state.controller.signal);
   turn.answered = true;
+
+  if (res.aborted) {
+    // Stopped on purpose, so it is not a failure. The question stays on screen with
+    // the sources the free search already found -- that part is real and was not
+    // waiting on the model.
+    turn.setStatus('');
+    turn.stopped();
+    // The model may have been called before the connection closed, and llm_calls is
+    // the only place that knows. Re-read it rather than guessing at the budget.
+    refreshBudget();
+    finishAsking();
+    return;
+  }
 
   if (!res.ok) {
     turn.fail(res.error || 'Something went wrong.');
@@ -130,15 +218,46 @@ async function ask(question) {
 
   state.callsToday = data.chat_calls_today ?? state.callsToday;
   state.capDay = data.chat_cap_day ?? state.capDay;
+  state.hasTurns = true;
   finishAsking();
+}
+
+// stopAsking abandons the request in flight.
+//
+// The server sees the connection close and cancels its own context, so a stop is not
+// just the browser looking away -- pipeline.Asker already treats a cancelled context as
+// a hard stop rather than something to retry.
+function stopAsking() {
+  state.controller?.abort();
 }
 
 function finishAsking() {
   state.busy = false;
-  el('send').disabled = false;
+  state.controller = null;
+  setSendMode('send');
   renderBudget();
   renderHint();
+  renderClear();
   scrollToEnd();
+}
+
+// setSendMode is the only place the button's icon, label and job change together --
+// the same reason the star map has one setRefreshBusy.
+function setSendMode(mode) {
+  const btn = el('send');
+  const stopping = mode === 'stop';
+  btn.classList.toggle('stop', stopping);
+  btn.disabled = false;
+  btn.setAttribute('aria-label', stopping ? 'Stop this request' : 'Send question');
+  btn.title = stopping ? 'Stop' : 'Send';
+}
+
+async function refreshBudget() {
+  const history = await getJSON('/api/chat/history?limit=1');
+  if (!history) return;
+  state.callsToday = history.chat_calls_today ?? state.callsToday;
+  state.capDay = history.chat_cap_day ?? state.capDay;
+  renderBudget();
 }
 
 // openTurn appends a question and returns handles for filling in the rest as it
@@ -216,6 +335,13 @@ function openTurn(question) {
       answer.hidden = false;
       answer.classList.add('failed');
       answer.textContent = message;
+    },
+    // Stopped is not failed. Same muted treatment as the plan line, because nothing
+    // went wrong -- the reader changed their mind, and the sources already listed
+    // above are still worth looking at.
+    stopped() {
+      status.hidden = false;
+      status.textContent = 'Stopped.';
     },
   };
 }
@@ -376,6 +502,7 @@ function renderHint() {
     el('send').disabled = true;
     el('q').disabled = true;
     return;
+
   }
   hint.textContent = 'Answers come only from your own signals and articles. Enter to send, Shift+Enter for a new line.';
   hint.className = 'hint';
@@ -401,17 +528,21 @@ async function getJSON(url) {
   }
 }
 
-async function postJSON(url, body) {
+async function postJSON(url, body, signal) {
   try {
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
+      signal,
     });
     const parsed = await res.json().catch(() => ({}));
     if (!res.ok) return { ok: false, error: parsed.error, body: parsed };
     return { ok: true, body: parsed };
   } catch (err) {
+    // An abort is the reader pressing stop, not a fault, and must not be logged as
+    // one or reported as "could not reach the server".
+    if (err?.name === 'AbortError') return { ok: false, aborted: true };
     console.error(err);
     return { ok: false, error: 'Could not reach the server.' };
   }

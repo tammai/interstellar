@@ -365,3 +365,109 @@ func TestJSONModeSetsResponseFormat(t *testing.T) {
 		t.Errorf("response_format = %v", body["response_format"])
 	}
 }
+
+// Switching a provider off takes it out of the chain -- the whole point of the
+// switch -- and does so without inventing a failed call in the cost log.
+func TestSwitchedOffProviderIsSkippedNotCharged(t *testing.T) {
+	off, offAuths := modelServer(t, "should never answer", http.StatusOK)
+	on, _ := modelServer(t, "answered", http.StatusOK)
+
+	t.Setenv("OFF_KEY", "sk-off")
+	t.Setenv("ON_KEY", "sk-on")
+
+	cfg := Config{
+		Registry: registryOf(t,
+			Provider{Name: "off", BaseURL: off.URL, APIKeyEnv: "OFF_KEY", Disabled: true},
+			Provider{Name: "on", BaseURL: on.URL, APIKeyEnv: "ON_KEY"},
+		),
+		Roles: map[Role]Chain{
+			RoleSynthesizer: {
+				Primary:  ModelRef{"off", "parked-model"},
+				Fallback: []ModelRef{{"on", "working-model"}},
+			},
+		},
+	}
+	rec := &fakeRecorder{}
+	c := NewClient(cfg, rec, "2026-08-18", quiet())
+
+	resp, err := c.Complete(context.Background(), RoleSynthesizer, Request{
+		Messages: []Message{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if resp.Text != "answered" || resp.Provider != "on" {
+		t.Errorf("answered by %q with %q, want the provider that is still on", resp.Provider, resp.Text)
+	}
+	// The switch has to actually stop the traffic, not merely relabel it.
+	if len(*offAuths) != 0 {
+		t.Errorf("the switched-off provider was called %d times", len(*offAuths))
+	}
+
+	// A skipped hop is not an attempt. Recording one would bill a call that never
+	// happened and make a parked vendor look like a failing one.
+	for _, call := range rec.recorded() {
+		if call.Provider == "off" {
+			t.Errorf("cost log has a row for a provider that was never called: %+v", call)
+		}
+	}
+}
+
+// With nowhere left to go the call fails, rather than falling through to a
+// provider the owner had switched off.
+func TestChainOfSwitchedOffProvidersFails(t *testing.T) {
+	srv, auths := modelServer(t, "should never answer", http.StatusOK)
+	t.Setenv("K", "sk-x")
+
+	cfg := Config{
+		Registry: registryOf(t,
+			Provider{Name: "parked", BaseURL: srv.URL, APIKeyEnv: "K", Disabled: true},
+		),
+		Roles: map[Role]Chain{
+			RoleSynthesizer: {Primary: ModelRef{"parked", "m"}},
+		},
+	}
+	c := NewClient(cfg, &fakeRecorder{}, "2026-08-18", quiet())
+
+	if _, err := c.Complete(context.Background(), RoleSynthesizer, Request{
+		Messages: []Message{{Role: "user", Content: "hi"}},
+	}); err == nil {
+		t.Fatal("Complete succeeded with every provider switched off")
+	}
+	if len(*auths) != 0 {
+		t.Errorf("a switched-off provider was called %d times", len(*auths))
+	}
+}
+
+// A provider's error body is an envelope around one useful sentence. The
+// envelope is what got persisted and then truncated, so the sentence -- the only
+// part naming what to do -- was cut off before it was reached.
+func TestProviderErrorKeepsTheReadablePart(t *testing.T) {
+	body := `{"error":{"message":"this model requires a subscription, upgrade for access: https://ollama.com/upgrade (ref: f011eb64)","type":"api_error","param":null,"code":null}}`
+	got := snippet([]byte(body))
+
+	if !strings.HasPrefix(got, "this model requires a subscription") {
+		t.Errorf("snippet = %q, want it to lead with the provider's message", got)
+	}
+	for _, noise := range []string{`"type"`, `"param"`, `{"error"`} {
+		if strings.Contains(got, noise) {
+			t.Errorf("snippet = %q, still carries the envelope %s", got, noise)
+		}
+	}
+}
+
+// A wrong base_url answers with an HTML page and no envelope. Its first line is
+// the clue, so the raw body is still the right fallback.
+func TestProviderErrorFallsBackToTheRawBody(t *testing.T) {
+	got := snippet([]byte("<html><title>404 Not Found</title>"))
+	if !strings.Contains(got, "404 Not Found") {
+		t.Errorf("snippet = %q, want the raw body when there is no error envelope", got)
+	}
+
+	// Valid JSON of an unfamiliar shape is not guessed at: printing a field we
+	// hoped was the message would be confidently wrong.
+	got = snippet([]byte(`{"detail":"nope"}`))
+	if !strings.Contains(got, "detail") {
+		t.Errorf("snippet = %q, want the raw body for an unrecognised shape", got)
+	}
+}

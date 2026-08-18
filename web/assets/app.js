@@ -4,13 +4,13 @@
 import { Sky, SKY_LAYERS } from './sky.js';
 import { Panel } from './panel.js';
 import { renderList } from './list.js';
-import { Settings } from './settings.js';
 
 const el = (id) => document.getElementById(id);
 
 const state = {
   topics: [],
   groups: [],
+  days: 7,
   hotThreshold: 3,
   view: 'sky',
   running: false,
@@ -24,11 +24,6 @@ const panel = new Panel(el('panel'));
 const sky = new Sky(canvas, {
   onSelect: (group) => panel.open(group),
   onHover: (group, x, y) => showTip(group, x, y),
-});
-
-const settings = new Settings({
-  onChanged: () => { loadSky(); loadStatus(); },
-  onRefreshRequested: () => refresh(),
 });
 
 // Publish the header's real height so the detail panel can start below it
@@ -59,6 +54,9 @@ async function loadSky() {
     state.groups = sky.groups;
 
     state.observationDate = data.observation_date;
+    // The window the sky covers, for the count's tooltip. §5.4's 7 days is the
+    // default, not a constant -- sky_days is a setting.
+    state.days = data.days || 7;
     updateCount();
     renderCurrentView();
     updateEmptyState();
@@ -76,14 +74,12 @@ async function loadStatus() {
     const wasRunning = state.running;
     state.running = status.run?.stage && status.run.stage !== 'idle';
 
-    el('btnRefresh').classList.toggle('busy', state.running);
-    el('btnRefresh').setAttribute('aria-label',
-      state.running ? `Running: ${status.run.stage}` : 'Refresh now');
+    setRefreshBusy(state.running, status.run?.stage);
+    renderRunState(status);
 
     // A run that just finished has new stars to show.
     if (wasRunning && !state.running) loadSky();
 
-    settings.setStatus(status);
     renderBanner(status);
     el('btnSettings').querySelector('.nudge')?.remove();
     if (status.setup_hint) {
@@ -108,18 +104,77 @@ function scheduleStatus(ms) {
 
 async function refresh() {
   if (state.running) return;
+  // Disabled before the request goes out, not when the poll comes back. There is a
+  // second or two between the click and the first status showing `running`, and a
+  // second click inside it is the one that got through -- POST /api/refresh answers
+  // 409, so nothing broke, but the button not reacting to a click is its own bug.
+  setRefreshBusy(true);
   try {
     const res = await fetch('/api/refresh', { method: 'POST' });
     if (res.status === 409) return; // already going; the poller will show it
     state.running = true;
-    el('btnRefresh').classList.add('busy');
     scheduleStatus(600);
   } catch (err) {
     console.error(err);
+    setRefreshBusy(false); // nothing was started, so the button must come back
   }
 }
 
+// setRefreshBusy is the one place the refresh button's state is set, so "spinning"
+// and "unclickable" cannot drift apart.
+function setRefreshBusy(busy, stage) {
+  const btn = el('btnRefresh');
+  btn.classList.toggle('busy', busy);
+  btn.disabled = busy;
+  btn.title = busy ? `Running${stage ? `: ${stage}` : ''}` : 'Refresh now';
+  btn.setAttribute('aria-label', busy ? `Running${stage ? `: ${stage}` : ''}` : 'Refresh now');
+}
+
 // ---------- chrome ----------
+
+// renderRunState says in words what the spinner only implies: which stage is running,
+// how much of the day's call budget is gone, and whether the instance can run at all.
+//
+// The same four facts the Settings header carries, deliberately worded the same, and
+// deliberately NOT shared code -- app.js imports nothing from settings.js, which is
+// what keeps the sky's six assets six.
+//
+// A failing role is named rather than counted, and that is what lets Ask appear here
+// at all: the rule that keeps chat off the star map's BANNER exists so a dead Ask
+// screen cannot dress itself up as a broken morning run. "Ask failing" cannot be
+// mistaken for one.
+function renderRunState(status) {
+  const box = el('runState');
+  if (!box) return;
+  box.replaceChildren();
+
+  // Short on screen, whole sentence on hover. This line shares a header row with the
+  // wordmark, the date, the view toggle and three buttons, so every word has to earn
+  // its width -- and the words that got cut ("Running", "LLM", "to run") are the ones
+  // the spinner beside it, the number itself and the banner already say.
+  const add = (text, title, cls) => {
+    const span = document.createElement('span');
+    if (cls) span.className = cls;
+    span.textContent = text;
+    span.title = title;
+    box.append(span);
+  };
+
+  if (state.running) add(`${status.run.stage}…`, `Run in progress: ${status.run.stage}`, 'rs-run');
+  if (status.calls_today != null) {
+    add(`${status.calls_today} / ${status.call_cap_day} calls`,
+      'LLM calls today, against the daily cap');
+  }
+  if (status.ready === false) {
+    add('not ready', 'not ready to run — a role has no model or no key', 'rs-warn');
+  }
+
+  const failing = (status.failures || []).map((f) => (f.role === 'chat' ? 'Ask' : f.role));
+  if (failing.length) {
+    add(`${failing.join(', ')} failing`,
+      'every call for this role failed on its most recent day — see the Model screen', 'rs-warn');
+  }
+}
 
 function renderBanner(status) {
   const banner = el('banner');
@@ -137,20 +192,44 @@ function renderBanner(status) {
   text.textContent = message;
 
   // A banner that says what is wrong but not where to fix it is only half a
-  // message.
+  // message. Settings is its own document now, so this navigates rather than
+  // opening an overlay -- and it navigates to the screen that can fix the thing
+  // the banner is complaining about, which the fragment addresses directly.
   action.hidden = false;
   action.textContent = 'Open settings';
-  action.onclick = () => settings.open(status.banner ? 'model' : undefined);
+  action.onclick = () => { location.href = status.banner ? 'settings/#model' : 'settings/' };
 }
 
 // The header count reports what is on screen. Leaving it at the unfiltered total
 // while a filter hides most of them makes the number look wrong.
+//
+// It counts STORIES, and says so, because it cannot honestly say "signals". A signal
+// is one story for ONE topic (spec §4), so a story matching two topics arrives from
+// the API as two rows -- with two titles and two reasons, written separately by the
+// synthesizer -- and groupSignals merges them by primary_url into the one shared star
+// §6 asks for. Measured on a real instance: 110 rows, 99 stars, every one of the 11
+// collapses a two-topic story. Labelling 99 of those "signals" reads as a cap or a
+// lost run, which is exactly how it was reported.
+//
+// "Stories" is also the only word that survives the view switch: the list renders a
+// shared story under BOTH of its topic groups, so the row count there is the 110 and
+// the star count is the 99, while the number of stories is 99 in both places. The
+// full arithmetic is in the tooltip rather than the header, which has no room for it.
 function updateCount() {
   const total = state.groups.length;
   const visible = state.groups.filter((g) => sky.passes(g)).length;
   const shown = state.filters.size ? `${visible} of ${total}` : String(total);
-  el('obsDate').textContent =
-    `Observation · ${formatDate(state.observationDate)} · ${shown} signal${visible === 1 && !state.filters.size ? '' : 's'}`;
+  const n = state.filters.size ? visible : total;
+
+  const box = el('obsDate');
+  box.textContent =
+    `Observation · ${formatDate(state.observationDate)} · ${shown} ${n === 1 ? 'story' : 'stories'}`;
+
+  const rows = state.groups.reduce((sum, g) => sum + g.ids.length, 0);
+  box.title = rows === total
+    ? `${rows} signal${rows === 1 ? '' : 's'} over ${state.days} days`
+    : `${rows} signals over ${state.days} days — ${rows - total} of these stories ` +
+      `matched more than one topic, and each shares one star between them`;
 }
 
 function updateEmptyState() {
@@ -252,7 +331,8 @@ function formatDate(iso) {
 el('btnSky').onclick = () => setView('sky');
 el('btnList').onclick = () => setView('list');
 el('btnRefresh').onclick = () => refresh();
-el('btnSettings').onclick = (e) => { e.stopPropagation(); settings.toggle() };
+// btnSettings is a plain link to settings/ — no handler, and nothing on this page
+// knows what a settings screen looks like any more.
 
 // Filters. Empty set means unfiltered, which is why there is no "All" button:
 // switching the active filter off is the same statement, and one fewer control.
@@ -362,7 +442,7 @@ el('zreset').onclick = () => sky.reset();
 // their own machine; being able to open the console and ask the sky what it
 // thinks is showing is worth more than the tidiness of hiding it. It is also what
 // the browser-driven checks drive.
-window.interstellar = { sky, state, panel, settings, reload: loadSky };
+window.interstellar = { sky, state, panel, reload: loadSky };
 
 loadSky();
 loadStatus();

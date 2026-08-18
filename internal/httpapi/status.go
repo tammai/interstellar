@@ -9,6 +9,7 @@ import (
 	"github.com/tammai/interstellar/internal/config"
 	"github.com/tammai/interstellar/internal/llm"
 	"github.com/tammai/interstellar/internal/pipeline"
+	"github.com/tammai/interstellar/internal/sources"
 	"github.com/tammai/interstellar/internal/store"
 )
 
@@ -44,6 +45,13 @@ type statusResponse struct {
 	// Transcripts by status, so a caption path that has quietly stopped working is
 	// visible rather than showing up only as videos that never match anything.
 	Transcripts map[string]int `json:"transcripts,omitempty"`
+
+	// Failures are roles whose most recent day of calls produced nothing but
+	// errors. Separate from Readiness because they answer different questions:
+	// readiness is whether the configuration COULD work, this is whether it DID.
+	// A keyless provider always passes the first and can fail every call of the
+	// second.
+	Failures []store.RoleFailure `json:"failures,omitempty"`
 
 	NextRuns []time.Time `json:"next_runs,omitempty"`
 }
@@ -96,6 +104,12 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if counts, err := s.DB.TranscriptCounts(); err == nil && len(counts) > 0 {
 		out.Transcripts = counts
 	}
+	// A week back: long enough that a Friday failure is still reported on Monday,
+	// short enough that a provider abandoned a month ago stops nagging.
+	since := store.RunDate(time.Now().In(s.Env.Location).AddDate(0, 0, -failureWindowDays))
+	if failures, err := s.DB.FailingRoles(since); err == nil {
+		out.Failures = failures
+	}
 
 	out.Banner = s.banner(out, cfg)
 
@@ -110,13 +124,38 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	s.json(w, http.StatusOK, out)
 }
 
-// banner prefers the run's own reason, then falls back to a cap state derived
-// from the database. That second path is what makes a cap breach survive a
-// restart (§10 wants the guard's effect visible, not just logged).
+// failureWindowDays bounds how far back a wholly-failing role is still reported.
+const failureWindowDays = 7
+
+// pipelineRoles are the roles whose failure means the product is broken, and so
+// the ones that earn the star map's banner.
+//
+// Chat is deliberately absent, for the same reason it is absent from Ready(): a
+// dead Ask screen must not dress itself up as a broken morning run. Its failure
+// still travels in status.Failures, and the Settings header renders it there.
+var pipelineRoles = map[string]bool{"classifier": true, "synthesizer": true, "weekly": true}
+
+// banner prefers the run's own reason, then a wholly-failing role, then a cap
+// state derived from the database. The last two are read from llm_calls rather
+// than memory, which is what makes both survive a restart (§10 wants the guard's
+// effect visible, not just logged).
 func (s *Server) banner(st statusResponse, cfg config.Runtime) string {
 	if st.Run.Banner != "" {
 		return st.Run.Banner
 	}
+
+	// Ahead of the cap, and deliberately so. When a dead provider burns the daily
+	// budget on retries both are true at once, and only one of them is the cause:
+	// raising the cap on a model that answers 403 just buys more 403s.
+	for _, f := range st.Failures {
+		if !pipelineRoles[f.Role] {
+			continue
+		}
+		return fmt.Sprintf(
+			"Every %s call failed on %s (%d of them) and none succeeded — %s: %s. Change the model in Settings.",
+			f.Role, f.RunDate, f.Failed, f.Ref, sources.Truncate(f.Error, 160))
+	}
+
 	if cfg.MaxCallsPerDay > 0 && st.CallsToday >= cfg.MaxCallsPerDay {
 		return fmt.Sprintf(
 			"Daily cap of %d LLM calls reached; runs are paused until tomorrow. Raise it in Settings to continue.",

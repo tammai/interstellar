@@ -107,6 +107,39 @@ func (w *WeeklyRunner) Run(ctx context.Context, when time.Time, deliver bool) (W
 	return out, nil
 }
 
+// Deliver sends a round-up that has ALREADY been written, without composing one.
+//
+// Deliberately not Run(deliver: true) with a flag. Run composes first, so using it as
+// the manual send button would rewrite the prose the owner is looking at, bill a
+// synthesizer call to send something already on screen, and -- on a week whose signals
+// have not changed -- skip the write and therefore send nothing at all. "Send this"
+// has to mean this one.
+//
+// It also needs no model configuration, which is the point on the day the send is
+// being retried BECAUSE the provider was down.
+func (w *WeeklyRunner) Deliver(ctx context.Context, weekStart string) (WeeklyRunResult, error) {
+	var out WeeklyRunResult
+
+	digest, err := w.db.WeeklyDigestFor(weekStart)
+	if err != nil {
+		return out, err
+	}
+	out.WeeklyResult = WeeklyResult{
+		WeekStart: digest.WeekStart, WeekEnd: digest.WeekEnd,
+		Signals: digest.Signals, Topics: digest.Topics, Written: true,
+	}
+
+	// Resolved here rather than passed in, per §3.1: a relay corrected two minutes
+	// ago must be the one this send uses.
+	cfg, err := config.Load(w.db)
+	if err != nil {
+		return out, err
+	}
+
+	w.deliver(ctx, cfg, &out)
+	return out, nil
+}
+
 // deliver sends the round-up by whichever channels are switched on.
 //
 // Both are attempted independently: a broken webhook must not stop the email, and a
@@ -171,9 +204,10 @@ func (w *WeeklyRunner) deliver(ctx context.Context, cfg config.Runtime, out *Wee
 
 // emailBody wraps the round-up with the little context an email needs.
 //
-// The prose is the model's, verbatim. Nothing is reformatted: the round-up was
-// written to be read as prose, and a mail client is a worse place to invent
-// structure than the screen it was written for.
+// The round-up is inserted verbatim. Nothing is reformatted and nothing is converted
+// to HTML: it is composed as plain text with hard newlines precisely so that the one
+// body works in a mail client and in the app, and re-laying it out here would give
+// the two readers different documents to talk about.
 func emailBody(d store.WeeklyDigest) string {
 	var b strings.Builder
 
@@ -184,7 +218,9 @@ func emailBody(d store.WeeklyDigest) string {
 	b.WriteString(d.Body)
 	b.WriteString("\n\n")
 	b.WriteString(strings.Repeat("—", 40))
-	b.WriteString("\n\nThe stars, the sources and the links are in the app.\n")
+	// The links are in the body now, one per story, so this no longer has to send the
+	// reader to the app just to find out what a line referred to.
+	b.WriteString("\n\nThe sky, the topics and every source behind these stories are in the app.\n")
 
 	return b.String()
 }

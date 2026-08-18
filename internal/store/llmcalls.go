@@ -111,3 +111,80 @@ func boolToInt(b bool) int {
 	}
 	return 0
 }
+
+// RoleFailure is a role whose most recent day of calls produced nothing but
+// failures.
+type RoleFailure struct {
+	Role string `json:"role"`
+	// RunDate is the day those calls belong to, not today. A failure the owner
+	// has not fixed stays reported, and the date is what stops it reading as
+	// something that just happened.
+	RunDate string `json:"run_date"`
+	Failed  int    `json:"failed"`
+	// Ref is the provider/model of the last failing attempt, so the message can
+	// name what to change rather than only what went wrong.
+	Ref   string `json:"ref"`
+	Error string `json:"error"`
+}
+
+// FailingRoles reports the roles that are wholly broken: on the most recent day
+// each one made any call, every call failed.
+//
+// The gap this fills: readiness only checks that a role's provider resolves and
+// that its key is present, which for a KEYLESS provider is always true. An Ollama
+// endpoint whose subscription lapsed answers 403 to everything while the settings
+// screen reports it ready, and the only symptom is a sky that says "nothing yet
+// today". This reads what actually happened instead of what was configured.
+//
+// "Every call failed" rather than "any call failed" is deliberate. A fallback
+// chain doing its job means failures followed by a success -- that is the chain
+// working, it is already in the cost log, and a banner for it would cry wolf on
+// every transient 500. Nothing succeeding is the state worth interrupting for.
+//
+// The test role is excluded: its failures are shown inline the moment the button
+// is pressed, and re-reporting them as a banner would nag about a diagnosis the
+// owner just ran deliberately.
+func (db *DB) FailingRoles(since string) ([]RoleFailure, error) {
+	// One statement. The correlated subqueries pick the last failure's details
+	// without a second round trip -- the pool is capped at one connection, so a
+	// follow-up query issued while these rows are open would deadlock.
+	rows, err := db.Query(
+		`WITH latest AS (
+		   SELECT role, max(run_date) AS run_date
+		     FROM llm_calls
+		    WHERE run_date >= ? AND role <> 'test'
+		    GROUP BY role
+		 )
+		 SELECT c.role, c.run_date,
+		        sum(CASE WHEN c.ok = 0 THEN 1 ELSE 0 END) AS failed,
+		        COALESCE((SELECT COALESCE(f.provider, '') || '/' || f.model
+		                    FROM llm_calls f
+		                   WHERE f.role = c.role AND f.run_date = c.run_date AND f.ok = 0
+		                   ORDER BY f.id DESC LIMIT 1), '') AS ref,
+		        COALESCE((SELECT f.error
+		                    FROM llm_calls f
+		                   WHERE f.role = c.role AND f.run_date = c.run_date AND f.ok = 0
+		                   ORDER BY f.id DESC LIMIT 1), '') AS err
+		   FROM llm_calls c
+		   JOIN latest l ON l.role = c.role AND l.run_date = c.run_date
+		  GROUP BY c.role, c.run_date
+		 HAVING sum(CASE WHEN c.ok = 1 THEN 1 ELSE 0 END) = 0
+		    AND sum(CASE WHEN c.ok = 0 THEN 1 ELSE 0 END) > 0
+		  ORDER BY c.role`,
+		since,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failing roles since %s: %w", since, err)
+	}
+	defer rows.Close()
+
+	var out []RoleFailure
+	for rows.Next() {
+		var f RoleFailure
+		if err := rows.Scan(&f.Role, &f.RunDate, &f.Failed, &f.Ref, &f.Error); err != nil {
+			return nil, fmt.Errorf("scan failing role: %w", err)
+		}
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}

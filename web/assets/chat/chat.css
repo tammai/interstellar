@@ -154,12 +154,37 @@ header {
 #send:hover:not(:disabled) { color: var(--star-white); border-color: var(--accent) }
 #send:disabled { opacity: .4; cursor: default }
 #send svg { width: 18px; height: 18px }
+/* One button, two icons, one visible. Gold rather than accent-blue while running: it
+   is the same "something is happening here" colour the star map's warnings use, and it
+   has to be obvious that this control has stopped meaning "send". */
+.i-stop { display: none }
+#send.stop { color: var(--hot-gold); border-color: rgba(214,178,106,.5); background: rgba(214,178,106,.12) }
+#send.stop:hover:not(:disabled) { color: var(--star-white); border-color: var(--hot-gold) }
+#send.stop .i-send { display: none }
+#send.stop .i-stop { display: block }
 
+/* Full width, not capped to the field row. At 74ch this line wrapped to two, which
+   put a permanent two-line block of grey text under the composer; across the whole
+   width it is one line at any reasonable window. Centred rather than left-aligned,
+   because the composer above it is a centred column and a full-width line ragged to
+   the left edge reads as belonging to something else. */
 .hint {
-  max-width: 74ch; margin: 8px auto 0;
+  margin: 8px 0 0; text-align: center;
   font-size: 11px; color: var(--ink-faint); line-height: 1.6;
 }
 .hint.warn { color: var(--hot-gold) }
+
+/* Clear. Quiet by default and only reddish on hover: it destroys the transcript, so it
+   should be findable and never the most attractive thing in the header. */
+.clear-chat {
+  flex: none; align-self: center;
+  padding: 6px 12px; border-radius: 999px;
+  border: 1px solid var(--grid); background: none;
+  color: var(--ink-faint); font-size: 11.5px; letter-spacing: .04em; cursor: pointer;
+}
+.clear-chat:hover { color: var(--star-white); border-color: rgba(224,122,122,.55) }
+.clear-chat:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px }
+.clear-chat:disabled { opacity: .5; cursor: default }
 
 /* §10 requires the layout to work to ~380px. */
 @media (max-width: 560px) {

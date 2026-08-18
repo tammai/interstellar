@@ -156,6 +156,14 @@ func (db *DB) DeleteSource(id int64) error {
 	); err != nil {
 		return fmt.Errorf("delete orphaned matches: %w", err)
 	}
+	// Transcripts hang off items by foreign key with no cascade, and only video
+	// items have them -- which is why deleting a YouTube source failed here while
+	// every other kind deleted cleanly.
+	if _, err := tx.Exec(
+		`DELETE FROM item_transcripts WHERE item_id IN (SELECT id FROM items WHERE source_id = ?)`, id,
+	); err != nil {
+		return fmt.Errorf("delete orphaned transcripts: %w", err)
+	}
 	if _, err := tx.Exec(`DELETE FROM items WHERE source_id = ?`, id); err != nil {
 		return fmt.Errorf("delete orphaned items: %w", err)
 	}

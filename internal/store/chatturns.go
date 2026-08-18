@@ -70,6 +70,28 @@ func (db *DB) SaveChatTurn(t ChatTurn) (int64, error) {
 	return res.LastInsertId()
 }
 
+// DeleteChatTurns removes the whole transcript and reports how many turns went.
+//
+// It deletes ONLY chat_turns. The daily chat budget is counted from llm_calls (see
+// LLMCallsByRoleOn), so clearing the transcript does not refund a single call -- which
+// is the honest behaviour: the questions were asked and the provider billed them, and a
+// clear button that reset the cap would be a way to spend the day's budget twice.
+//
+// Nothing references chat_turns, so there are no dependent rows to sweep first -- the
+// DeleteSource convention does not apply here, and a test pins that the cost log
+// survives.
+func (db *DB) DeleteChatTurns() (int64, error) {
+	res, err := db.Exec(`DELETE FROM chat_turns`)
+	if err != nil {
+		return 0, fmt.Errorf("delete chat turns: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("delete chat turns: %w", err)
+	}
+	return n, nil
+}
+
 // ChatTurns returns the most recent turns, newest first.
 func (db *DB) ChatTurns(limit int) ([]ChatTurn, error) {
 	if limit <= 0 {

@@ -1,7 +1,9 @@
 package store
 
 import (
+	"bytes"
 	"encoding/json"
+	"sort"
 	"strings"
 )
 
@@ -40,11 +42,14 @@ func (s SourceExport) Identity() string {
 		URL       string `json:"url"`
 		ChannelID string `json:"channel_id"`
 		Query     string `json:"query"`
+		Queries   []struct {
+			Query string `json:"query"`
+		} `json:"queries"`
 	}
 	// A config that will not parse still has an identity: its raw bytes. That is
 	// enough to avoid importing the same broken row twice.
 	if err := json.Unmarshal(s.Config, &cfg); err != nil {
-		return s.Kind + "\x00" + string(s.Config)
+		return s.Kind + "\x00" + rawIdentity(s.Config)
 	}
 
 	switch {
@@ -52,11 +57,39 @@ func (s SourceExport) Identity() string {
 		return s.Kind + "\x00" + strings.ToLower(strings.TrimRight(cfg.URL, "/"))
 	case cfg.ChannelID != "":
 		return s.Kind + "\x00" + cfg.ChannelID
+	case len(cfg.Queries) > 0:
+		// The multi-keyword Hacker News shape. Its identity is the keyword set,
+		// so re-importing an export is a no-op the way it is for a feed URL --
+		// falling through to the raw bytes would not do, because the bytes are
+		// compacted by the export encoder and would never match the stored ones.
+		keys := make([]string, 0, len(cfg.Queries)+1)
+		for _, q := range cfg.Queries {
+			keys = append(keys, strings.ToLower(strings.TrimSpace(q.Query)))
+		}
+		if cfg.Query != "" {
+			keys = append(keys, strings.ToLower(strings.TrimSpace(cfg.Query)))
+		}
+		// Sorted: the same keywords in a different order are the same source, and
+		// reordering the list in the editor must not orphan the row on import.
+		sort.Strings(keys)
+		return s.Kind + "\x00" + strings.Join(keys, "\x1f")
 	case cfg.Query != "":
 		return s.Kind + "\x00" + strings.ToLower(strings.TrimSpace(cfg.Query))
 	default:
-		return s.Kind + "\x00" + string(s.Config)
+		return s.Kind + "\x00" + rawIdentity(s.Config)
 	}
+}
+
+// rawIdentity is the fallback for a config with no recognized target. Compacted,
+// because the export encoder compacts what it writes -- so the same config would
+// otherwise have one identity in the database and another in its own export, and
+// re-importing would duplicate the row.
+func rawIdentity(cfg json.RawMessage) string {
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, cfg); err != nil {
+		return string(cfg)
+	}
+	return buf.String()
 }
 
 // ExportSources returns every source in transfer form, ordered stably so two

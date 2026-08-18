@@ -198,9 +198,24 @@ func (c *Client) CompleteAs(ctx context.Context, chainRole, logRole Role, req Re
 	for i, ref := range refs {
 		provider, err := c.cfg.Registry.Resolve(ref)
 		if err != nil {
+			lastErr = err
+			// A hop on a provider the owner switched off is SKIPPED, not failed:
+			// nothing was called, so there is nothing to bill and nothing to
+			// diagnose, and an llm_calls row would put a call that never happened
+			// into the cost log. It is logged instead, because a chain quietly
+			// getting shorter is still worth being able to see.
+			//
+			// The "every attempt gets a row" rule is intact -- this is not an
+			// attempt. The distinction matters most on the ordinary use of this
+			// switch: parking a flaky vendor for an afternoon should make the
+			// fallback chain shorter, not fill the log with failures.
+			if errors.Is(err, ErrProviderDisabled) {
+				c.log.Info("llm hop skipped: provider switched off",
+					"role", role, "ref", ref.String())
+				continue
+			}
 			// A ref naming a provider that isn't in the registry is a config
 			// error, not a transport one. Record it and try the next hop.
-			lastErr = err
 			c.record(logRole, ref, Usage{}, err)
 			continue
 		}
@@ -319,6 +334,14 @@ func (cfg Config) RoleReadiness(role Role) RoleStatus {
 
 	provider, err := cfg.Registry.Resolve(chain.Primary)
 	if err != nil {
+		// Worth saying what to do about it. The API refuses to switch a provider
+		// off while a role's primary sits on it, so reaching this means the
+		// registry was edited some other way -- and "provider is switched off" on
+		// its own reads like a bug rather than a setting.
+		if errors.Is(err, ErrProviderDisabled) {
+			st.Problem = fmt.Sprintf("provider %s is switched off: switch it back on, or move this role to another provider", chain.Primary.Provider)
+			return st
+		}
 		st.Problem = err.Error()
 		return st
 	}
@@ -329,6 +352,28 @@ func (cfg Config) RoleReadiness(role Role) RoleStatus {
 
 	st.Ready = true
 	return st
+}
+
+// RolesUsing reports the roles whose PRIMARY model sits on the named provider.
+//
+// Only the primary. A fallback hop is optional by construction -- the chain is
+// what runs when something else has already failed -- so a provider appearing
+// only in fallbacks can be switched off freely, which is the ordinary use of the
+// switch. A primary is different: switching that provider off would leave the
+// role unable to start, so the API refuses and names the roles instead.
+func (cfg Config) RolesUsing(provider string) []Role {
+	var out []Role
+	// Fixed order, not map iteration, so the message a person reads is stable.
+	for _, role := range []Role{RoleClassifier, RoleSynthesizer, RoleChat} {
+		chain, ok := cfg.Roles[role]
+		if !ok || chain.Primary.IsZero() {
+			continue
+		}
+		if chain.Primary.Provider == provider {
+			out = append(out, role)
+		}
+	}
+	return out
 }
 
 // Ready reports whether every role can run.

@@ -64,10 +64,16 @@ func (s *Server) Routes() http.Handler {
 	// Chat. Its own screen at /chat/, served statically like the rest of the UI.
 	mux.HandleFunc("POST /api/ask", s.handleAsk)
 	mux.HandleFunc("GET /api/chat/history", s.handleChatHistory)
+	// Clears the transcript only. The chat budget lives in llm_calls and is not
+	// refunded -- see handleClearChat.
+	mux.HandleFunc("DELETE /api/chat/history", s.handleClearChat)
 
 	// The weekly round-up, and delivery.
 	mux.HandleFunc("GET /api/weekly", s.handleWeekly)
 	mux.HandleFunc("POST /api/weekly/run", s.handleWeeklyRun)
+	// Sends a round-up that is already written. Distinct from weekly/run, which
+	// composes one -- see handleWeeklySend.
+	mux.HandleFunc("POST /api/weekly/send", s.handleWeeklySend)
 	mux.HandleFunc("POST /api/delivery/test", s.handleDeliveryTest)
 
 	// Run control and progress.
@@ -78,6 +84,9 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	mux.HandleFunc("PUT /api/settings", s.handlePutSettings)
 	mux.HandleFunc("POST /api/model/test", s.handleModelTest)
+	// One provider at a time, so switching a vendor off does not mean rewriting
+	// the whole registry from a stale copy of it.
+	mux.HandleFunc("PATCH /api/providers/{name}", s.handleUpdateProvider)
 
 	// Ahead of GET /api/topics only for readability; the patterns are distinct
 	// literals, so ServeMux does not have to choose between them.

@@ -21,6 +21,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/mail"
 	"net/smtp"
 	"os"
 	"strings"
@@ -72,10 +73,31 @@ func (c SMTPConfig) Problem() string {
 	case c.To == "":
 		return "no To address set"
 	}
+	// Parsed here, and not left to the relay. A malformed address comes back as a
+	// numeric SMTP code after a connection, a STARTTLS handshake, an authentication
+	// and a round trip -- while this string is what the Weekly screen shows before
+	// any of that happens.
+	if _, err := mail.ParseAddress(strings.TrimSpace(c.From)); err != nil {
+		return fmt.Sprintf("the From address %q is not a valid email address", c.From)
+	}
+	if _, err := addressList(c.To); err != nil {
+		return fmt.Sprintf("the To address %q is not usable: %s", c.To, err)
+	}
 	if _, ok := c.Password(); !ok {
 		return fmt.Sprintf("environment variable %s is not set", c.PasswordEnv)
 	}
 	return ""
+}
+
+// addressList parses the To field into mailboxes.
+//
+// ParseAddressList rather than a split on commas, because a display name is allowed
+// to contain one: `"Mai, Tam" <t@example>` is ONE recipient, and splitting it
+// produces two unusable ones. Stray outer commas are trimmed first -- this is a text
+// field a person types, and a trailing comma is not a mistake worth refusing to send
+// over.
+func addressList(list string) ([]*mail.Address, error) {
+	return mail.ParseAddressList(strings.Trim(list, " ,"))
 }
 
 // SendEmail delivers one plain-text message.
@@ -89,13 +111,32 @@ func SendEmail(ctx context.Context, cfg SMTPConfig, subject, body string) error 
 	}
 	password, _ := cfg.Password()
 
+	// THE ENVELOPE IS NOT THE HEADER, and the two want different strings for the
+	// same address. MAIL FROM and RCPT TO carry an RFC 5321 path -- a bare
+	// addr-spec, no display name -- while the From: and To: headers carry RFC 5322
+	// mailboxes, which is where a display name belongs and the only place it is
+	// legal. digest_from seeds to `Interstellar <onboarding@resend.dev>`, so passing
+	// the configured string straight down the envelope produced
+	// `MAIL FROM:<Interstellar <onboarding@resend.dev>>` and a 501 from Resend --
+	// on every send from every fresh instance, correctly refused.
+	//
+	// Re-parsed rather than trusted: Problem() has already established that both
+	// parse, and an ignored error here would be a nil dereference the day the two
+	// disagree.
+	from, err := mail.ParseAddress(strings.TrimSpace(cfg.From))
+	if err != nil {
+		return fmt.Errorf("from address %q: %w", cfg.From, err)
+	}
+	rcpts, err := addressList(cfg.To)
+	if err != nil {
+		return fmt.Errorf("to address %q: %w", cfg.To, err)
+	}
+
 	addr := net.JoinHostPort(cfg.Host, fmt.Sprint(cfg.Port))
 	dialer := &net.Dialer{Timeout: Timeout}
 
-	var (
-		conn net.Conn
-		err  error
-	)
+	// err is already declared by the address parsing above.
+	var conn net.Conn
 	if cfg.Port == 465 {
 		conn, err = tls.DialWithDialer(dialer, "tcp", addr, &tls.Config{ServerName: cfg.Host})
 	} else {
@@ -126,14 +167,14 @@ func SendEmail(ctx context.Context, cfg SMTPConfig, subject, body string) error 
 		}
 	}
 
-	if err := client.Mail(cfg.From); err != nil {
-		return fmt.Errorf("smtp from %q: %w", cfg.From, err)
+	if err := client.Mail(from.Address); err != nil {
+		return fmt.Errorf("smtp from %q: %w", from.Address, err)
 	}
 	// One recipient per address, so a typo in the second does not silently drop the
 	// first.
-	for _, to := range recipients(cfg.To) {
-		if err := client.Rcpt(to); err != nil {
-			return fmt.Errorf("smtp to %q: %w", to, err)
+	for _, to := range rcpts {
+		if err := client.Rcpt(to.Address); err != nil {
+			return fmt.Errorf("smtp to %q: %w", to.Address, err)
 		}
 	}
 
@@ -141,7 +182,7 @@ func SendEmail(ctx context.Context, cfg SMTPConfig, subject, body string) error 
 	if err != nil {
 		return fmt.Errorf("smtp data: %w", err)
 	}
-	if _, err := w.Write(message(cfg, subject, body)); err != nil {
+	if _, err := w.Write(message(from, rcpts, subject, body)); err != nil {
 		return fmt.Errorf("write message: %w", err)
 	}
 	if err := w.Close(); err != nil {
@@ -151,28 +192,21 @@ func SendEmail(ctx context.Context, cfg SMTPConfig, subject, body string) error 
 	return client.Quit()
 }
 
-func recipients(to string) []string {
-	var out []string
-	for _, part := range strings.Split(to, ",") {
-		if v := strings.TrimSpace(part); v != "" {
-			out = append(out, v)
-		}
-	}
-	return out
-}
-
 // message builds the RFC 5322 bytes.
 //
 // Plain text, not HTML. The round-up is prose a person reads once; an HTML version
 // would be two bodies to keep in step for no gain, and plain text renders correctly
 // in every client including the ones that strip markup.
-func message(cfg SMTPConfig, subject, body string) []byte {
+func message(from *mail.Address, to []*mail.Address, subject, body string) []byte {
 	var b bytes.Buffer
 
-	// Encoded so a subject carrying a topic title in Vietnamese (§9) does not arrive
-	// as mojibake.
-	fmt.Fprintf(&b, "From: %s\r\n", cfg.From)
-	fmt.Fprintf(&b, "To: %s\r\n", strings.Join(recipients(cfg.To), ", "))
+	// mail.Address.String() rather than the configured text, for the same reason the
+	// subject is encoded below: a display name in Vietnamese (§9) is not legal in a
+	// header as raw UTF-8, and String() RFC 2047-encodes exactly the names that need
+	// it. It also quotes and bracket-wraps, so the header is conformant whatever the
+	// owner typed into the field.
+	fmt.Fprintf(&b, "From: %s\r\n", from.String())
+	fmt.Fprintf(&b, "To: %s\r\n", headerAddresses(to))
 	fmt.Fprintf(&b, "Subject: %s\r\n", mime.QEncoding.Encode("utf-8", subject))
 	fmt.Fprintf(&b, "Date: %s\r\n", time.Now().Format(time.RFC1123Z))
 	b.WriteString("MIME-Version: 1.0\r\n")
@@ -191,6 +225,15 @@ func message(cfg SMTPConfig, subject, body string) []byte {
 	}
 
 	return b.Bytes()
+}
+
+// headerAddresses renders the recipient list for a To: header.
+func headerAddresses(to []*mail.Address) string {
+	out := make([]string, len(to))
+	for i, a := range to {
+		out[i] = a.String()
+	}
+	return strings.Join(out, ", ")
 }
 
 // PingPayload is what a webhook receives.

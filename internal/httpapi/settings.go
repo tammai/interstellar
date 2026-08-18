@@ -24,6 +24,11 @@ type providerDTO struct {
 	APIKeyEnv string `json:"api_key_env"`
 	Keyless   bool   `json:"keyless"`
 	Resolved  bool   `json:"resolved"`
+	// Active is the inverse of the stored `disabled` flag. Storage defaults to
+	// on-when-absent because the registry is an unmigrated JSON blob; the API
+	// says `active` because that is what topics and sources say, and one word for
+	// one idea across three screens is worth the inversion. See llm.Provider.
+	Active bool `json:"active"`
 }
 
 type settingsResponse struct {
@@ -75,6 +80,10 @@ type settingsRequest struct {
 		Name      string `json:"name"`
 		BaseURL   string `json:"base_url"`
 		APIKeyEnv string `json:"api_key_env"`
+		// Pointer so an omitted field means "on" rather than "off": a client
+		// writing the whole registry without knowing about this flag must not
+		// silently switch everything off.
+		Active *bool `json:"active"`
 	} `json:"providers"`
 
 	ClassifierModel     *string   `json:"classifier_model"`
@@ -162,7 +171,7 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 			_, resolved := p.APIKey()
 			out.Providers = append(out.Providers, providerDTO{
 				Name: p.Name, BaseURL: p.BaseURL, APIKeyEnv: p.APIKeyEnv,
-				Keyless: p.Keyless(), Resolved: resolved,
+				Keyless: p.Keyless(), Resolved: resolved, Active: p.Active(),
 			})
 		}
 	}
@@ -192,6 +201,7 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 				Name:      strings.TrimSpace(p.Name),
 				BaseURL:   strings.TrimSpace(p.BaseURL),
 				APIKeyEnv: strings.TrimSpace(p.APIKeyEnv),
+				Disabled:  p.Active != nil && !*p.Active,
 			})
 		}
 		raw, err := json.Marshal(clean)
@@ -509,4 +519,113 @@ func floatOf(s string, def float64) float64 {
 		return def
 	}
 	return f
+}
+
+// providerRequest is a partial update to one registry entry. Only the switch for
+// now -- base URL and key env var are still whole-registry writes through
+// PUT /api/settings, which is the shape the seeding flow wants.
+type providerRequest struct {
+	Active *bool `json:"active"`
+}
+
+// handleUpdateProvider switches one provider on or off.
+//
+// Its own endpoint rather than a whole-registry PUT for two reasons. A PUT means
+// the client echoes back every provider to change one, so two screens open at
+// once silently overwrite each other's edits; and the guard below needs to know
+// which entry is being changed, which a wholesale replacement does not say.
+func (s *Server) handleUpdateProvider(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimSpace(r.PathValue("name"))
+
+	var req providerRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		s.error(w, http.StatusBadRequest, "invalid JSON body", nil)
+		return
+	}
+	if req.Active == nil {
+		s.error(w, http.StatusBadRequest, "nothing to update", nil)
+		return
+	}
+
+	settings, err := s.DB.Settings()
+	if err != nil {
+		s.error(w, http.StatusInternalServerError, "could not read settings", err)
+		return
+	}
+	registry, err := llm.ParseRegistry(settings[store.KeyProviders])
+	if err != nil {
+		s.error(w, http.StatusInternalServerError, "the provider registry is not readable", err)
+		return
+	}
+	if _, ok := registry.Lookup(name); !ok {
+		s.error(w, http.StatusNotFound, "no such provider", nil)
+		return
+	}
+
+	// Refuse to switch off a provider a role is standing on.
+	//
+	// The alternative is to allow it and let Readiness catch it, which is how an
+	// unset API key behaves. But an unset key is something the environment did to
+	// you, while this is something you just did -- and the honest moment to say
+	// "that would stop the morning run" is now, in the screen where the roles are
+	// two sections further down and can be moved first. §10 wants a settings
+	// change to take effect on the next run; it does not want one to take the
+	// next run down.
+	if !*req.Active {
+		cfg, err := llm.LoadConfig(settings)
+		if err != nil {
+			s.error(w, http.StatusInternalServerError, "could not read the model settings", err)
+			return
+		}
+		if roles := cfg.RolesUsing(name); len(roles) > 0 {
+			s.error(w, http.StatusConflict, fmt.Sprintf(
+				"%s is where %s runs — move %s to another provider first",
+				name, joinRoles(roles), pluralRoles(roles)), nil)
+			return
+		}
+	}
+
+	updated := make([]llm.Provider, 0, len(registry.Providers()))
+	for _, p := range registry.Providers() {
+		if p.Name == name {
+			p.Disabled = !*req.Active
+		}
+		updated = append(updated, p)
+	}
+	raw, err := json.Marshal(updated)
+	if err != nil {
+		s.error(w, http.StatusInternalServerError, "could not encode providers", err)
+		return
+	}
+	if err := s.DB.SetSettings(map[string]string{store.KeyProviders: string(raw)}); err != nil {
+		s.error(w, http.StatusInternalServerError, "could not save settings", err)
+		return
+	}
+
+	// No schedule reload: nothing here is a cron key. The next run resolves its
+	// own registry, which is what makes this apply without a restart.
+	s.handleGetSettings(w, r)
+}
+
+// joinRoles renders a role list the way a sentence wants it.
+func joinRoles(roles []llm.Role) string {
+	names := make([]string, len(roles))
+	for i, r := range roles {
+		names[i] = string(r)
+	}
+	switch len(names) {
+	case 1:
+		return "the " + names[0]
+	case 2:
+		return "the " + names[0] + " and the " + names[1]
+	default:
+		return "the " + strings.Join(names[:len(names)-1], ", the ") + ", and the " + names[len(names)-1]
+	}
+}
+
+func pluralRoles(roles []llm.Role) string {
+	if len(roles) == 1 {
+		return "it"
+	}
+	return "them"
 }
