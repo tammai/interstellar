@@ -177,12 +177,14 @@ func composeTopic(
 			{Role: "user", Content: prompt},
 		},
 		JSONMode: true,
+		Expect:   len(matched),
 	})
 	if err != nil {
 		return nil, err
 	}
 
 	signals, parseErr := parseComposed(resp.Text)
+	client.ReportReply(resp.CallID, itemsCovered(matched, signals), parseErr == nil)
 	if parseErr == nil {
 		return signals, nil
 	}
@@ -194,20 +196,50 @@ func composeTopic(
 			{Role: "system", Content: synthesizeSystemPrompt},
 			{Role: "user", Content: prompt},
 			{Role: "assistant", Content: resp.Text},
-			{Role: "user", Content: "That was not valid JSON. Reply with only the JSON array, " +
+			{Role: "user", Content: "That was not valid JSON. Reply with only the JSON object, " +
 				"no prose and no code fences."},
 		},
 		JSONMode: true,
+		Expect:   len(matched),
+		Repair:   true,
 	})
 	if repairErr != nil {
 		return nil, fmt.Errorf("unparseable output and repair failed: %w", repairErr)
 	}
 
 	signals, parseErr = parseComposed(repair.Text)
+	client.ReportReply(repair.CallID, itemsCovered(matched, signals), parseErr == nil)
 	if parseErr != nil {
 		return nil, fmt.Errorf("unparseable output after repair: %w", parseErr)
 	}
 	return signals, nil
+}
+
+// itemsCovered counts how many of the offered items the reply actually placed in
+// a story.
+//
+// Not the story count: grouping thirty items into eight stories is the job being
+// done well, and would read as 8-of-30 incompleteness. The prompt's rule is that
+// every item_id given comes back in exactly one story, so coverage of the input
+// is what "did it answer the whole question" means here.
+//
+// Ids the model invented are excluded, on the same reasoning as the caller's
+// whitelist: a reply that drops half the batch and makes up the difference has
+// not answered anything, and counting the inventions would hide that completely.
+func itemsCovered(matched []store.MatchedItem, signals []composedSignal) int {
+	known := make(map[int64]bool, len(matched))
+	for _, m := range matched {
+		known[m.ItemID] = true
+	}
+	seen := make(map[int64]bool, len(matched))
+	for _, s := range signals {
+		for _, id := range s.ItemIDs {
+			if known[id] {
+				seen[id] = true
+			}
+		}
+	}
+	return len(seen)
 }
 
 func parseComposed(text string) ([]composedSignal, error) {
@@ -230,13 +262,16 @@ func parseComposed(text string) ([]composedSignal, error) {
 	return signals, nil
 }
 
+// Object-wrapping the array is required, not cosmetic -- see the note on
+// classifySystemPrompt. Under JSONMode a top-level-array prompt loses everything
+// after the first element without erroring.
 const synthesizeSystemPrompt = `You group news items into stories.
 
 Several items often cover the same event from different angles or outlets. Put
 those in one story. An item covering something distinct is its own story.
 
-Reply with ONLY a JSON array:
-[{"title": "<max 120 chars>", "reason": "<why this matters to the reader>", "item_ids": [<numbers>]}]
+Reply with ONLY a JSON object:
+{"stories": [{"title": "<max 120 chars>", "reason": "<why this matters to the reader>", "item_ids": [<numbers>]}]}
 
 Rules:
 - Every item_id you were given must appear in exactly one story.
@@ -261,7 +296,7 @@ func synthesizePrompt(topic store.Topic, matched []store.MatchedItem) string {
 	for _, m := range matched {
 		summary := m.Summary
 		if len(summary) > maxSummaryChars {
-			summary = summary[:maxSummaryChars]
+			summary = sources.Truncate(summary, maxSummaryChars)
 		}
 		fmt.Fprintf(&b, "\nitem_id: %d\ntitle: %s\n", m.ItemID, m.Title)
 		if summary != "" {
@@ -272,6 +307,6 @@ func synthesizePrompt(topic store.Topic, matched []store.MatchedItem) string {
 		}
 	}
 
-	fmt.Fprintf(&b, "\nGroup all %d items into stories. Return the JSON array only.", len(matched))
+	fmt.Fprintf(&b, "\nGroup all %d items into stories. Return the JSON object only.", len(matched))
 	return b.String()
 }

@@ -33,6 +33,16 @@ const (
 	// turning a pile of stories into prose a person reads is that role's job at a
 	// different scale -- with its own line in the cost log.
 	RoleWeekly Role = "weekly"
+	// RoleSuggest proposes sources for a topic. It runs on the SYNTHESIZER's
+	// chain, not the classifier's: recalling real publications and real feed paths
+	// is world knowledge, and the cheap-first role exists for mechanical work.
+	// A cheaper model here does not fail loudly, it just invents more URLs that
+	// the probe then throws away -- so the escalation is worth paying for on a
+	// button nobody presses twice a day.
+	//
+	// Its own name in the cost log, like transcript and weekly, so a suggestion
+	// pass is visible rather than blended into compose.
+	RoleSuggest Role = "suggest"
 )
 
 // attemptsPerRef bounds retries against a single provider before moving down the
@@ -61,7 +71,8 @@ func (c Chain) Refs() []ModelRef {
 // Recorder persists per-call accounting. Satisfied by *store.DB; an interface so
 // this package tests without a database.
 type Recorder interface {
-	RecordLLMCall(rec store.LLMCall) error
+	RecordLLMCall(rec store.LLMCall) (int64, error)
+	RecordReplyQuality(callID int64, q store.ReplyQuality) error
 	LLMCallsOn(runDate string) (int, error)
 	LLMCallsByRoleOn(runDate, role string) (int, error)
 }
@@ -216,7 +227,7 @@ func (c *Client) CompleteAs(ctx context.Context, chainRole, logRole Role, req Re
 			}
 			// A ref naming a provider that isn't in the registry is a config
 			// error, not a transport one. Record it and try the next hop.
-			c.record(logRole, ref, Usage{}, err)
+			c.record(logRole, ref, req, Usage{}, err)
 			continue
 		}
 
@@ -230,7 +241,7 @@ func (c *Client) CompleteAs(ctx context.Context, chainRole, logRole Role, req Re
 			}
 
 			resp, err := call(ctx, c.http, provider, ref.Model, req)
-			c.record(logRole, ref, resp.Usage, err)
+			resp.CallID = c.record(logRole, ref, req, resp.Usage, err)
 
 			if err == nil {
 				if i > 0 {
@@ -273,9 +284,11 @@ func (c *Client) reserve(role Role) error {
 	return c.guard.Reserve(role, spentToday, roleSpentToday)
 }
 
-// record writes one attempt to llm_calls. A failure to record is logged, never
-// fatal: losing a cost log row is bad, losing the run is worse.
-func (c *Client) record(role Role, ref ModelRef, usage Usage, callErr error) {
+// record writes one attempt to llm_calls and returns its row id. A failure to
+// record is logged, never fatal: losing a cost log row is bad, losing the run is
+// worse. An id of 0 means exactly that happened, and every consumer of it treats
+// 0 as "nowhere to attach anything".
+func (c *Client) record(role Role, ref ModelRef, req Request, usage Usage, callErr error) int64 {
 	rec := store.LLMCall{
 		RunDate:   c.runDate,
 		Role:      string(role),
@@ -284,12 +297,43 @@ func (c *Client) record(role Role, ref ModelRef, usage Usage, callErr error) {
 		TokensIn:  usage.TokensIn,
 		TokensOut: usage.TokensOut,
 		OK:        callErr == nil,
+		// From the request, because both describe the question rather than the
+		// answer -- a failed attempt still asked for thirty items, and still asked
+		// twice if it was a repair.
+		ItemsIn: req.Expect,
+		Repair:  req.Repair,
 	}
 	if callErr != nil {
 		rec.Err = callErr.Error()
 	}
-	if err := c.recorder.RecordLLMCall(rec); err != nil {
+	id, err := c.recorder.RecordLLMCall(rec)
+	if err != nil {
 		c.log.Warn("record llm call", "err", err)
+		return 0
+	}
+	return id
+}
+
+// ReportReply records how a reply parsed, against the attempt that produced it.
+//
+// Fire and forget by design. The caller is a pipeline stage in the middle of a
+// batch, and the whole value of this measurement is that it is cheap enough to
+// take on every call -- so a database hiccup here is a log line, never something
+// that propagates into the run's error path.
+//
+// Call it once per reply the caller actually tried to parse, including the ones
+// that failed to parse: a parse failure recorded is the §10 JSON gate, per model,
+// and a parse failure not recorded is indistinguishable from a call that was never
+// asked to return records at all.
+func (c *Client) ReportReply(callID int64, itemsOut int, parseOK bool) {
+	if callID == 0 {
+		return
+	}
+	if err := c.recorder.RecordReplyQuality(callID, store.ReplyQuality{
+		ItemsOut: itemsOut,
+		ParseOK:  parseOK,
+	}); err != nil {
+		c.log.Warn("record reply quality", "err", err)
 	}
 }
 

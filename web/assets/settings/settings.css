@@ -149,6 +149,8 @@ header {
 .card.row { display: flex; align-items: flex-start; gap: 14px; justify-content: space-between; flex-wrap: wrap }
 .card-main { min-width: 0; flex: 1 }
 .card-name { font-size: 14px; color: var(--star-white); margin-bottom: 3px }
+/* The name is a block, so an inline tag after it needs its own gap. */
+.card-name .qt-tag { margin-left: 6px; vertical-align: 1px }
 .card-detail { font-size: 11.5px; color: var(--ink-dim); overflow-wrap: anywhere; line-height: 1.5 }
 .card-detail.dim { color: var(--ink-faint); margin-top: 2px }
 .card-meta { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; font-size: 11.5px; color: var(--ink-faint); flex-wrap: wrap }
@@ -215,12 +217,40 @@ select.field { appearance: none }
 
 .warn { color: var(--hot-gold) }
 .note { font-size: 11.5px; color: var(--ink-faint); line-height: 1.6; margin-top: 10px }
+.note.ok { color: #9BE6B4 }
+.note.bad { color: var(--hot-gold) }
 .test-result { font-size: 12px; color: var(--ink-dim); margin-top: 8px; line-height: 1.5; min-height: 1.2em }
 .test-result.ok { color: #9BE6B4 }
 .test-result.bad { color: var(--hot-gold) }
 .ladder { font-size: 12px; color: var(--ink-dim); line-height: 1.7; padding-left: 18px }
 .ladder li { margin-bottom: 4px }
 .add-source { border-style: dashed }
+
+/* ---------- suggested sources (inside a topic card) ---------- */
+
+/* The panel lives inside the card it was asked from, separated by a rule rather
+   than a box: a second card outline nested in the first reads as a different kind
+   of thing, and this is the same topic still. */
+.suggestions { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--grid) }
+
+/* Label, where it landed, verdict. The URL column is the one that must give way,
+   because it is the longest and the least load-bearing once a row is accepted. */
+.sg-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr) auto;
+  gap: 8px; align-items: baseline;
+  padding: 6px 0; font-size: 12px;
+  border-top: 1px solid var(--grid);
+}
+.sg-row:first-child { border-top: 0 }
+.sg-what { color: var(--ink); display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; overflow-wrap: anywhere }
+.sg-detail { color: var(--ink-faint); font-size: 11px; overflow-wrap: anywhere }
+.sg-status { font-size: 10.5px; letter-spacing: .07em; text-transform: uppercase; color: var(--ink-dim); text-align: right; white-space: nowrap }
+/* The reason spans the full width on its own line: it is a sentence, and a
+   sentence in a third of a card is eight ragged lines that bury the row above it. */
+.sg-reason { grid-column: 1 / -1; font-size: 11px; color: var(--ink-faint); line-height: 1.5 }
+.sg-added .sg-status { color: #9BE6B4 }
+.sg-rejected .sg-status { color: var(--hot-gold) }
+.sg-add { grid-column: 1 / -1; justify-self: start; margin-top: 4px }
 
 /* ---------- providers (Model screen) ---------- */
 
@@ -456,4 +486,8 @@ select.field { appearance: none }
   .qt-row { grid-template-columns: minmax(0, 1fr) 46px 52px 52px; font-size: 12px; padding: 9px 10px }
   .qt-row > :last-child { display: none }
   .stat-value { font-size: 19px }
+  /* The URL goes, not the verdict: at this width the verdict is the whole point
+     of the row and the URL is already in the source list once accepted. */
+  .sg-row { grid-template-columns: minmax(0, 1fr) auto }
+  .sg-detail { display: none }
 }

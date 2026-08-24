@@ -32,6 +32,15 @@ type Request struct {
 	JSONMode bool
 	// MaxTokens of 0 lets the provider decide.
 	MaxTokens int
+	// Expect is how many records the reply should contain -- the batch size for a
+	// classify call, the matched-item count for a compose. It is recorded on every
+	// attempt of this request, including ones that fail, because it describes the
+	// question and not the answer. Zero for requests with no record count: a chat
+	// answer, a transcript summary, a test call.
+	Expect int
+	// Repair marks a second attempt at a reply the first one mangled, so the cost
+	// of asking a model twice is attributable to that model.
+	Repair bool
 }
 
 // Usage is the token accounting a call reports.
@@ -46,6 +55,11 @@ type Response struct {
 	Usage    Usage
 	Provider string
 	Model    string
+	// CallID is this attempt's row in the cost log, so the caller can come back
+	// and say how the reply parsed. Zero when the row could not be written --
+	// reporting against it is then a no-op, because a lost measurement must never
+	// cost a run.
+	CallID int64
 }
 
 // chatRequest is the OpenAI-compatible wire format -- the one contract this

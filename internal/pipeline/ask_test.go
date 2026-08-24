@@ -268,7 +268,7 @@ func TestAskStopsOnTheChatCap(t *testing.T) {
 	client := clientForChatCapped(t, db, model, 0, 1) // one chat call already spent
 
 	// Pre-spend the allowance so the very first reservation is refused.
-	if err := db.RecordLLMCall(store.LLMCall{RunDate: store.RunDate(time.Now()), Role: "chat", Model: "m", OK: true}); err != nil {
+	if _, err := db.RecordLLMCall(store.LLMCall{RunDate: store.RunDate(time.Now()), Role: "chat", Model: "m", OK: true}); err != nil {
 		t.Fatal(err)
 	}
 

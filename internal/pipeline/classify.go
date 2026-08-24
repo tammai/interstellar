@@ -10,6 +10,7 @@ import (
 
 	"github.com/tammai/interstellar/internal/config"
 	"github.com/tammai/interstellar/internal/llm"
+	"github.com/tammai/interstellar/internal/sources"
 	"github.com/tammai/interstellar/internal/store"
 )
 
@@ -370,12 +371,19 @@ func classifyBatch(
 			{Role: "user", Content: prompt},
 		},
 		JSONMode: true,
+		Expect:   len(batch),
 	})
 	if err != nil {
 		return nil, false, err
 	}
 
 	verdicts, parseErr := parseVerdicts(resp.Text)
+	// Report before branching, so the reply that gets repaired is still on the
+	// record as the one that needed it. This is the measurement that would have
+	// caught the object-shape bug in the note below: a batch of thirty answered
+	// with one verdict parses cleanly and looks like a working model, and only
+	// asked-versus-answered says otherwise.
+	client.ReportReply(resp.CallID, len(verdicts), parseErr == nil)
 	if parseErr == nil {
 		return verdicts, false, nil
 	}
@@ -389,16 +397,19 @@ func classifyBatch(
 			{Role: "system", Content: classifySystemPrompt},
 			{Role: "user", Content: prompt},
 			{Role: "assistant", Content: resp.Text},
-			{Role: "user", Content: "That was not valid JSON. Reply with only the JSON array, " +
+			{Role: "user", Content: "That was not valid JSON. Reply with only the JSON object, " +
 				"no prose and no code fences."},
 		},
 		JSONMode: true,
+		Expect:   len(batch),
+		Repair:   true,
 	})
 	if repairErr != nil {
 		return nil, true, fmt.Errorf("unparseable output and repair failed: %w", repairErr)
 	}
 
 	verdicts, parseErr = parseVerdicts(repairResp.Text)
+	client.ReportReply(repairResp.CallID, len(verdicts), parseErr == nil)
 	if parseErr != nil {
 		return nil, true, fmt.Errorf("unparseable output after repair: %w", parseErr)
 	}
@@ -422,10 +433,20 @@ func parseVerdicts(text string) ([]verdict, error) {
 	return verdicts, nil
 }
 
+// The reply shape is an OBJECT wrapping an array, and that is load-bearing:
+// JSONMode sends response_format {"type":"json_object"}, whose contract is a
+// top-level object. Asking for a top-level array under it does not fail loudly --
+// the model returns ONE verdict object and silently discards the rest of the
+// batch. Measured on openrouter (2026-08-21): a 12-item batch came back as a
+// single verdict from both deepseek-v4-flash and gpt-5-mini; the same batch under
+// this object shape returned all 12. It cost seven days of empty skies, because
+// the seeded deepseek-chat happened to tolerate the array shape and nothing broke
+// until the roles moved to other models. llm.ExtractArray finds the inner array
+// either way, so the parse side needs nothing -- keep the PROMPTS object-shaped.
 const classifySystemPrompt = `You score news items for relevance to a single topic.
 
-Reply with ONLY a JSON array, one object per item you were given:
-[{"item_id": <number>, "score": <1-5>, "reason": "<one sentence>"}]
+Reply with ONLY a JSON object holding one entry per item you were given:
+{"verdicts": [{"item_id": <number>, "score": <1-5>, "reason": "<one sentence>"}]}
 
 Include "reason" ONLY for items you score 4 or 5. For anything scored 3 or below,
 return just the item_id and score. Most items in a batch are not relevant, and a
@@ -457,7 +478,7 @@ func classifyPrompt(topic store.Topic, batch []store.ClassifiableItem) string {
 	for _, it := range batch {
 		summary := it.Summary
 		if len(summary) > maxSummaryChars {
-			summary = summary[:maxSummaryChars]
+			summary = sources.Truncate(summary, maxSummaryChars)
 		}
 		fmt.Fprintf(&b, "\nitem_id: %d\ntitle: %s\n", it.ID, it.Title)
 		if it.SourceName != "" {
@@ -469,7 +490,7 @@ func classifyPrompt(topic store.Topic, batch []store.ClassifiableItem) string {
 	}
 
 	fmt.Fprintf(&b, "\nScore all %d items. Include a reason only for those scoring 4 or 5. "+
-		"Return the JSON array only.", len(batch))
+		"Return the JSON object only.", len(batch))
 	return b.String()
 }
 

@@ -66,3 +66,49 @@ func (s *Server) handleTopicStats(w http.ResponseWriter, r *http.Request) {
 
 	s.json(w, http.StatusOK, out)
 }
+
+// modelStatsResponse is the per-model reliability view: the quality half of the
+// cost log.
+//
+// It sits on the same screen as the per-topic hit rate because the two are read
+// together, and a real outage proved they have to be. A model that answers one
+// item of a thirty-item batch without erroring makes every topic look like a
+// definition drawn too tight -- identical numbers, wrong cause, and no way to
+// tell from the topic table alone. The rows below name the model instead.
+type modelStatsResponse struct {
+	Days int                      `json:"days"`
+	Rows []store.ModelReliability `json:"rows"`
+	// Ready is whether anything in the window carries a quality measurement at
+	// all. Distinct from having rows: a window can hold plenty of chat answers and
+	// test calls, none of which are a list of anything and none of which say
+	// whether a model can hold a batch together.
+	Ready bool `json:"ready"`
+}
+
+func (s *Server) handleModelStats(w http.ResponseWriter, r *http.Request) {
+	days := qualityWindowDefault
+	if raw := r.URL.Query().Get("days"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > qualityWindowMax {
+			s.error(w, http.StatusBadRequest, "days must be a whole number between 1 and 365", nil)
+			return
+		}
+		days = n
+	}
+
+	rows, err := s.DB.ModelReliabilityOver(days)
+	if err != nil {
+		s.error(w, http.StatusInternalServerError, "could not read model statistics", err)
+		return
+	}
+
+	out := modelStatsResponse{Days: days, Rows: rows}
+	for _, row := range rows {
+		if row.Replies > 0 {
+			out.Ready = true
+			break
+		}
+	}
+
+	s.json(w, http.StatusOK, out)
+}

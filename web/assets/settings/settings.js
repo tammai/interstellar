@@ -464,10 +464,139 @@ class Settings {
       this.rerenderCurrent(); this.changed();
     };
 
-    actions.append(toggle, save, del);
+    // Suggestions land IN the card, and the screen is never rebuilt around them.
+    // Two reasons, both already load-bearing on this screen: rerenderCurrent()
+    // would replaceChildren() away the result it was asked to show, and it would
+    // also discard whatever the owner has typed into a sibling card's definition
+    // -- which is why the active toggle above deliberately does not re-render
+    // either.
+    const suggest = document.createElement('button');
+    suggest.className = 'btn-quiet';
+    suggest.textContent = 'Suggest sources';
+    suggest.title = 'Propose feeds and Hacker News keywords for this topic, from its definition';
+    let panel = null;
+    suggest.onclick = async () => {
+      if (topic.needs_setup) {
+        panel = this.suggestPanel(card, panel);
+        panel.replaceChildren(noteLine(
+          'Write a definition first — suggestions come from what you mean by the topic, not from its name.',
+          'bad'));
+        return;
+      }
+      suggest.disabled = true;
+      suggest.textContent = 'Looking…';
+      panel = this.suggestPanel(card, panel);
+      panel.replaceChildren(noteLine('Asking the model, then fetching every feed it proposes…'));
+
+      const res = await fetchJSON(`/api/topics/${topic.id}/sources/suggest`, { method: 'POST' });
+      suggest.disabled = false;
+      suggest.textContent = 'Suggest sources';
+
+      if (!res) {
+        panel.replaceChildren(noteLine('Could not get suggestions. Check the synthesizer model on the Model screen.', 'bad'));
+        return;
+      }
+      this.renderSuggestions(panel, res);
+      if (res.added > 0) this.changed();
+    };
+
+    actions.append(suggest, toggle, save, del);
     meta.append(status, actions);
     card.append(title, def, meta);
     return card;
+  }
+
+  // suggestPanel is the card's own result area, created once and reused so a
+  // second press replaces the first result rather than stacking under it.
+  suggestPanel(card, existing) {
+    if (existing) return existing;
+    const panel = document.createElement('div');
+    panel.className = 'suggestions';
+    card.append(panel);
+    return panel;
+  }
+
+  renderSuggestions(panel, res) {
+    panel.replaceChildren();
+
+    const feeds = res.feeds || [];
+    const keywords = res.keywords || [];
+    if (!feeds.length && !keywords.length) {
+      panel.append(noteLine('The model proposed nothing for this definition.'));
+      return;
+    }
+
+    if (res.added > 0) {
+      // Lead with what to do next. A row was written and it is switched off, so
+      // the feature has not finished until the owner goes and looks at it.
+      panel.append(noteLine(
+        `${res.added} feed${res.added === 1 ? '' : 's'} added, switched off. ` +
+        'Check them on the Sources screen and switch on the ones you want.', 'ok'));
+    }
+
+    for (const f of feeds) {
+      panel.append(suggestionRow(f));
+    }
+
+    for (const k of keywords) {
+      const row = suggestionRow(k);
+      // A keyword is offered, not added: there is one Hacker News row and it is
+      // live, so writing to it would put a guess into tomorrow's run unreviewed.
+      // One click is the review.
+      if (k.status === 'proposed') {
+        const add = document.createElement('button');
+        add.className = 'btn-quiet sg-add';
+        add.textContent = 'Add keyword';
+        add.onclick = async () => {
+          add.disabled = true;
+          const outcome = await this.addHNKeyword(k.query, k.min_points);
+          add.textContent = outcome === 'added' ? 'Added'
+            : outcome === 'already' ? 'Already watching'
+            : outcome === 'no-row' ? 'No Hacker News source'
+            : 'Failed';
+          if (outcome === 'added') this.changed();
+        };
+        row.append(add);
+      }
+      panel.append(row);
+    }
+  }
+
+  // The ONE place a Hacker News keyword is added, used by the Sources screen's
+  // add field and by a suggestion's Add button.
+  //
+  // Two rules live here and both are easy to get wrong from a call site. A second
+  // Hacker News row would undo migration 007 one keyword at a time -- source_count
+  // counts DISTINCT source_id, so two HN rows make one story look like two
+  // outlets -- so the keyword joins the row that is already there. And PATCH
+  // REPLACES config wholesale, so the write has to carry the rest of it forward:
+  // sending only {queries} drops firehose_min_points, which silently switches off
+  // the keyword-less pass that exists to catch the story no keyword anticipated.
+  // Nothing would look broken; the sky would just quietly stop finding those.
+  //
+  // `query` is the one key deliberately dropped: hnQueries has already folded the
+  // legacy single-keyword shape into the list, so keeping it would watch that
+  // keyword twice.
+  async addHNKeyword(query, minPoints = 0) {
+    const text = String(query || '').trim();
+    if (!text) return 'rejected';
+
+    const sources = await fetchJSON('/api/sources') || [];
+    const hn = sources.find((s) => s.kind === 'hn_search');
+    if (!hn) return 'no-row';
+
+    const cfg = hn.config || {};
+    const queries = hnQueries(cfg);
+    if (queries.some((q) => q.query.toLowerCase() === text.toLowerCase())) return 'already';
+    queries.push(minPoints > 0 ? { query: text, min_points: minPoints } : { query: text });
+
+    const config = { ...cfg, queries };
+    delete config.query;
+
+    const ok = await fetchJSON(`/api/sources/${hn.id}`, {
+      method: 'PATCH', body: JSON.stringify({ config }),
+    });
+    return ok ? 'added' : 'failed';
   }
 
   // ---------- sources ----------
@@ -522,22 +651,12 @@ class Settings {
       const text = value.value.trim();
       if (!text) return;
 
-      // A second Hacker News row would undo migration 007 one keyword at a time:
-      // source_count counts DISTINCT source_id, so two HN rows make one story
-      // look like two outlets. The keyword joins the row that is already there.
-      const hn = kind.value === 'hn_search' ? existingHN() : null;
-      if (hn) {
-        const queries = hnQueries(hn.config);
-        if (queries.some((q) => q.query.toLowerCase() === text.toLowerCase())) {
-          value.value = '';
-          return; // already watching it
-        }
-        queries.push({ query: text });
-        const ok = await fetchJSON(`/api/sources/${hn.id}`, {
-          method: 'PATCH',
-          body: JSON.stringify({ config: { queries } }),
-        });
-        if (ok) { this.rerenderCurrent(); this.changed() }
+      // A keyword joins the Hacker News row that is already there; see
+      // addHNKeyword for why that matters and what else the write has to carry.
+      if (kind.value === 'hn_search' && existingHN()) {
+        const outcome = await this.addHNKeyword(text);
+        if (outcome === 'already') { value.value = ''; return }
+        if (outcome === 'added') { this.rerenderCurrent(); this.changed() }
         return;
       }
 
@@ -729,6 +848,10 @@ class Settings {
     const name = document.createElement('div');
     name.className = 'card-name';
     name.textContent = source.name;
+    // A suggested row arrives switched off, so without this it is a paused feed
+    // nobody remembers adding. The tag is the difference between "why is this
+    // here" and "right, I asked for that".
+    if (source.config?.suggested_for) name.append(quietTag('suggested'));
 
     const detail = document.createElement('div');
     detail.className = 'card-detail';
@@ -1460,7 +1583,72 @@ class Settings {
       'Matches are raw verdicts; signals are what the synthesizer composed from them and what the sky actually shows.';
     body.append(note);
 
+    await this.renderModelReliability(body);
     await this.renderHistory(body);
+  }
+
+  // Per-model reliability, directly under the per-topic hit rate.
+  //
+  // It goes here rather than on the Model screen because it is the other
+  // explanation for the table above it. A model that answers one item of a
+  // thirty-item batch, with valid JSON and a 200, makes every topic read as a
+  // definition drawn too tight -- same numbers, wrong cause, and nothing in the
+  // hit-rate table can tell them apart. Reading them a screen away from each
+  // other is how that went unnoticed for days.
+  //
+  // The Model screen stays settings-only for a second reason: its render is
+  // guarded by a signature check and refuses to rebuild while a field has focus,
+  // and a measurement that refreshes on a poll has no business inside that.
+  async renderModelReliability(body) {
+    // Same window as the hit rate above, deliberately: the two numbers are being
+    // compared, so a picker that moved one and not the other would invite exactly
+    // the wrong reading.
+    const data = await fetchJSON(`/api/models/stats?days=${this.qualityDays}`);
+    if (!data) return;
+
+    const wrap = section(body, 'Model reliability');
+
+    const rows = data.rows || [];
+    if (!rows.length) {
+      const none = document.createElement('p');
+      none.className = 'note';
+      none.textContent = 'No model calls in this window yet.';
+      wrap.append(none);
+      return;
+    }
+
+    const table = document.createElement('div');
+    table.className = 'quality-table';
+    table.setAttribute('role', 'table');
+    table.setAttribute('aria-label',
+      `Per-model reliability over ${data.days} ${data.days === 1 ? 'day' : 'days'}`);
+
+    const head = document.createElement('div');
+    head.className = 'qt-row qt-head';
+    head.setAttribute('role', 'row');
+    for (const [label, cls] of [['Model', 'qt-topic'], ['Calls', 'qt-n'],
+                                ['Parsed', 'qt-rate'], ['Answered', 'qt-rate'], ['Repairs', 'qt-n']]) {
+      const cell = document.createElement('span');
+      cell.className = cls;
+      cell.setAttribute('role', 'columnheader');
+      cell.textContent = label;
+      head.append(cell);
+    }
+    table.append(head);
+
+    for (const row of rows) {
+      table.append(modelRow(row));
+    }
+    wrap.append(table);
+
+    const note = document.createElement('p');
+    note.className = 'note';
+    note.textContent = data.ready
+      ? 'Parsed is how often a reply yielded usable JSON. Answered is how many of the items a call asked about came back with a verdict — ' +
+        'a model can score 100% parsed and still drop most of a batch, which is the failure this column exists to catch. ' +
+        'Both are blank for calls that are not a list of anything: a chat answer, a transcript summary, a test call.'
+      : 'Nothing in this window carried a measurable reply yet. Parsed and Answered fill in once a classify or compose pass runs.';
+    wrap.append(note);
   }
 
   // Constellation history, on the same screen as the hit rate.
@@ -2063,6 +2251,118 @@ function qualityRow(row) {
       verdict.classList.add('loose');
       verdict.title = 'More than half of everything read matches. The definition is probably too broad to be useful.';
     }
+  }
+  return tr;
+}
+
+// noteLine is a one-line message inside a card. `tone` matches the tone classes
+// already on this screen -- 'ok' | 'bad' | '' -- rather than inventing a third
+// vocabulary for the same two colours.
+function noteLine(text, tone = '') {
+  const p = document.createElement('p');
+  p.className = 'note' + (tone ? ' ' + tone : '');
+  p.textContent = text;
+  return p;
+}
+
+// suggestionRow is one candidate and what became of it.
+//
+// The status is a word, not a colour: 'rejected' with the reason next to it is the
+// most useful line on the panel -- "is not a feed" and "fetched but returned no
+// items" are what tell the owner the model guessed, and that the guess was caught
+// before it became a row.
+function suggestionRow(s) {
+  const row = document.createElement('div');
+  row.className = 'sg-row sg-' + s.status;
+
+  const label = document.createElement('span');
+  label.className = 'sg-what';
+  if (s.kind === 'hn_search') {
+    label.textContent = `"${s.query}"`;
+    if (s.min_points) label.append(quietTag(`${s.min_points} points`));
+  } else {
+    label.textContent = s.name || s.url;
+    // The feed's own title, when it disagrees with the name the model gave it.
+    // This is the check on "is this the publication it claimed" -- the same
+    // question the scraped-channel-ID trap answers wrongly.
+    if (s.feed_title && s.name && s.feed_title !== s.name) {
+      label.append(quietTag(`feed says "${s.feed_title}"`));
+    }
+    if (s.items) label.append(quietTag(`${s.items} items`));
+  }
+
+  const detail = document.createElement('span');
+  detail.className = 'sg-detail';
+  // Where it landed, when that is not where it pointed. Worth showing: it is the
+  // difference between one masthead and two rows for it.
+  detail.textContent = s.final_url || s.url || '';
+
+  const status = document.createElement('span');
+  status.className = 'sg-status';
+  status.textContent = s.status === 'added' ? 'added, off'
+    : s.status === 'proposed' ? '' : s.status;
+  if (s.reason) status.title = s.reason;
+
+  row.append(label, detail, status);
+  if (s.reason) {
+    const why = document.createElement('span');
+    why.className = 'sg-reason';
+    why.textContent = s.reason;
+    row.append(why);
+  }
+  return row;
+}
+
+// modelRow is one provider/model/role's window.
+//
+// The role rides in the name cell as a tag rather than taking a column of its
+// own, which keeps this table on the same five-column grid as the hit rate above
+// it -- two tables that look like one thing, because they are being read as one
+// thing.
+function modelRow(row) {
+  const tr = document.createElement('div');
+  tr.className = 'qt-row';
+  tr.setAttribute('role', 'row');
+
+  const name = document.createElement('span');
+  name.className = 'qt-topic';
+  name.setAttribute('role', 'cell');
+  // provider/model, never model alone: the same model name reached through two
+  // providers is two different things to diagnose, and a fallback firing has to
+  // read as its own line.
+  name.textContent = row.provider ? `${row.provider}/${row.model}` : row.model;
+  name.append(quietTag(row.role));
+  if (row.failed > 0) name.append(quietTag(`${row.failed} failed`));
+
+  const cells = [
+    [String(row.calls), 'qt-n'],
+    [formatRate(row.parse_rate), 'qt-rate'],
+    [formatRate(row.completeness), 'qt-rate'],
+    [String(row.repairs || (row.replies ? '0' : '—')), 'qt-n'],
+  ];
+
+  tr.append(name);
+  for (const [text, cls] of cells) {
+    const cell = document.createElement('span');
+    cell.className = cls;
+    cell.setAttribute('role', 'cell');
+    cell.textContent = text;
+    tr.append(cell);
+  }
+
+  const rates = tr.querySelectorAll('.qt-rate');
+
+  // Judge only with enough behind the number, same discipline as qualityRow: one
+  // unparseable reply out of three is a bad afternoon, not a verdict on a model.
+  if (row.replies >= 20 && row.parse_rate >= 0 && row.parse_rate < 0.98) {
+    rates[0].classList.add('bad');
+    rates[0].title = 'This model is not reliably returning JSON. Each failure costs a repair call, and the ones that fail twice lose the batch. Consider moving the role up the ladder.';
+  }
+  // Incompleteness is the quieter and more expensive failure: nothing errors, the
+  // sky just fills in thinner than it should.
+  if (row.items_asked >= 50 && row.completeness >= 0 && row.completeness < 0.9) {
+    rates[1].classList.add('bad');
+    rates[1].title = 'This model is answering fewer items than it was asked about. Batches are being silently truncated — the items it skipped were read, paid for, and never scored. Move the role to another model.';
   }
   return tr;
 }

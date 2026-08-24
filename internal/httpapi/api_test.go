@@ -101,6 +101,7 @@ func TestNoEndpointEverLeaksAKey(t *testing.T) {
 		{"GET", "/api/sky", ""},
 		{"GET", "/api/topics", ""},
 		{"GET", "/api/topics/stats", ""},
+		{"GET", "/api/models/stats", ""},
 		{"GET", "/api/trending", ""},
 		{"GET", "/api/weekly", ""},
 		{"GET", "/api/search?q=agents", ""},
@@ -367,7 +368,7 @@ func TestStatusBannerSurvivesRestart(t *testing.T) {
 	}
 	runDate := store.RunDate(time.Now().In(time.UTC))
 	for i := 0; i < 2; i++ {
-		if err := db.RecordLLMCall(store.LLMCall{
+		if _, err := db.RecordLLMCall(store.LLMCall{
 			RunDate: runDate, Role: "classifier", Provider: "deepseek", Model: "m", OK: true,
 		}); err != nil {
 			t.Fatal(err)
@@ -965,7 +966,7 @@ func TestAskReportsTheChatCapAsARateLimit(t *testing.T) {
 	}
 
 	// Spend the allowance.
-	if err := db.RecordLLMCall(store.LLMCall{
+	if _, err := db.RecordLLMCall(store.LLMCall{
 		RunDate: store.RunDate(time.Now().UTC()), Role: "chat", Model: "m", OK: true,
 	}); err != nil {
 		t.Fatal(err)
@@ -992,7 +993,7 @@ func TestChatCapIsSeparateFromTheRunCap(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 5 {
-		if err := db.RecordLLMCall(store.LLMCall{
+		if _, err := db.RecordLLMCall(store.LLMCall{
 			RunDate: store.RunDate(time.Now().UTC()), Role: "classifier", Model: "m", OK: true,
 		}); err != nil {
 			t.Fatal(err)
@@ -1934,7 +1935,7 @@ func TestBannerReportsAWhollyFailingRole(t *testing.T) {
 
 	today := store.RunDate(time.Now().In(srv.Env.Location))
 	for i := 0; i < 63; i++ {
-		if err := db.RecordLLMCall(store.LLMCall{
+		if _, err := db.RecordLLMCall(store.LLMCall{
 			RunDate: today, Role: "classifier", Provider: "ollama",
 			Model: "deepseek-v4-flash:cloud", OK: false,
 			Err: "ollama returned 403: this model requires a subscription",
@@ -1961,7 +1962,7 @@ func TestChatFailuresStayOutOfTheSkyBanner(t *testing.T) {
 	srv, h, db := testServer(t)
 
 	today := store.RunDate(time.Now().In(srv.Env.Location))
-	if err := db.RecordLLMCall(store.LLMCall{
+	if _, err := db.RecordLLMCall(store.LLMCall{
 		RunDate: today, Role: "chat", Provider: "deepseek", Model: "deepseek-chat",
 		OK: false, Err: "402 insufficient balance",
 	}); err != nil {
@@ -1988,7 +1989,7 @@ func TestFailureBannerOutranksTheCapBanner(t *testing.T) {
 	}
 	today := store.RunDate(time.Now().In(srv.Env.Location))
 	for i := 0; i < 3; i++ {
-		if err := db.RecordLLMCall(store.LLMCall{
+		if _, err := db.RecordLLMCall(store.LLMCall{
 			RunDate: today, Role: "synthesizer", Provider: "p", Model: "m", OK: false, Err: "403 nope",
 		}); err != nil {
 			t.Fatalf("record: %v", err)
@@ -2191,9 +2192,12 @@ func TestClearChatHistoryKeepsTheCostLog(t *testing.T) {
 			t.Fatalf("SaveChatTurn: %v", err)
 		}
 	}
-	if err := db.RecordLLMCall(store.LLMCall{
-		RunDate: "2026-08-18", Role: "chat", Provider: "deepseek", Model: "deepseek-chat",
-		TokensIn: 900, TokensOut: 120, OK: true,
+	// Today's date, not a literal: the handler counts the day's chat spend against
+	// time.Now(), so a hardcoded run date makes this assertion pass on exactly one
+	// calendar day and quietly fail on every other one. (It did -- 2026-08-18.)
+	if _, err := db.RecordLLMCall(store.LLMCall{
+		RunDate: store.RunDate(time.Now()), Role: "chat", Provider: "deepseek",
+		Model: "deepseek-chat", TokensIn: 900, TokensOut: 120, OK: true,
 	}); err != nil {
 		t.Fatalf("RecordLLMCall: %v", err)
 	}
@@ -2229,5 +2233,142 @@ func TestClearChatHistoryKeepsTheCostLog(t *testing.T) {
 	// Clearing an empty transcript is a no-op, not an error.
 	if w := do(t, h, "DELETE", "/api/chat/history", ""); w.Code != http.StatusOK {
 		t.Errorf("clearing an empty transcript = %d", w.Code)
+	}
+}
+
+// The quality half of the cost log, over the wire.
+//
+// The row must name the model and say both things about it: that the reply parsed,
+// and that it covered a fraction of what it was asked. Those two are what tell a
+// broken model from a badly written topic definition, and the screen renders them
+// side by side.
+func TestModelStatsReportsParseAndCompletenessSeparately(t *testing.T) {
+	_, h, db := testServer(t)
+	today := store.RunDate(time.Now())
+
+	id, err := db.RecordLLMCall(store.LLMCall{
+		RunDate: today, Role: "classifier", Provider: "openrouter",
+		Model: "flash", OK: true, ItemsIn: 30, TokensIn: 900, TokensOut: 40,
+	})
+	if err != nil {
+		t.Fatalf("RecordLLMCall: %v", err)
+	}
+	if err := db.RecordReplyQuality(id, store.ReplyQuality{ItemsOut: 2, ParseOK: true}); err != nil {
+		t.Fatalf("RecordReplyQuality: %v", err)
+	}
+	// A chat answer is not a list of anything and must not acquire a rate.
+	if _, err := db.RecordLLMCall(store.LLMCall{
+		RunDate: today, Role: "chat", Provider: "openrouter", Model: "flash", OK: true,
+	}); err != nil {
+		t.Fatalf("RecordLLMCall: %v", err)
+	}
+
+	w := do(t, h, "GET", "/api/models/stats", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s", w.Code, w.Body.String())
+	}
+	got := decode[modelStatsResponse](t, w)
+
+	if got.Days != 7 {
+		t.Errorf("days = %d, want the 7-day default", got.Days)
+	}
+	if !got.Ready {
+		t.Error("not ready, but a classifier reply was measured in the window")
+	}
+
+	var classifier, chat *store.ModelReliability
+	for i := range got.Rows {
+		switch got.Rows[i].Role {
+		case "classifier":
+			classifier = &got.Rows[i]
+		case "chat":
+			chat = &got.Rows[i]
+		}
+	}
+	if classifier == nil || chat == nil {
+		t.Fatalf("want a row per role, got %+v", got.Rows)
+	}
+
+	if classifier.ParseRate != 1 {
+		t.Errorf("classifier parse rate %v, want 1", classifier.ParseRate)
+	}
+	if classifier.Completeness <= 0 || classifier.Completeness > 0.1 {
+		t.Errorf("classifier completeness %v, want 2/30", classifier.Completeness)
+	}
+	if chat.ParseRate != -1 || chat.Completeness != -1 {
+		t.Errorf("chat rates = %v/%v, want the -1 sentinel so the screen prints an em dash",
+			chat.ParseRate, chat.Completeness)
+	}
+}
+
+// The window is bounded the same way the topic view's is: the two pickers move
+// together on one screen, so they must accept the same range.
+func TestModelStatsRejectsAnOutOfRangeWindow(t *testing.T) {
+	_, h, _ := testServer(t)
+
+	for _, q := range []string{"0", "-3", "9999", "soon"} {
+		w := do(t, h, "GET", "/api/models/stats?days="+q, "")
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("days=%s gave %d, want 400", q, w.Code)
+		}
+	}
+}
+
+// Suggesting from a title alone is how you get eight plausible feeds about the
+// wrong subject. The definition is the input, so its absence is a 400 that says
+// what to do -- checked before the model config, because it is true regardless of
+// whether a model is even configured.
+func TestSuggestSourcesRefusesATopicWithNoDefinition(t *testing.T) {
+	_, h, db := testServer(t)
+
+	id, err := db.CreateTopic(store.Topic{Title: "Unset", Definition: "", Active: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	w := do(t, h, "POST", fmt.Sprintf("/api/topics/%d/sources/suggest", id), "")
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "definition") {
+		t.Errorf("the message does not name the missing thing: %s", w.Body.String())
+	}
+}
+
+func TestSuggestSourcesRefusesAnUnknownTopic(t *testing.T) {
+	_, h, _ := testServer(t)
+
+	w := do(t, h, "POST", "/api/topics/9999/sources/suggest", "")
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404: %s", w.Code, w.Body.String())
+	}
+}
+
+// Readiness is checked on the SYNTHESIZER, which is the chain this runs on --
+// never Ready(), which also covers the classifier. Whether the classifier has a
+// key has nothing to do with whether a suggestion pass can work, and refusing on
+// it would be the same mistake as folding chat into Ready().
+func TestSuggestSourcesReportsTheSynthesizerSpecifically(t *testing.T) {
+	_, h, db := testServer(t)
+
+	id, err := db.CreateTopic(store.Topic{
+		Title: "Agents", Definition: "Anything about agent harnesses.", Active: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// No provider keys are set (testServer isolates from the real environment), so
+	// the synthesizer cannot run and the message must say which env var is missing.
+	w := do(t, h, "POST", fmt.Sprintf("/api/topics/%d/sources/suggest", id), "")
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "synthesizer") {
+		t.Errorf("the message does not name the role that is broken: %s", body)
+	}
+	if !strings.Contains(body, "API_KEY") {
+		t.Errorf("the message does not name the missing env var: %s", body)
 	}
 }

@@ -24,15 +24,32 @@ type fakeRecorder struct {
 	// roleSpentToday is what a per-role daily cap sees, keyed by role name.
 	roleSpentToday map[string]int
 	failWrites     bool
+	// quality is what ReportReply attached, keyed by the id handed back at insert.
+	quality map[int64]store.ReplyQuality
 }
 
-func (f *fakeRecorder) RecordLLMCall(rec store.LLMCall) error {
+func (f *fakeRecorder) RecordLLMCall(rec store.LLMCall) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failWrites {
+		return 0, errors.New("disk on fire")
+	}
+	f.calls = append(f.calls, rec)
+	// Ids start at 1, so a client that failed to record (and therefore holds 0)
+	// can never be mistaken for one that recorded the first call.
+	return int64(len(f.calls)), nil
+}
+
+func (f *fakeRecorder) RecordReplyQuality(callID int64, q store.ReplyQuality) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failWrites {
 		return errors.New("disk on fire")
 	}
-	f.calls = append(f.calls, rec)
+	if f.quality == nil {
+		f.quality = map[int64]store.ReplyQuality{}
+	}
+	f.quality[callID] = q
 	return nil
 }
 
@@ -469,5 +486,110 @@ func TestProviderErrorFallsBackToTheRawBody(t *testing.T) {
 	got = snippet([]byte(`{"detail":"nope"}`))
 	if !strings.Contains(got, "detail") {
 		t.Errorf("snippet = %q, want the raw body for an unrecognised shape", got)
+	}
+}
+
+// The reply's quality must land on the attempt that produced it, which after a
+// fallback is not the attempt the owner configured.
+//
+// This is what keeps the per-model view honest: a primary that 500s and a
+// fallback that answers badly are two different diagnoses, and attributing the
+// bad answer to the primary would send the owner to change the wrong setting.
+func TestReportReplyAttachesToTheHopThatAnswered(t *testing.T) {
+	down, _ := modelServer(t, "", http.StatusInternalServerError)
+	up, _ := modelServer(t, `{"verdicts":[]}`, http.StatusOK)
+	t.Setenv("K", "sk-x")
+
+	cfg := Config{
+		Registry: registryOf(t,
+			Provider{Name: "down", BaseURL: down.URL, APIKeyEnv: "K"},
+			Provider{Name: "up", BaseURL: up.URL, APIKeyEnv: "K"}),
+		Roles: map[Role]Chain{RoleClassifier: {
+			Primary:  ModelRef{"down", "a"},
+			Fallback: []ModelRef{{"up", "b"}},
+		}},
+	}
+	rec := &fakeRecorder{}
+	c := NewClient(cfg, rec, "2026-08-11", quiet())
+
+	resp, err := c.Complete(context.Background(), RoleClassifier, Request{Expect: 30})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	c.ReportReply(resp.CallID, 4, true)
+
+	// Every attempt still got a row, including the two retries against `down`.
+	if len(rec.calls) < 2 {
+		t.Fatalf("cost log has %d rows, want the failed attempts and the success", len(rec.calls))
+	}
+	if resp.CallID != int64(len(rec.calls)) {
+		t.Fatalf("response carries call id %d, want the last row (%d)", resp.CallID, len(rec.calls))
+	}
+	if got := rec.calls[resp.CallID-1]; got.Provider != "up" {
+		t.Errorf("quality attached to provider %q, want the hop that answered (up)", got.Provider)
+	}
+
+	q, ok := rec.quality[resp.CallID]
+	if !ok {
+		t.Fatalf("no quality recorded against %d; have %v", resp.CallID, rec.quality)
+	}
+	if q.ItemsOut != 4 || !q.ParseOK {
+		t.Errorf("quality = %+v, want 4 items and a clean parse", q)
+	}
+	// The failing hops must carry no quality at all: they never replied, and a
+	// zero there would read as a model that answered nothing.
+	for id := range rec.quality {
+		if id != resp.CallID {
+			t.Errorf("quality recorded against attempt %d, which produced no reply", id)
+		}
+	}
+}
+
+// Expect and Repair describe the QUESTION, so they belong on every attempt of it
+// -- including the ones that never came back. Without that, a chain that fails
+// twice and succeeds once looks like a model asked about a third as many items as
+// it really was.
+func TestRecordedAttemptsCarryTheRequestsShape(t *testing.T) {
+	srv, _ := modelServer(t, "ok", http.StatusServiceUnavailable)
+	t.Setenv("K", "sk-x")
+
+	cfg := Config{
+		Registry: registryOf(t, Provider{Name: "p", BaseURL: srv.URL, APIKeyEnv: "K"}),
+		Roles:    map[Role]Chain{RoleClassifier: {Primary: ModelRef{"p", "m"}}},
+	}
+	rec := &fakeRecorder{}
+	c := NewClient(cfg, rec, "2026-08-11", quiet())
+
+	if _, err := c.Complete(context.Background(), RoleClassifier,
+		Request{Expect: 30, Repair: true}); err == nil {
+		t.Fatal("expected the call to fail")
+	}
+
+	if len(rec.calls) == 0 {
+		t.Fatal("no attempts recorded")
+	}
+	for i, got := range rec.calls {
+		if got.ItemsIn != 30 {
+			t.Errorf("attempt %d recorded items_in=%d, want 30", i, got.ItemsIn)
+		}
+		if !got.Repair {
+			t.Errorf("attempt %d is not marked a repair; the cost of asking twice is attributable or it is invisible", i)
+		}
+		if got.OK {
+			t.Errorf("attempt %d recorded as OK against a 503", i)
+		}
+	}
+}
+
+// A row that could not be written has no id, and reporting against it must be a
+// no-op rather than a write against row 0 or an error into the run.
+func TestReportReplyIsANoOpWithoutARow(t *testing.T) {
+	rec := &fakeRecorder{failWrites: true}
+	c := NewClient(Config{}, rec, "2026-08-11", quiet())
+
+	c.ReportReply(0, 12, true)
+
+	if len(rec.quality) != 0 {
+		t.Errorf("quality written without a row: %v", rec.quality)
 	}
 }

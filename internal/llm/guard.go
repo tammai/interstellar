@@ -36,11 +36,15 @@ func NewGuard(maxPerRun, maxPerDay, maxChatPerDay int) *Guard {
 }
 
 // offRunBudget reports whether a role spends from something other than a run's
-// budget. Both of these are things a person does while sitting in the UI, and
-// neither is a run: blocking them on a run's allowance would mean a refresh that
-// hit its cap also broke the Settings test button and the chat screen.
+// budget. All of these are things a person does while sitting in the UI, and none
+// is a run: blocking them on a run's allowance would mean a refresh that hit its
+// cap also broke the Settings test button, the chat screen, and the button that
+// suggests sources for a topic.
+//
+// The daily cap still applies to every one of them, so "not part of a run" never
+// means "unlimited".
 func offRunBudget(role Role) bool {
-	return role == RoleTest || role == RoleChat
+	return role == RoleTest || role == RoleChat || role == RoleSuggest
 }
 
 // Reserve accounts for one upcoming call, or refuses it.

@@ -91,12 +91,14 @@ func (s *Server) Routes() http.Handler {
 	// Ahead of GET /api/topics only for readability; the patterns are distinct
 	// literals, so ServeMux does not have to choose between them.
 	mux.HandleFunc("GET /api/topics/stats", s.handleTopicStats)
+	mux.HandleFunc("GET /api/models/stats", s.handleModelStats)
 
 	// Constellation history: read-only over signals, no model, free to poll.
 	mux.HandleFunc("GET /api/trending", s.handleTrending)
 
 	mux.HandleFunc("GET /api/topics", s.handleListTopics)
 	mux.HandleFunc("POST /api/topics", s.handleCreateTopic)
+	mux.HandleFunc("POST /api/topics/{id}/sources/suggest", s.handleSuggestSources)
 	mux.HandleFunc("PATCH /api/topics/{id}", s.handleUpdateTopic)
 	mux.HandleFunc("DELETE /api/topics/{id}", s.handleDeleteTopic)
 

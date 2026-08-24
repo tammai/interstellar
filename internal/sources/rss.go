@@ -65,7 +65,16 @@ func parseFeed(ctx context.Context, url, detail string) ([]Item, error) {
 	if err != nil {
 		return nil, fmt.Errorf("fetch %s: %w", url, err)
 	}
+	return normalizeFeed(feed, detail), nil
+}
 
+// normalizeFeed turns a parsed feed into items.
+//
+// Split out of parseFeed so ProbeFeed can share it: a probe does its own HTTP
+// request (it has to, to see where redirects landed) and must still produce items
+// through exactly the same normalization, or "verified through the real fetcher"
+// stops being true of the number it reports.
+func normalizeFeed(feed *gofeed.Feed, detail string) []Item {
 	items := make([]Item, 0, len(feed.Items))
 	for _, e := range feed.Items {
 		if e.Link == "" || e.Title == "" {
@@ -84,7 +93,7 @@ func parseFeed(ctx context.Context, url, detail string) ([]Item, error) {
 		}
 		items = append(items, item)
 	}
-	return items, nil
+	return items
 }
 
 var (

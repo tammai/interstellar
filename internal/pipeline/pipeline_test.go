@@ -1094,3 +1094,137 @@ func TestClassifyReportsHowMuchOfTheWindowItClaimed(t *testing.T) {
 			full.RangesCommitted, full.RangesTotal)
 	}
 }
+
+// The failure the reply-quality columns exist to catch, end to end.
+//
+// A model that answers ONE item of a twelve-item batch does everything else
+// right: 200, well-formed JSON, plausible tokens. Before this measurement the only
+// trace was a topic that matched almost nothing, which is indistinguishable from a
+// definition drawn too tight -- and that is exactly how a real instance ran near
+// empty for days after its roles moved off the seeded model.
+//
+// So the assertion is not about matches. It is that the cost log now says the
+// model was asked about twelve items and answered one.
+func TestClassifyRecordsHowMuchOfTheBatchTheModelAnswered(t *testing.T) {
+	db := testDB(t)
+	src := seedSource(t, db, "Blog")
+	seedTopic(t, db, "Agents", "Anything about agent harnesses.")
+
+	var first int64
+	for i := 0; i < 12; i++ {
+		id := seedItem(t, db, src, fmt.Sprintf("https://x.test/%d", i), fmt.Sprintf("Agent story %d", i))
+		if i == 0 {
+			first = id
+		}
+	}
+
+	// Valid JSON. One verdict. No error anywhere.
+	model := newFakeModel(t, func(string) string {
+		return fmt.Sprintf(`{"verdicts":[{"item_id":%d,"score":5,"reason":"on topic"}]}`, first)
+	})
+
+	if _, err := Classify(context.Background(), db, clientFor(t, db, model),
+		testConfig(), testRunDate, quietLogger()); err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+
+	rows, err := db.ModelReliabilityOver(1)
+	if err != nil {
+		t.Fatalf("ModelReliabilityOver: %v", err)
+	}
+	var got store.ModelReliability
+	for _, r := range rows {
+		if r.Role == "classifier" {
+			got = r
+		}
+	}
+	if got.Model == "" {
+		t.Fatalf("no classifier row in the cost log; rows: %+v", rows)
+	}
+
+	if got.ParseRate != 1 {
+		t.Errorf("parse rate %v, want 1: the reply WAS valid JSON, which is the whole trap", got.ParseRate)
+	}
+	if got.ItemsAsked != 12 {
+		t.Errorf("items asked %d, want 12", got.ItemsAsked)
+	}
+	if got.ItemsAnswered != 1 {
+		t.Errorf("items answered %d, want 1", got.ItemsAnswered)
+	}
+	if got.Completeness < 0 || got.Completeness > 0.1 {
+		t.Errorf("completeness %v; eleven of twelve items were silently dropped and this number is the only place that shows",
+			got.Completeness)
+	}
+}
+
+// The healthy case, so the test above is pinning a difference rather than a
+// constant: a model that answers the whole batch reports as complete.
+func TestClassifyRecordsAFullyAnsweredBatchAsComplete(t *testing.T) {
+	db := testDB(t)
+	src := seedSource(t, db, "Blog")
+	seedTopic(t, db, "Agents", "Anything about agent harnesses.")
+
+	var ids []int64
+	for i := 0; i < 5; i++ {
+		ids = append(ids, seedItem(t, db, src, fmt.Sprintf("https://y.test/%d", i), fmt.Sprintf("Story %d", i)))
+	}
+
+	model := newFakeModel(t, func(string) string {
+		var parts []string
+		for _, id := range ids {
+			parts = append(parts, fmt.Sprintf(`{"item_id":%d,"score":2}`, id))
+		}
+		return `{"verdicts":[` + strings.Join(parts, ",") + `]}`
+	})
+
+	if _, err := Classify(context.Background(), db, clientFor(t, db, model),
+		testConfig(), testRunDate, quietLogger()); err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+
+	rows, err := db.ModelReliabilityOver(1)
+	if err != nil {
+		t.Fatalf("ModelReliabilityOver: %v", err)
+	}
+	for _, r := range rows {
+		if r.Role != "classifier" {
+			continue
+		}
+		if r.Completeness != 1 {
+			t.Errorf("completeness %v (asked %d, answered %d), want 1",
+				r.Completeness, r.ItemsAsked, r.ItemsAnswered)
+		}
+		// Scoring everything a 2 keeps zero matches. Completeness must not be
+		// confused with agreement: answering "not relevant" is answering.
+		if r.ItemsAnswered != 5 {
+			t.Errorf("items answered %d, want 5: a low score is still a verdict", r.ItemsAnswered)
+		}
+		return
+	}
+	t.Fatal("no classifier row in the cost log")
+}
+
+// The synthesizer's completeness is coverage of the items it was given, not the
+// number of stories it made. Grouping is the job; counting stories would read
+// good grouping as incompleteness.
+func TestComposeCompletenessCountsItemsCoveredNotStories(t *testing.T) {
+	matched := []store.MatchedItem{{ItemID: 1}, {ItemID: 2}, {ItemID: 3}, {ItemID: 4}}
+
+	oneStory := []composedSignal{{Title: "All of it", ItemIDs: []int64{1, 2, 3, 4}}}
+	if got := itemsCovered(matched, oneStory); got != 4 {
+		t.Errorf("four items in one story covered %d, want 4", got)
+	}
+
+	partial := []composedSignal{{Title: "Some", ItemIDs: []int64{1, 2}}}
+	if got := itemsCovered(matched, partial); got != 2 {
+		t.Errorf("two of four covered %d, want 2", got)
+	}
+
+	// Invented ids are excluded for the same reason the caller's whitelist drops
+	// them: a reply that loses half the batch and makes up the difference has
+	// answered nothing, and counting the inventions would hide it entirely.
+	invented := []composedSignal{{Title: "Padded", ItemIDs: []int64{1, 999, 1000}}}
+	if got := itemsCovered(matched, invented); got != 1 {
+		t.Errorf("one real id plus two invented covered %d, want 1", got)
+	}
+}

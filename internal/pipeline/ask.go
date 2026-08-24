@@ -191,6 +191,10 @@ func (a *Asker) plan(
 		},
 		JSONMode:  true,
 		MaxTokens: 400,
+		// A plan is one record. Expect/ReportReply here is not about volume -- it
+		// is the JSON gate for whichever model the classifier chain is pointed at,
+		// measured on the traffic that runs all day rather than only at 10:30.
+		Expect: 1,
 	})
 	if err != nil {
 		if errors.Is(err, llm.ErrCapReached) || errors.Is(err, context.Canceled) ||
@@ -205,13 +209,19 @@ func (a *Asker) plan(
 	obj, err := llm.ExtractObject(resp.Text)
 	if err != nil {
 		a.log.Warn("chat planner returned unparseable output", "err", err)
+		client.ReportReply(resp.CallID, 0, false)
 		return fallback, false, resp.Usage, nil
 	}
 	if err := json.Unmarshal(obj, &plan); err != nil {
 		a.log.Warn("chat planner returned unexpected shape", "err", err)
+		// Valid JSON of the wrong shape is a parse failure for this purpose. The
+		// gate is "did the model return the thing that was asked for", and JSON
+		// that cannot be decoded into a plan is as unusable as prose.
+		client.ReportReply(resp.CallID, 0, false)
 		return fallback, false, resp.Usage, nil
 	}
 
+	client.ReportReply(resp.CallID, 1, true)
 	return a.sanitizePlan(plan, question, topics), true, resp.Usage, nil
 }
 
