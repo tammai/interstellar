@@ -11,4 +11,9 @@
 # Local tool config
 .claude/settings.local.json
 
+# Codex's mirror of CLAUDE.md. Kept locally, not checked in: it is a copy of
+# a file that IS checked in, and the copy drifted (it sat 3 conventions behind
+# for a week). One contract document, one place to edit it.
+AGENTS.md
+
 .DS_Store
