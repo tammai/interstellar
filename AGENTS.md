@@ -65,12 +65,12 @@ Locked stack choices (spec §3, with reasons — don't relitigate):
 
 - **Providers** are named registry entries `{base_url, api_key_env}` stored as JSON in `settings`. Presets ship for deepseek, anthropic, google, openrouter, litellm, and ollama (keyless), plus anything the owner adds. An entry with an empty `api_key_env` sends no `Authorization` header.
 - **Keys are referenced by env var name, never stored.** The registry holds the *name*; the value is read from the environment at call time. No endpoint ever returns a key value — `/api/settings` returns the name plus a resolved/unresolved boolean.
-- **Roles are `provider/model` refs.** `classifier = deepseek/deepseek-chat`, `synthesizer = anthropic/<sonnet>`. Roles mix providers freely.
+- **Roles are `provider/model` refs, and only the FIRST slash separates.** `classifier = openrouter/deepseek/deepseek-chat` is provider `openrouter`, model `deepseek/deepseek-chat` — OpenRouter's own model ids contain a slash, so the ref nests rather than breaking. `synthesizer = anthropic/<sonnet>` is the unnested shape. Roles mix providers freely.
 - **Fallback chains are cross-provider.** A retry can land on an entirely different vendor, so base URL and auth are rebuilt per hop, and every attempt gets its own `llm_calls` row — a fallback that fires must be visible in the cost log, not silent.
 - **One transport, forever.** OpenAI-compatible chat completions is the only wire format. §3.1 puts native Bedrock/Vertex/Foundry auth explicitly out of scope: *"never native cloud SDKs in-app."* If corporate billing ever matters, that's a registry entry pointing at a LiteLLM gateway. Do not add a vendor SDK dependency to solve a provider problem — the registry is the extension point.
 - **No restart, ever.** Effective config is resolved per run, not cached at boot. Nothing may hold a settings snapshot across runs, and a settings change touching the schedule rebuilds the cron entries in place.
 
-Phase 0 seeds both roles to `deepseek/deepseek-chat` (cheap-first, decided 2026-08-11, ~$3/month/instance). When quality forces a change, §3.1's escalation ladder is the runbook — classifier fails the JSON gate → google flash tier → anthropic haiku; digest reads poorly → anthropic sonnet. Each step is a settings change, not a code change.
+Phase 0 seeds all three roles to `openrouter/deepseek/deepseek-chat` — the cheap-first posture decided 2026-08-11 (~$3/month/instance), routed through OpenRouter since spec **rev 6, decision #23** (2026-09-05). Same model, same cost order; only the route changed, and the route is the point. Every rung of §3.1's escalation ladder is a *different vendor*, so against DeepSeek's own endpoint climbing it meant adding an environment variable — which §7 fixes at boot, i.e. a restart, which §3.1 forbids. One OpenRouter key reaches every rung, so the ladder becomes what the spec says it is: a settings change. Two accepted costs: OpenRouter bills a margin over the vendor's own price, and the data path now runs through OpenRouter *and* whichever vendor it routes to, so §3.1's note on where topic definitions travel applies to two parties. The `deepseek` preset still ships — pointing a role back at `deepseek/deepseek-chat` restores rev 3's direct routing exactly. When quality forces a change, the ladder is the runbook — classifier fails the JSON gate → google flash tier → anthropic haiku; digest reads poorly → anthropic sonnet. Each step is a settings change, not a code change.
 
 ### The unit of the product is a *signal*, not an item
 
@@ -98,7 +98,7 @@ These come straight from spec §10 (acceptance criteria) and §6 (UI contract). 
 
 ## Conventions
 
-- Provider API keys come from env only, referenced by the name the registry stores (`DEEPSEEK_API_KEY`, `ANTHROPIC_API_KEY`, …). Never write a key value to the DB, never return one from an endpoint, never log one.
+- Provider API keys come from env only, referenced by the name the registry stores (`OPENROUTER_API_KEY` for the seeded default, `ANTHROPIC_API_KEY`, …). Never write a key value to the DB, never return one from an endpoint, never log one.
 - Config lives in the `settings` table and is resolved per run. `PORT` and `TZ` are the only process-level env knobs besides the provider keys.
 - Every LLM call attempt gets a row in `llm_calls` (run date, role, **provider**, model, token counts). Cost visibility is a feature, and it feeds the Phase 3 habit analysis.
 - Schema changes go through the embedded migration path, never hand-edited SQL against a live DB. Migrations are append-only: never edit one that has shipped, add the next number.

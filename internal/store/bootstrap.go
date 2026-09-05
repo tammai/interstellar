@@ -77,19 +77,26 @@ const defaultProviders = `[
   {"name":"ollama",    "base_url":"http://host.docker.internal:11434/v1",                 "api_key_env":""}
 ]`
 
-// defaultSettings is the cheap-first Phase 0 posture decided 2026-08-11 (§3.1):
-// both roles on deepseek/deepseek-chat, with the escalation ladder as the runbook
-// when quality forces a change.
+// defaultSettings is the cheap-first Phase 0 posture decided 2026-08-11 (§3.1),
+// routed through OpenRouter since rev 6 (decision #23): the same
+// deepseek-chat model, reached with a key that also reaches every other model
+// the escalation ladder names. Stepping a role up a tier is then a settings
+// change on its own, which is what §3.1 asks for -- against the vendor's own
+// endpoint it also needed a new environment variable and a restart to supply it.
+//
+// Note the ref nests: OpenRouter's model ids contain a slash, and ParseModelRef
+// splits on the first one only, so provider "openrouter" carries model
+// "deepseek/deepseek-chat".
 func defaultSettings() map[string]string {
 	return map[string]string{
 		KeyProviders:          defaultProviders,
-		KeyClassifierModel:    "deepseek/deepseek-chat",
-		KeySynthesizerModel:   "deepseek/deepseek-chat",
+		KeyClassifierModel:    "openrouter/deepseek/deepseek-chat",
+		KeySynthesizerModel:   "openrouter/deepseek/deepseek-chat",
 		KeyClassifierFallback: `[]`,
 		KeySynthFallback:      `[]`,
 		// Chat answers in prose a person reads, which is the synthesizer's kind of
 		// work rather than the classifier's, so it starts on the same model.
-		KeyChatModel:    "deepseek/deepseek-chat",
+		KeyChatModel:    "openrouter/deepseek/deepseek-chat",
 		KeyChatFallback: `[]`,
 
 		KeyScheduleIngest:    "09:30",

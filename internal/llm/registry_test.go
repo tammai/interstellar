@@ -150,12 +150,15 @@ func TestShippedDefaultsAreCoherent(t *testing.T) {
 		}
 	}
 
-	// §3.1's cheap-first decision.
-	if got := cfg.Roles[RoleClassifier].Primary.String(); got != "deepseek/deepseek-chat" {
-		t.Errorf("classifier default = %q, want deepseek/deepseek-chat", got)
-	}
-	if got := cfg.Roles[RoleSynthesizer].Primary.String(); got != "deepseek/deepseek-chat" {
-		t.Errorf("synthesizer default = %q, want deepseek/deepseek-chat", got)
+	// §3.1's cheap-first decision, routed through OpenRouter since rev 6
+	// (decision #23). The model is unchanged; the route is what moved, so that
+	// every rung of the escalation ladder is reachable on the key already set
+	// -- climbing it is then a settings change, not a new env var and a restart.
+	const want = "openrouter/deepseek/deepseek-chat"
+	for _, role := range []Role{RoleClassifier, RoleSynthesizer, RoleChat} {
+		if got := cfg.Roles[role].Primary.String(); got != want {
+			t.Errorf("%s default = %q, want %q", role, got, want)
+		}
 	}
 }
 

@@ -14,7 +14,7 @@ docker build -t interstellar .
 
 docker run -p 8422:8422 -v interstellar-data:/data \
   -e TZ=Asia/Bangkok \
-  -e DEEPSEEK_API_KEY=sk-... \
+  -e OPENROUTER_API_KEY=sk-or-... \
   interstellar
 ```
 
@@ -53,8 +53,8 @@ Presets ship for `deepseek`, `anthropic`, `google`, `openrouter`, `litellm`, and
 variable for whichever you actually use:
 
 ```sh
--e DEEPSEEK_API_KEY=sk-...      # the shipped default
--e ANTHROPIC_API_KEY=sk-ant-...  # if you step up a tier
+-e OPENROUTER_API_KEY=sk-or-...  # the shipped default — one key, every model
+-e GOOGLE_API_KEY=...            # the alternative: Google AI Studio
 ```
 
 Adding a **new key** needs a container restart, because the environment is fixed
@@ -70,11 +70,27 @@ Two roles, either of which can run on any provider:
 - **Synthesizer** groups matched items into stories. The hardest judgment in the
   pipeline.
 
-Both default to `deepseek/deepseek-chat` — a few dollars a month at ~250
-items/day. Two things to know about that default: DeepSeek has announced
-peak-hour pricing that would catch the 10:30 run (immaterial at this volume), and
-the data path runs through a China-based provider, so your topic definitions and
-article titles go with it. Both are one settings change away from something else.
+Both default to `openrouter/deepseek/deepseek-chat` — a few dollars a month at
+~250 items/day. OpenRouter is the default because one key reaches every model
+here, so stepping a role up a tier needs no new environment variable and no
+restart. Role refs are written `provider/model`, and since OpenRouter's own model
+ids already contain a slash they simply nest: `openrouter/anthropic/claude-haiku-4.5`,
+`openrouter/google/gemini-2.5-flash-lite`. Only the first slash separates.
+
+Two things to know about that default: your topic definitions and article titles
+travel through OpenRouter to whichever vendor it routes to — with
+`deepseek/deepseek-chat` that is a China-based provider — and OpenRouter bills a
+margin over the vendor's own price, which is what buys the single key. Both are
+one settings change away from something else: the `deepseek` preset still ships,
+so pointing a role at `deepseek/deepseek-chat` goes straight to the vendor again.
+
+**Google AI Studio** is the alternative if you would rather hold one vendor's key
+directly. Take a key from <https://aistudio.google.com/apikey>, pass it as
+`GOOGLE_API_KEY`, and set either role to `google/gemini-2.5-flash-lite` — the
+`google` preset already points at Google's OpenAI-compatible endpoint, so no
+registry edit is needed. Its free tier is generous enough to run a day's
+classifying at this volume, which makes it the cheapest way to try the tool
+before paying anyone.
 
 Each role has a **test call** button that exercises the real chain and reports
 provider, latency and tokens. Use it after any swap; it answers in seconds
@@ -285,7 +301,7 @@ Defaults point at **Resend**, used as a plain SMTP relay:
 ```sh
 docker run -p 8422:8422 -v interstellar-data:/data \
   -e TZ=Asia/Bangkok \
-  -e DEEPSEEK_API_KEY=sk-... \
+  -e OPENROUTER_API_KEY=sk-or-... \
   -e RESEND_API_KEY=re_...        # the SMTP password
   interstellar
 ```

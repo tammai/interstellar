@@ -4,6 +4,7 @@
 > **Revision 3 — FINAL for build.** Supersedes rev 2. Companion artifact: `interstellar-starmap-prototype.html` (approved UI concept).
 > **Revision 4 — amends rev 3, 2026-08-17.** Closes §6's canvas-performance build problem with what measurement actually found, and records the sky-layer preferences it produced. Rev 3's text stands as written; rev 4 is additive — see §0 "Added in rev 4" and §11.
 > **Revision 5 — amends rev 3, 2026-08-18.** Moves Settings out of the star map's popover-and-sheet and onto its own page with horizontal tabs, and widens the signal detail panel. Both **supersede** parts of §6 rather than adding to it — see §0 "Changed in rev 5", "Also changed in rev 5", and the note under §6's Settings bullet.
+> **Revision 6 — amends rev 3, 2026-09-05.** Changes the seeded default provider from DeepSeek's own endpoint to OpenRouter, carrying the same model. Decision #5 (pay-as-you-go API keys) and the cheap-first posture of §3.1 are unchanged — this changes the route, not the model or the billing model. See §0 "Changed in rev 6".
 
 ## 0. Decision log
 
@@ -48,6 +49,11 @@
 | # | Decision | Choice | Rejected |
 |---|----------|--------|----------|
 | 22 | Detail panel width | **`min(560px, 100vw - 32px)`** — full width to a 560px cap | Two rejections, not one. The prototype's `min(430px, …)`, which §6 makes a contract and this therefore supersedes: the panel's content is a title, a paragraph of reasoning and one line per source, the source list is the part anyone reads, and at 430px each outlet wrapped to two or three lines while the reasoning ran eight words to a line — the card was mostly re-reading. And **800px, which was tried first**: it fixed the wrapping and lost the point of the panel, which is that it sits over the sky. At that width it reads as a page in front of the stars, and the star it describes is behind it. 560 is where the source lines stop wrapping and the sky is still the screen. The ≤640px rule — full-width sheet from the bottom edge — is untouched by any of it |
+
+### Changed in rev 6 — cause: a default whose escalation ladder needed a restart to climb
+| # | Was (rev 3) | Now | Why |
+|---|-------------|-----|-----|
+| 23 | Both roles seeded to `deepseek/deepseek-chat` against `https://api.deepseek.com/v1`, keyed by `DEEPSEEK_API_KEY` | **All three roles seeded to `openrouter/deepseek/deepseek-chat`**, keyed by `OPENROUTER_API_KEY` | Same model, same cheap-first posture, same per-call cost order — only the route changes. §3.1 requires a role to move to any model on any provider "without touching code or restarting", and the seeded default satisfied only half of that: every rung of the escalation ladder (google flash tier → anthropic haiku → anthropic sonnet) is a *different vendor*, so climbing it meant adding an environment variable, which §7 fixes at boot — a restart. One OpenRouter key reaches every rung, so the ladder becomes what the spec says it is: a settings change. Two costs, both accepted. OpenRouter bills a margin over the vendor's own price, which is what buys the single key. And the data path now runs through OpenRouter *and* whichever vendor it routes to, so §3.1's note that each instance owner decides where their topic definitions travel applies to two parties rather than one. Note the ref nests — `ParseModelRef` splits on the first slash only, so the provider is `openrouter` and the model is `deepseek/deepseek-chat`. The registry presets are untouched: DeepSeek's own entry still ships, and pointing a role back at `deepseek/deepseek-chat` restores rev 3's routing exactly |
 
 
 ## 1. Goal

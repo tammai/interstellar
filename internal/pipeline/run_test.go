@@ -80,7 +80,7 @@ func TestRunnerStopsWithReadinessBanner(t *testing.T) {
 	if banner == "" {
 		t.Fatal("no banner when the classifier cannot run")
 	}
-	if !strings.Contains(banner, "DEEPSEEK_API_KEY") {
+	if !strings.Contains(banner, "OPENROUTER_API_KEY") {
 		t.Errorf("banner = %q, should name the missing variable", banner)
 	}
 	// Ingest still ran: items accumulating with no model configured is a more

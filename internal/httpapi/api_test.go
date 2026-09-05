@@ -280,7 +280,7 @@ func TestStatusReportsReadinessAndSetupHint(t *testing.T) {
 		t.Error("no setup hint on a fresh instance")
 	}
 	// The hint must name the specific blocker.
-	if !strings.Contains(got.SetupHint, "DEEPSEEK_API_KEY") {
+	if !strings.Contains(got.SetupHint, "OPENROUTER_API_KEY") {
 		t.Errorf("setup hint should name the missing variable, got %q", got.SetupHint)
 	}
 	if got.Run.Stage != "idle" {
@@ -347,7 +347,7 @@ func TestStatusCountsFollowTopicChanges(t *testing.T) {
 // should move on to that rather than repeat itself.
 func TestStatusHintAdvancesToTopics(t *testing.T) {
 	_, h, _ := testServer(t)
-	t.Setenv("DEEPSEEK_API_KEY", "sk-present") // after testServer; see above
+	t.Setenv("OPENROUTER_API_KEY", "sk-present") // after testServer; see above
 
 	got := decode[statusResponse](t, do(t, h, "GET", "/api/status", ""))
 	if !got.Ready {
@@ -567,7 +567,7 @@ func TestModelTestReportsFailureAsDiagnosis(t *testing.T) {
 	if got.Error == "" {
 		t.Error("no reason given for the failure")
 	}
-	if got.Provider != "deepseek" {
+	if got.Provider != "openrouter" {
 		t.Errorf("provider = %q, want the configured one", got.Provider)
 	}
 }
@@ -904,7 +904,7 @@ func TestUnreadyChatDoesNotBlockThePipeline(t *testing.T) {
 	if err := db.SetSettings(map[string]string{store.KeyChatModel: ""}); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("DEEPSEEK_API_KEY", "sk-present") // after testServer; the pipeline roles resolve
+	t.Setenv("OPENROUTER_API_KEY", "sk-present") // after testServer; the pipeline roles resolve
 
 	st := decode[statusResponse](t, do(t, h, "GET", "/api/status", ""))
 	if !st.Ready {
@@ -1840,24 +1840,25 @@ func TestProviderToggleRoundTrips(t *testing.T) {
 		}
 	}
 
-	// openrouter is in no role, so it is free to park.
-	w := do(t, h, "PATCH", "/api/providers/openrouter", `{"active":false}`)
+	// deepseek is in no role since rev 6 seeded them onto openrouter, so it is
+	// free to park.
+	w := do(t, h, "PATCH", "/api/providers/deepseek", `{"active":false}`)
 	if w.Code != http.StatusOK {
 		t.Fatalf("switching off = %d, body %s", w.Code, w.Body)
 	}
-	if active := providerActive(t, h, "openrouter"); active {
-		t.Error("openrouter still reports active after being switched off")
+	if active := providerActive(t, h, "deepseek"); active {
+		t.Error("deepseek still reports active after being switched off")
 	}
 	// Everything else is untouched: one endpoint, one entry.
-	if !providerActive(t, h, "deepseek") {
-		t.Error("switching openrouter off also switched deepseek off")
+	if !providerActive(t, h, "openrouter") {
+		t.Error("switching deepseek off also switched openrouter off")
 	}
 
-	if w := do(t, h, "PATCH", "/api/providers/openrouter", `{"active":true}`); w.Code != http.StatusOK {
+	if w := do(t, h, "PATCH", "/api/providers/deepseek", `{"active":true}`); w.Code != http.StatusOK {
 		t.Fatalf("switching back on = %d, body %s", w.Code, w.Body)
 	}
-	if !providerActive(t, h, "openrouter") {
-		t.Error("openrouter did not come back on")
+	if !providerActive(t, h, "deepseek") {
+		t.Error("deepseek did not come back on")
 	}
 }
 
@@ -1868,8 +1869,8 @@ func TestProviderToggleRoundTrips(t *testing.T) {
 func TestSwitchingOffAProviderARoleNeedsIsRefused(t *testing.T) {
 	_, h, _ := testServer(t)
 
-	// Phase 0 seeds both roles onto deepseek.
-	w := do(t, h, "PATCH", "/api/providers/deepseek", `{"active":false}`)
+	// Rev 6 seeds all three roles onto openrouter.
+	w := do(t, h, "PATCH", "/api/providers/openrouter", `{"active":false}`)
 	if w.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want 409; body %s", w.Code, w.Body)
 	}
@@ -1879,7 +1880,7 @@ func TestSwitchingOffAProviderARoleNeedsIsRefused(t *testing.T) {
 			t.Errorf("refusal %q does not name the %s that depends on it", body, want)
 		}
 	}
-	if !providerActive(t, h, "deepseek") {
+	if !providerActive(t, h, "openrouter") {
 		t.Error("a refused switch-off still changed the registry")
 	}
 
@@ -1889,7 +1890,7 @@ func TestSwitchingOffAProviderARoleNeedsIsRefused(t *testing.T) {
 	if w := do(t, h, "PUT", "/api/settings", put); w.Code != http.StatusOK {
 		t.Fatalf("moving the roles = %d, body %s", w.Code, w.Body)
 	}
-	if w := do(t, h, "PATCH", "/api/providers/deepseek", `{"active":false}`); w.Code != http.StatusOK {
+	if w := do(t, h, "PATCH", "/api/providers/openrouter", `{"active":false}`); w.Code != http.StatusOK {
 		t.Fatalf("switching off after moving the roles = %d, body %s", w.Code, w.Body)
 	}
 }
@@ -1900,11 +1901,11 @@ func TestSwitchingOffAProviderARoleNeedsIsRefused(t *testing.T) {
 func TestSwitchingOffAFallbackOnlyProviderIsAllowed(t *testing.T) {
 	_, h, _ := testServer(t)
 
-	put := `{"classifier_fallback":["openrouter/some-model"]}`
+	put := `{"classifier_fallback":["deepseek/some-model"]}`
 	if w := do(t, h, "PUT", "/api/settings", put); w.Code != http.StatusOK {
 		t.Fatalf("setting the fallback = %d, body %s", w.Code, w.Body)
 	}
-	if w := do(t, h, "PATCH", "/api/providers/openrouter", `{"active":false}`); w.Code != http.StatusOK {
+	if w := do(t, h, "PATCH", "/api/providers/deepseek", `{"active":false}`); w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want the fallback-only provider to be parkable; body %s", w.Code, w.Body)
 	}
 }
