@@ -190,7 +190,7 @@ header {
 @media (max-width: 560px) {
   header { padding: 13px 15px 12px }
   .wordmark { font-size: 19px }
-  .budget { font-size: 10.5px; white-space: normal; text-align: right }
+  .budget { font-size: 11px; white-space: normal; text-align: right }
   #thread { padding: 20px 15px 6px; gap: 22px }
   #composer { padding: 10px 15px 14px }
   #intro { margin-top: 4vh }

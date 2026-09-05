@@ -27,7 +27,17 @@
   --space-0: #060A18; --space-1: #0B1128; --space-2: #101838;
   --star-white: #EAF2FF; --hot-gold: #FFC96B; --hot-core: #FFE9C4;
   --line: #26355E; --grid: #141E3F;
-  --ink: #C7D3EE; --ink-dim: #7787AE; --ink-faint: #4A567C;
+  /* Three text tiers, and all three clear WCAG AA (4.5:1) against the lightest
+     surface they sit on (--space-2 #101838): ink 11.6, ink-dim 7.0, ink-faint
+     4.6. ink-faint was #4A567C, which measured 2.41 -- under AA, and under even
+     the 3:1 large-text floor while being used at 10-12.5px, where that floor
+     does not apply anyway. It carries ~38 text roles across the three screens,
+     including every settings field label and help line, so it was not decoration
+     failing quietly: it was the body copy of the configuration UI. Raising it
+     alone would have collapsed it into ink-dim, so ink-dim moved up too and the
+     ratios stay a legible ladder. Keep any new tier inside it rather than
+     inventing a fourth, and re-measure before darkening any of the three. */
+  --ink: #C7D3EE; --ink-dim: #98A5C2; --ink-faint: #7583AD;
   --accent: #8FB8FF; --panel: #0D142ECC;
   --danger: #FF8B7B;
 

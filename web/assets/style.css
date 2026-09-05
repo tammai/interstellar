@@ -297,7 +297,7 @@ body.list-view header::after {
    them here rather than per-button is what stopped the reset glyph needing its
    own inline font-size. */
 .nav button svg { width: 16px; height: 16px }
-.nav .hint { font-size: 10px; color: var(--ink-faint); letter-spacing: .06em; margin-top: 4px; text-align: center; line-height: 1.5 }
+.nav .hint { font-size: 11px; color: var(--ink-faint); letter-spacing: .06em; margin-top: 4px; text-align: center; line-height: 1.5 }
 
 #tip {
   position: fixed; z-index: 30; pointer-events: none; max-width: 300px;
@@ -306,7 +306,7 @@ body.list-view header::after {
   opacity: 0; transform: translateY(4px); transition: opacity .12s, transform .12s;
 }
 #tip.on { opacity: 1; transform: none }
-#tip .t-topic { font-size: 10px; letter-spacing: .16em; text-transform: uppercase; color: var(--accent); margin-bottom: 4px }
+#tip .t-topic { font-size: 11px; letter-spacing: .16em; text-transform: uppercase; color: var(--accent); margin-bottom: 4px }
 #tip .t-title { font-size: 13.5px; line-height: 1.35; color: var(--star-white) }
 #tip .t-meta { font-size: 11px; color: var(--ink-dim); margin-top: 5px }
 
@@ -376,11 +376,11 @@ body.list-view header::after {
 .p-stats { display: flex; gap: 22px; margin-bottom: 20px; padding-bottom: 18px; border-bottom: 1px solid var(--grid) }
 .p-stat .n { font-size: 19px; color: var(--star-white); font-weight: 500 }
 .p-stat .n.gold { color: var(--hot-gold) }
-.p-stat .l { font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-faint); margin-top: 2px }
+.p-stat .l { font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-faint); margin-top: 2px }
 .p-reason { font-size: 14px; line-height: 1.65; color: #D6E0F7; margin-bottom: 20px }
 .p-reason em { color: var(--ink-dim); font-style: normal }
 .p-srcs { font-size: 12px; color: var(--ink-dim); line-height: 1.9; margin-bottom: 22px }
-.p-srcs .s-label { font-size: 10px; letter-spacing: .16em; text-transform: uppercase; color: var(--ink-faint); display: block; margin-bottom: 4px }
+.p-srcs .s-label { font-size: 11px; letter-spacing: .16em; text-transform: uppercase; color: var(--ink-faint); display: block; margin-bottom: 4px }
 .p-link {
   display: inline-block; font-size: 13px; letter-spacing: .06em;
   color: var(--space-0); background: var(--star-white); border-radius: 999px;
@@ -395,7 +395,7 @@ body.list-view header::after {
 }
 /* Members: the articles behind one star. */
 .p-members { margin-bottom: 24px }
-.p-members .s-label { font-size: 10px; letter-spacing: .16em; text-transform: uppercase; color: var(--ink-faint); display: block; margin-bottom: 8px }
+.p-members .s-label { font-size: 11px; letter-spacing: .16em; text-transform: uppercase; color: var(--ink-faint); display: block; margin-bottom: 8px }
 .p-member { display: block; font-size: 13px; line-height: 1.5; color: var(--ink); text-decoration: none; padding: 7px 0; border-bottom: 1px solid var(--grid) }
 .p-member:last-child { border-bottom: 0 }
 .p-member:hover { color: var(--star-white) }
@@ -470,7 +470,7 @@ body.list-view header::after {
 .l-title { font-size: 14.5px; color: var(--star-white); flex: 1; line-height: 1.4 }
 .l-meta { font-size: 11.5px; color: var(--ink-faint); white-space: nowrap }
 .l-none { font-size: 13px; color: var(--ink-faint); font-style: italic; padding: 6px 12px }
-.l-badge { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-faint); border: 1px solid var(--grid); border-radius: 999px; padding: 2px 8px; margin-left: 8px }
+.l-badge { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-faint); border: 1px solid var(--grid); border-radius: 999px; padding: 2px 8px; margin-left: 8px }
 
 /* ---------- quality floor (§6) ---------- */
 
@@ -488,13 +488,13 @@ body.list-view header::after {
      you monitor, and at this width it costs the wordmark its line. The banner still
      reports anything that needs acting on. */
   .run-state { display: none }
-  .legend { left: 12px; bottom: 12px; font-size: 10.5px }
+  .legend { left: 12px; bottom: 12px; font-size: 11px }
   /* The three filters stay — they are controls now, not decoration. Only the
      explanatory note goes. */
   .legend .row.note { display: none }
   /* The layers panel keeps its note: it is collapsed by default, so the fps row
      costs nothing until someone opens it deliberately. */
-  .layers { left: 12px; font-size: 10.5px }
+  .layers { left: 12px; font-size: 11px }
   .nav { right: 12px; bottom: 12px }
   #list { padding: 88px 14px 96px } /* room for the ask dock, which floats over it */
   #panel { top: auto; bottom: 0; right: 0; left: 0; width: 100%; max-height: 82vh; border-radius: 18px 18px 0 0; transform: translateY(22px) scale(.98); transform-origin: bottom center }

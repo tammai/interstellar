@@ -211,7 +211,7 @@ select.field { appearance: none }
 .btn-add { background: none; border: 1px dashed var(--line); color: var(--ink-dim); width: 100%; padding: 12px }
 .btn-add:hover { border-color: var(--ink-dim); color: var(--star-white) }
 
-.badge { font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; border-radius: 999px; padding: 4px 10px; border: 1px solid; white-space: nowrap; flex: none }
+.badge { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; border-radius: 999px; padding: 4px 10px; border: 1px solid; white-space: nowrap; flex: none }
 .badge.ok { color: #9BE6B4; border-color: rgba(155,230,180,.35) }
 .badge.bad { color: var(--hot-gold); border-color: rgba(255,201,107,.4) }
 
@@ -244,7 +244,7 @@ select.field { appearance: none }
 .sg-row:first-child { border-top: 0 }
 .sg-what { color: var(--ink); display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; overflow-wrap: anywhere }
 .sg-detail { color: var(--ink-faint); font-size: 11px; overflow-wrap: anywhere }
-.sg-status { font-size: 10.5px; letter-spacing: .07em; text-transform: uppercase; color: var(--ink-dim); text-align: right; white-space: nowrap }
+.sg-status { font-size: 11px; letter-spacing: .07em; text-transform: uppercase; color: var(--ink-dim); text-align: right; white-space: nowrap }
 /* The reason spans the full width on its own line: it is a sentence, and a
    sentence in a third of a card is eight ragged lines that bury the row above it. */
 .sg-reason { grid-column: 1 / -1; font-size: 11px; color: var(--ink-faint); line-height: 1.5 }
@@ -396,7 +396,7 @@ select.field { appearance: none }
 /* Playfair for the figure, matching the panel's stat treatment: these are numbers
    to be read at a glance, not fields to be edited. */
 .stat-value { display: block; font-family: 'Playfair Display', Georgia, serif; font-size: 22px; color: var(--star-white); line-height: 1.15 }
-.stat-label { display: block; font-size: 10.5px; letter-spacing: .07em; text-transform: uppercase; color: var(--ink-faint); margin-top: 5px }
+.stat-label { display: block; font-size: 11px; letter-spacing: .07em; text-transform: uppercase; color: var(--ink-faint); margin-top: 5px }
 
 .quality-table { border: 1px solid var(--grid); border-radius: 10px; overflow: hidden }
 .qt-row {
@@ -406,7 +406,7 @@ select.field { appearance: none }
   border-top: 1px solid var(--grid);
 }
 .qt-row:first-child { border-top: 0 }
-.qt-head { font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-faint); background: rgba(6,10,24,.5) }
+.qt-head { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-faint); background: rgba(6,10,24,.5) }
 .qt-topic { color: var(--ink); overflow-wrap: anywhere; display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px }
 .qt-n, .qt-rate { text-align: right; font-variant-numeric: tabular-nums; color: var(--ink-dim) }
 .qt-rate { color: var(--star-white) }
@@ -415,7 +415,7 @@ select.field { appearance: none }
 .qt-rate.bad { color: var(--hot-gold) }
 .qt-rate.loose { color: var(--accent) }
 .qt-rate.quiet { color: var(--ink-faint) }
-.qt-tag { font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-faint); border: 1px solid var(--grid); border-radius: 999px; padding: 1px 6px; white-space: nowrap }
+.qt-tag { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-faint); border: 1px solid var(--grid); border-radius: 999px; padding: 1px 6px; white-space: nowrap }
 /* Recurring stories are three columns, not five. */
 .qt-row.recurring { grid-template-columns: minmax(0, 1fr) 40px 96px }
 
