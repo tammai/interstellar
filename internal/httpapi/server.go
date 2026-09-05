@@ -18,13 +18,16 @@ import (
 // resolved config snapshot: handlers and runs read settings fresh, so a provider
 // swap takes effect without a restart (§3.1).
 type Server struct {
-	DB        *store.DB
-	Env       config.Env
-	Web       fs.FS
-	Log       *slog.Logger
-	Runner    *pipeline.Runner
-	Scheduler *pipeline.Scheduler
-	boot      time.Time
+	DB  *store.DB
+	Env config.Env
+	Web fs.FS
+	// WebFromDisk reports that Web is a directory on disk rather than the
+	// embedded copy, which changes how the assets may be cached. See withNoStore.
+	WebFromDisk bool
+	Log         *slog.Logger
+	Runner      *pipeline.Runner
+	Scheduler   *pipeline.Scheduler
+	boot        time.Time
 }
 
 // New builds a Server. web is the embedded UI filesystem, rooted at the
@@ -118,14 +121,24 @@ func (s *Server) Routes() http.Handler {
 	return s.withLogging(s.withNoStore(mux))
 }
 
-// withNoStore stops API responses being cached.
+// withNoStore stops responses being cached that must not be.
 //
-// The sky changes when a run finishes, and a browser serving yesterday's stars
-// from cache would look exactly like a broken pipeline. Static assets are left
-// cacheable.
+// API responses, always: the sky changes when a run finishes, and a browser
+// serving yesterday's stars from cache would look exactly like a broken
+// pipeline.
+//
+// Static assets, only when they are being served from disk. Embedded assets are
+// left cacheable because they cannot change without the binary changing, which
+// is a new container. But http.FileServerFS sends Last-Modified and no
+// Cache-Control, and that is enough for a browser to cache heuristically -- so
+// in development an edit that is on disk, and that the server is serving, can
+// still not reach the page. That is the same lost hour DevDirEnv exists to
+// prevent, one step further along: there, the binary had never seen the change;
+// here, the browser refuses to ask for it. Both present as "my edit did
+// nothing", which is why the fix belongs next to the mechanism that causes it.
 func (s *Server) withNoStore(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/api/") {
+		if strings.HasPrefix(r.URL.Path, "/api/") || s.WebFromDisk {
 			w.Header().Set("Cache-Control", "no-store")
 		}
 		next.ServeHTTP(w, r)

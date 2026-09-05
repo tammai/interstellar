@@ -72,9 +72,14 @@ func run(log *slog.Logger) error {
 	}
 	defer scheduler.Stop()
 
+	api := httpapi.New(db, env, web.FS(), runner, scheduler, log)
+	// Assets served from disk must not be cached by the browser; embedded ones
+	// may be. Only this package knows which is in play.
+	api.WebFromDisk = !web.Embedded()
+
 	srv := &http.Server{
 		Addr:              ":" + env.Port,
-		Handler:           httpapi.New(db, env, web.FS(), runner, scheduler, log).Routes(),
+		Handler:           api.Routes(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

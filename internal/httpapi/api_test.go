@@ -2373,3 +2373,43 @@ func TestSuggestSourcesReportsTheSynthesizerSpecifically(t *testing.T) {
 		t.Errorf("the message does not name the missing env var: %s", body)
 	}
 }
+
+// An asset served from disk must not be cacheable, and an embedded one must be.
+//
+// http.FileServerFS sends Last-Modified and no Cache-Control, which is enough
+// for a browser to cache heuristically. In development that means an edit which
+// is on disk, and which the server is serving, still does not reach the page --
+// the same "my edit did nothing" as an unrebuilt binary, from the other end. In
+// production the opposite is wanted: embedded assets cannot change without a new
+// container, so caching them is free.
+func TestAssetCachePolicyFollowsWhereAssetsComeFrom(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		fromDisk bool
+		want     string
+	}{
+		{"served from disk", true, "no-store"},
+		{"embedded", false, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, _, _ := testServer(t)
+			srv.WebFromDisk = tc.fromDisk
+			h := srv.Routes()
+
+			// "/" not "/index.html": http.FileServer redirects the explicit
+			// name to the directory, and a 301 carries no asset headers.
+			w := do(t, h, "GET", "/", "")
+			if w.Code != http.StatusOK {
+				t.Fatalf("GET / = %d", w.Code)
+			}
+			if got := w.Header().Get("Cache-Control"); got != tc.want {
+				t.Errorf("asset Cache-Control = %q, want %q", got, tc.want)
+			}
+
+			// The API is no-store either way: it is the run's output, not the UI.
+			if got := do(t, h, "GET", "/api/status", "").Header().Get("Cache-Control"); got != "no-store" {
+				t.Errorf("api Cache-Control = %q, want no-store", got)
+			}
+		})
+	}
+}
