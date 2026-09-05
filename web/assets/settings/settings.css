@@ -403,22 +403,39 @@ select.field { appearance: none }
 
 /* ---------- signal quality (per-topic hit rate) ---------- */
 
-/* A tab strip, not a row of pills -- see qualityWindowPicker. The 1px rule runs
-   the width of the screen and the selected tab's 2px underline sits on top of it
-   (hence the -1px), which is what makes the strip read as a strip rather than
-   three loose buttons. Smaller type than .tab: this is subordinate to the page's
-   own tabs, and has to look it. */
-.window-picker { display: flex; gap: 2px; margin-bottom: 20px; border-bottom: 1px solid var(--grid) }
+/* The same segmented button group the star map uses to switch Sky and List --
+   one pill, a divider-less row inside it, the selected segment filled. Copied
+   from `.view-toggle` in style.css rather than shared, for the reason
+   renderRunState is copied: settings.css and style.css are separate documents by
+   design, and the alternative to a copy is moving a component into tokens.css,
+   which is what tokens.css exists not to hold. If one changes, copy the values
+   across again.
+   
+   The one deviation is `width: max-content`. In the sky's header .view-toggle is
+   a flex item and hugs its buttons for free; here the picker is a block-level
+   child of the screen, so without it the pill stretches the full width and stops
+   reading as a group at all. */
+.window-picker {
+  display: flex; height: 34px; width: max-content; flex: none; margin-bottom: 20px;
+  border: 1px solid var(--line); border-radius: 999px; overflow: hidden;
+}
 .wtab {
-  font: inherit; font-size: 11.5px; letter-spacing: .08em; text-transform: uppercase;
-  background: none; border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px;
-  color: var(--ink-dim); padding: 7px 12px 8px; cursor: pointer; white-space: nowrap;
+  display: flex; align-items: center;
+  background: none; border: 0; color: var(--ink-dim); font: inherit;
+  font-size: 12px; letter-spacing: .12em; text-transform: uppercase;
+  padding: 0 16px; cursor: pointer;
 }
 .wtab:hover { color: var(--ink) }
-/* Marked twice over -- underline and colour -- for the same reason .tab is:
-   colour alone is not a state anyone should have to distinguish. */
-.wtab.on { color: var(--star-white); border-bottom-color: var(--accent) }
-.wtab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 6px 6px 0 0 }
+.wtab.on { background: var(--space-2); color: var(--star-white) }
+.wtab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px }
+
+/* Mirrors style.css's own 460px step for this control: three segments at 16px
+   padding stop fitting once §10's ~380px floor is in sight. Shrink, never wrap
+   -- a wrapped segmented control is two rows that no longer read as one choice. */
+@media (max-width: 460px) {
+  .window-picker { height: 30px }
+  .wtab { padding: 0 11px; font-size: 11px; letter-spacing: .08em }
+}
 
 .quality-summary { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 22px }
 .stat-tile {

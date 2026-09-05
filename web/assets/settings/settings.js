@@ -2046,17 +2046,20 @@ class Settings {
     out.append(actions, testResult);
   }
 
-  // The window selects which slice of data the whole screen shows, which is the
-  // job a tab does -- so it is drawn as a strip of tabs rather than a row of
-  // pills. Quieter and smaller than the page's own tab strip above it: two
-  // identical strips would compete over which one says where you are.
+  // Drawn as the segmented button group the star map already uses to switch Sky
+  // and List (`.view-toggle`), because it is the same kind of choice: a small
+  // fixed set of mutually exclusive views over the same content. Reusing that
+  // shape means the instance has one control for that job rather than two that
+  // differ only in where they happen to sit. An underline tab strip was tried
+  // first and rejected -- the page's own tabs are a strip directly above this,
+  // and two strips compete over which one says where you are.
   //
-  // The semantics stay `group` + `aria-pressed`, deliberately, and do NOT become
-  // role=tablist. A tab has to control a tabpanel, and the panel here is the
-  // screen itself -- which already carries role=tabpanel for the strip in
-  // index.html. Claiming a second tablist over the same region would announce a
-  // relationship that is not there; these are three toggle buttons that look
-  // like tabs, and aria-pressed is what they actually are.
+  // The semantics stay `group` + `aria-pressed` and do NOT become role=tablist,
+  // which is where this parts company with .view-toggle: that control has two
+  // real panels to point aria-controls at, and this one has none -- the panel is
+  // the screen, which already carries role=tabpanel for the strip in index.html.
+  // Claiming a second tablist over the same region would announce a relationship
+  // that is not there. These are three toggle buttons, and aria-pressed says so.
   qualityWindowPicker() {
     const wrap = document.createElement('div');
     wrap.className = 'window-picker';
