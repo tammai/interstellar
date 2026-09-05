@@ -1,0 +1,41 @@
+# The build stage is `COPY . .`, so everything not listed here is copied into it
+# on every build. None of it reaches the shipped image — the distroless stage
+# takes only the binary and an empty /data — but it is copied and it invalidates
+# the layer cache, and it leaves a dev database one stray COPY away from the
+# final image. Measured before this file existed: 33MB of context, 19MB of which
+# was `bin/`, which the container rebuilds from source anyway.
+#
+# NARROW ON PURPOSE — do not add sweeping patterns here. `web/assets` is embedded
+# with `//go:embed all:assets`, and `all:` takes dotfiles and READMEs along with
+# everything else: `web/assets/img/README.md` carries the Milky Way image's
+# licence and ships inside the binary, as does the providers directory's
+# attribution note. A `*.md` or `.*` rule would drop them silently — the build
+# would still succeed, and the licence would simply stop being distributed with
+# the thing it licenses. Exclude by name, never by sweep.
+
+# Host build output. Rebuilt inside the container; the single largest item here.
+bin
+dist
+
+# Local dev database and run log (see `make dev`). Never belongs in an image.
+.devdata
+*.db
+*.db-wal
+*.db-shm
+
+# History: read by people, not by the compiler. Mostly a 3MB poster.
+specs
+
+# Repository and tooling state.
+.git
+.gitignore
+.github
+.dockerignore
+
+# Local agent and editor state. AGENTS.md is a local, untracked mirror of
+# CLAUDE.md; neither is a build input.
+.claude
+CLAUDE.md
+AGENTS.md
+.DS_Store
+node_modules
