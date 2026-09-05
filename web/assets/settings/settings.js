@@ -2046,6 +2046,17 @@ class Settings {
     out.append(actions, testResult);
   }
 
+  // The window selects which slice of data the whole screen shows, which is the
+  // job a tab does -- so it is drawn as a strip of tabs rather than a row of
+  // pills. Quieter and smaller than the page's own tab strip above it: two
+  // identical strips would compete over which one says where you are.
+  //
+  // The semantics stay `group` + `aria-pressed`, deliberately, and do NOT become
+  // role=tablist. A tab has to control a tabpanel, and the panel here is the
+  // screen itself -- which already carries role=tabpanel for the strip in
+  // index.html. Claiming a second tablist over the same region would announce a
+  // relationship that is not there; these are three toggle buttons that look
+  // like tabs, and aria-pressed is what they actually are.
   qualityWindowPicker() {
     const wrap = document.createElement('div');
     wrap.className = 'window-picker';
@@ -2054,7 +2065,7 @@ class Settings {
 
     for (const days of [1, 7, 30]) {
       const btn = document.createElement('button');
-      btn.className = 'btn-quiet' + (days === this.qualityDays ? ' on' : '');
+      btn.className = 'wtab' + (days === this.qualityDays ? ' on' : '');
       btn.setAttribute('aria-pressed', String(days === this.qualityDays));
       btn.textContent = days === 1 ? 'Today' : `${days} days`;
       btn.onclick = () => {
@@ -2365,8 +2376,20 @@ function modelRow(row) {
   // providers is two different things to diagnose, and a fallback firing has to
   // read as its own line.
   name.textContent = row.provider ? `${row.provider}/${row.model}` : row.model;
+  // Two tags, two meanings, so two colours. The role is a label -- which chain
+  // this row is, neutral by definition, and colouring four roles four ways would
+  // be decoration competing with the one colour on this screen that means
+  // something. The failure count is a number to act on, so it takes the same gold
+  // the bad rates take: on a screen where gold means "this is why your sky is
+  // thin", a failure count rendered in the same grey as the word "classifier"
+  // is the one fact here that was hiding in plain sight.
   name.append(quietTag(row.role));
-  if (row.failed > 0) name.append(quietTag(`${row.failed} failed`));
+  if (row.failed > 0) {
+    const failed = quietTag(`${row.failed} failed`);
+    failed.classList.add('warn');
+    failed.title = 'Calls to this model that returned an error. A fallback may have covered them — check whether a later row on the same role carries the successes.';
+    name.append(failed);
+  }
 
   const cells = [
     [String(row.calls), 'qt-n'],
