@@ -283,15 +283,33 @@ function openTurn(question) {
   answer.className = 'a';
   answer.hidden = true;
 
+  // Sources collapse once they arrive. A turn's answer is the thing being read;
+  // eight source cards under every question turn the transcript into a list of
+  // links with the conversation buried between them, and the second question
+  // pushes the first answer off screen. The count stays visible because that is
+  // the part read at a glance -- "answered from 8" is a different claim from
+  // "answered from 1".
+  //
+  // <details> rather than a button and a class: it is collapsible, keyboard
+  // operable and screen-reader announced without a line of state, and this screen
+  // deliberately carries no framework. Citations are unaffected either way --
+  // [n] links straight to the article, not to the row.
+  const fold = document.createElement('details');
+  fold.className = 'src-fold';
+  fold.hidden = true;
+
+  const foldLabel = document.createElement('summary');
+  foldLabel.className = 'src-fold-label';
+
   const sources = document.createElement('ol');
   sources.className = 'sources';
-  sources.hidden = true;
+  fold.append(foldLabel, sources);
 
   const meta = document.createElement('div');
   meta.className = 'meta';
   meta.hidden = true;
 
-  wrap.append(q, status, plan, answer, sources, meta);
+  wrap.append(q, status, plan, answer, fold, meta);
   el('thread').append(wrap);
 
   return {
@@ -307,8 +325,13 @@ function openTurn(question) {
     },
     setSources(hits, { provisional }) {
       sources.replaceChildren();
-      sources.hidden = hits.length === 0;
-      sources.classList.toggle('provisional', provisional);
+      fold.hidden = hits.length === 0;
+      fold.classList.toggle('provisional', provisional);
+      // The open state is set once, at creation, and never written here: this
+      // runs twice per turn (the provisional list, then the planned one), and
+      // reasserting it would snap the fold shut under a reader who had just
+      // opened it to watch the sources land.
+      foldLabel.textContent = `${hits.length} source${hits.length === 1 ? '' : 's'}`;
       for (const hit of hits) sources.append(sourceRow(hit));
     },
     setAnswer(text, hits) {
