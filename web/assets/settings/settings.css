@@ -214,6 +214,9 @@ select.field { appearance: none }
 .badge { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; border-radius: 999px; padding: 4px 10px; border: 1px solid; white-space: nowrap; flex: none }
 .badge.ok { color: #9BE6B4; border-color: rgba(155,230,180,.35) }
 .badge.bad { color: var(--hot-gold); border-color: rgba(255,201,107,.4) }
+/* Off is a state the owner chose, not a fault: neutral, so it does not compete
+   with `bad` for attention on a screen where gold means act on this. */
+.badge.off { color: var(--ink-dim); border-color: var(--line) }
 
 .warn { color: var(--hot-gold) }
 .note { font-size: 11.5px; color: var(--ink-faint); line-height: 1.6; margin-top: 10px }
@@ -276,6 +279,14 @@ select.field { appearance: none }
    to a square viewBox around its bounding box), so one size fits all six and they
    sit on a common optical axis. object-fit guards the one that is a raster. */
 .prov-mark img { width: 22px; height: 22px; object-fit: contain; display: block }
+/* A parked provider greys its mark. Only the mark -- the artwork is an <img>,
+   which carries no contrast requirement, whereas fading the url and the env var
+   with it would put the row's actual text back under the AA floor the palette
+   was just raised to clear. The badge is what states the fact; this only makes
+   the row scannable in a list of six. */
+.prov-row.off .prov-mark { background: rgba(143,184,255,.03) }
+.prov-row.off .prov-mark img { filter: grayscale(1); opacity: .55 }
+.prov-row.off .prov-mono { color: var(--ink-faint) }
 /* The fallback for a provider with no preset mark. Playfair, matching the stat
    tiles: a monogram is a figure to be recognised, not a label to be read. */
 .prov-mono {
@@ -305,6 +316,7 @@ select.field { appearance: none }
 @media (max-width: 460px) {
   .prov-body { flex-basis: calc(100% - 52px) }
   .prov-row .badge { margin-left: 52px }
+  .prov-row .badge + .badge { margin-left: 0 }
 }
 
 /* ---------- toggle switch ---------- */

@@ -1147,10 +1147,26 @@ class Settings {
     // The badge says whether the key actually resolves. The registry stores the
     // variable NAME; the value never leaves the environment, which is why this
     // shows a state rather than a secret.
+    //
+    // A provider switched off through the API gets a second badge and a greyed
+    // mark. There is deliberately no control here -- the switch was built into
+    // this row and taken back out by owner decision -- but the routing half
+    // stayed, so `Registry.Resolve` refuses a disabled entry while the row said
+    // nothing at all. An owner reading this screen to work out why a fallback
+    // never fires needs the state even when they cannot change it here.
+    //
+    // The key badge stays on an off row, because "key set" is still true and is
+    // exactly what you want to know before switching one back on. Off reads
+    // first because it outranks the key: a disabled provider is not routable
+    // whatever its key is doing. It is neutral rather than `bad` -- being off is
+    // a thing the owner did on purpose, and it can never be a role's primary
+    // (PATCH 409s on that), so it is never the cause of a broken run.
     const provSection = section(body, 'Providers');
+    let anyOff = false;
     for (const p of s.providers) {
       const row = document.createElement('div');
-      row.className = 'card prov-row';
+      row.className = p.active ? 'card prov-row' : 'card prov-row off';
+      if (!p.active) anyOff = true;
 
       const body2 = document.createElement('div');
       body2.className = 'prov-body';
@@ -1177,7 +1193,14 @@ class Settings {
       badge.className = 'badge ' + (p.resolved ? 'ok' : 'bad');
       badge.textContent = p.keyless ? 'ready' : (p.resolved ? 'key set' : 'key missing');
 
-      row.append(providerMark(p.name), body2, badge);
+      row.append(providerMark(p.name), body2);
+      if (!p.active) {
+        const off = document.createElement('span');
+        off.className = 'badge off';
+        off.textContent = 'off';
+        row.append(off);
+      }
+      row.append(badge);
       provSection.append(row);
     }
 
@@ -1186,6 +1209,17 @@ class Settings {
     provNote.textContent =
       'Keys are read from the environment by name and never stored. To add one, set the variable on the container and restart it — everything else here changes live.';
     provSection.append(provNote);
+
+    // Only said when there is something to say. A row marked "off" and no way to
+    // change it is the question this answers; on an instance with nothing
+    // disabled it would just be a line about a control that is not there.
+    if (anyOff) {
+      const offNote = document.createElement('p');
+      offNote.className = 'note';
+      offNote.textContent =
+        'A provider marked "off" is skipped when a role routes to it, including as a fallback. There is no switch on this screen: turn one back on with PATCH /api/providers/{name} {"active": true}.';
+      provSection.append(offNote);
+    }
 
     // Roles. All three of them -- chat included, which it was not.
     //
