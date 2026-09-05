@@ -5,6 +5,7 @@
 > **Revision 4 — amends rev 3, 2026-08-17.** Closes §6's canvas-performance build problem with what measurement actually found, and records the sky-layer preferences it produced. Rev 3's text stands as written; rev 4 is additive — see §0 "Added in rev 4" and §11.
 > **Revision 5 — amends rev 3, 2026-08-18.** Moves Settings out of the star map's popover-and-sheet and onto its own page with horizontal tabs, and widens the signal detail panel. Both **supersede** parts of §6 rather than adding to it — see §0 "Changed in rev 5", "Also changed in rev 5", and the note under §6's Settings bullet.
 > **Revision 6 — amends rev 3, 2026-09-05.** Changes the seeded default provider from DeepSeek's own endpoint to OpenRouter, carrying the same model. Decision #5 (pay-as-you-go API keys) and the cheap-first posture of §3.1 are unchanged — this changes the route, not the model or the billing model. See §0 "Changed in rev 6".
+> **Revision 7 — amends rev 3, 2026-09-05.** Settles which phase the **email digest** belongs to: this document contradicted itself, listing it in `## Phase 1 backlog` and in the Phase 2 row of the roadmap table. The table wins and the backlog paragraph is superseded for that one item. No gate moves and no work is authorised by this — it is a bookkeeping correction to a contradiction that had been noted and left. See §0 "Changed in rev 7".
 
 ## 0. Decision log
 
@@ -55,6 +56,11 @@
 |---|-------------|-----|-----|
 | 23 | Both roles seeded to `deepseek/deepseek-chat` against `https://api.deepseek.com/v1`, keyed by `DEEPSEEK_API_KEY` | **All three roles seeded to `openrouter/deepseek/deepseek-chat`**, keyed by `OPENROUTER_API_KEY` | Same model, same cheap-first posture, same per-call cost order — only the route changes. §3.1 requires a role to move to any model on any provider "without touching code or restarting", and the seeded default satisfied only half of that: every rung of the escalation ladder (google flash tier → anthropic haiku → anthropic sonnet) is a *different vendor*, so climbing it meant adding an environment variable, which §7 fixes at boot — a restart. One OpenRouter key reaches every rung, so the ladder becomes what the spec says it is: a settings change. Two costs, both accepted. OpenRouter bills a margin over the vendor's own price, which is what buys the single key. And the data path now runs through OpenRouter *and* whichever vendor it routes to, so §3.1's note that each instance owner decides where their topic definitions travel applies to two parties rather than one. Note the ref nests — `ParseModelRef` splits on the first slash only, so the provider is `openrouter` and the model is `deepseek/deepseek-chat`. The registry presets are untouched: DeepSeek's own entry still ships, and pointing a role back at `deepseek/deepseek-chat` restores rev 3's routing exactly |
 
+
+### Changed in rev 7 — cause: this document disagreed with itself, and both halves were being cited
+| # | Was (rev 3) | Now | Why |
+|---|-------------|-----|-----|
+| 24 | The email digest listed **twice**: in `## Phase 1 backlog` ("Optional email digest (SMTP config in settings)") and in the roadmap table's **Phase 2** row, whose gate is "I forgot to open it" and which states that if that gate trips it "outranks all of Phase 1" | **Phase 2, per the roadmap table.** The `## Phase 1 backlog` paragraph is **superseded for this item only**; the rest of that list stands | The two passages are not equal in kind, which is what settles it. The backlog paragraph is an undifferentiated bag of everything left unspecced after Phase 0 — no gates, no ordering, no precedence. The table is the section immediately after it, and gates and ordering are its entire content; it also carries an explicit precedence rule for this exact item, which a paragraph listing it alphabetically among eight others cannot have meant to overrule. Where a considered statement and a leftover list disagree, the considered one is the decision. Note what this does **not** do. It authorises nothing: the Phase 2 gate has not tripped, and "we forgot to open it" is still the only thing that opens it. It also does not describe what exists — the weekly round-up ships composed-by-default with delivery off, which is decision #10 (delivery turned down, composition not) rather than this. That the capability was built ahead of its gate is the same pattern as the Ask screen at Phase 3, and is recorded in the project's status notes, not here |
 
 ## 1. Goal
 
@@ -318,6 +324,8 @@ rendering in a system font, and would have been tofu on a machine without one.
 that depends on the host. UI symbols are inline SVG.
 
 ## Phase 1 backlog
+
+> **Partly superseded — see rev 7, decision #24.** The email digest below is **Phase 2**, per the roadmap table in the next section. This paragraph carries no gates and no ordering; the table does, and it is the statement to follow where the two disagree. Everything else in this list stands as written.
 
 Optional email digest (SMTP config in settings); YouTube transcripts + video summaries; Ollama shadow-mode via registry entry; fuzzy dedup upgrades; trending over time (constellation history); manual-forward inbox (paste-a-link, the LinkedIn path); per-topic hit-rate view; source-list export/import (counters instance drift); signal search/archive.
 
