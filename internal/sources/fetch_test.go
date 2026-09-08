@@ -70,36 +70,157 @@ func TestRSSFetcherParsesAndCleans(t *testing.T) {
 	}
 }
 
-func TestYouTubeFetcherBuildsChannelURL(t *testing.T) {
-	var gotQuery string
+// YouTube discovery runs on the Data API because the Atom feeds are gone --
+// every /feeds/videos.xml id form answers 404 from YouTube's own RSS server,
+// while the same URL with no parameters answers 400. See youtube.go; the point
+// of writing it down is that nine sources broke at once and the obvious
+// diagnosis ("our channel ids went stale") is the wrong one.
+func TestYouTubeFetcherListsUploadsThroughTheAPI(t *testing.T) {
+	var gotPath, gotPlaylist, gotKey string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotQuery = r.URL.RawQuery
-		w.Header().Set("Content-Type", "application/atom+xml")
-		w.Write([]byte(sampleAtom))
+		gotPath = r.URL.Path
+		gotPlaylist = r.URL.Query().Get("playlistId")
+		gotKey = r.URL.Query().Get("key")
+		json.NewEncoder(w).Encode(map[string]any{
+			"items": []map[string]any{
+				{"snippet": map[string]any{
+					"title":       "  Agents in production  ",
+					"description": "How we shipped it.",
+					"publishedAt": "2026-09-07T10:00:00Z",
+					"resourceId":  map[string]string{"videoId": "abcdefghijk"},
+				}},
+				// A deleted upload keeps its playlist slot. Letting it through would
+				// put a permanently empty item in front of the classifier every run.
+				{"snippet": map[string]any{
+					"title":      "Deleted video",
+					"resourceId": map[string]string{"videoId": "zzzzzzzzzzz"},
+				}},
+				// No video id at all: private, or mid-removal.
+				{"snippet": map[string]any{"title": "Something", "resourceId": map[string]string{"videoId": ""}}},
+			},
+		})
 	}))
 	defer srv.Close()
 
-	// Explicit url wins over channel_id, which is how the test reaches the stub.
+	restore := youtubeAPIBase
+	youtubeAPIBase = srv.URL + "/youtube/v3/playlistItems"
+	defer func() { youtubeAPIBase = restore }()
+
 	items, err := YouTubeFetcher{}.Fetch(context.Background(),
-		cfg(t, map[string]string{"url": srv.URL + "?channel_id=UCtest"}), Options{})
+		cfg(t, map[string]string{"channel_id": "UCtest123"}),
+		Options{YouTubeAPIKey: "k-test"})
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
+
+	// The uploads playlist is the channel id with UC swapped for UU. This is what
+	// keeps discovery to ONE quota unit: search.list costs 100.
+	if gotPlaylist != "UUtest123" {
+		t.Errorf("playlistId = %q, want UUtest123", gotPlaylist)
+	}
+	if gotKey != "k-test" {
+		t.Errorf("key = %q, want the key from Options", gotKey)
+	}
+	if gotPath != "/youtube/v3/playlistItems" {
+		t.Errorf("path = %q", gotPath)
+	}
+
 	if len(items) != 1 {
-		t.Fatalf("got %d items, want 1", len(items))
+		t.Fatalf("got %d items, want 1 (deleted and id-less uploads dropped)", len(items))
 	}
-	if gotQuery != "channel_id=UCtest" {
-		t.Errorf("query = %q", gotQuery)
+	got := items[0]
+	if got.URL != "https://www.youtube.com/watch?v=abcdefghijk" {
+		t.Errorf("url = %q", got.URL)
 	}
-	if items[0].Detail != "video" {
-		t.Errorf("detail = %q, want video", items[0].Detail)
+	if got.Title != "Agents in production" {
+		t.Errorf("title = %q, want it trimmed", got.Title)
+	}
+	if got.Summary != "How we shipped it." {
+		t.Errorf("summary = %q", got.Summary)
+	}
+	if got.Detail != "video" {
+		t.Errorf("detail = %q, want video", got.Detail)
+	}
+	if got.PublishedAt.IsZero() {
+		t.Error("publishedAt not parsed")
 	}
 }
 
-func TestYouTubeFetcherRequiresChannelOrURL(t *testing.T) {
-	_, err := YouTubeFetcher{}.Fetch(context.Background(), cfg(t, map[string]string{}), Options{})
+// Rows written before the API move carry only the retired feed URL. Reading the
+// id back out of it is what makes this change need no data migration.
+func TestYouTubeFetcherRecoversChannelIDFromALegacyFeedURL(t *testing.T) {
+	var gotPlaylist string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPlaylist = r.URL.Query().Get("playlistId")
+		json.NewEncoder(w).Encode(map[string]any{"items": []any{}})
+	}))
+	defer srv.Close()
+
+	restore := youtubeAPIBase
+	youtubeAPIBase = srv.URL
+	defer func() { youtubeAPIBase = restore }()
+
+	_, err := YouTubeFetcher{}.Fetch(context.Background(),
+		cfg(t, map[string]string{
+			"url": "https://www.youtube.com/feeds/videos.xml?channel_id=UColdrow99",
+		}),
+		Options{YouTubeAPIKey: "k"})
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if gotPlaylist != "UUoldrow99" {
+		t.Errorf("playlistId = %q, want the id recovered from the legacy url", gotPlaylist)
+	}
+}
+
+// An unset key is something the environment did to you, so the error names the
+// variable rather than saying "missing" -- the whole point of storing the NAME.
+func TestYouTubeFetcherNamesTheKeyVariableWhenUnset(t *testing.T) {
+	_, err := YouTubeFetcher{}.Fetch(context.Background(),
+		cfg(t, map[string]string{"channel_id": "UCtest"}), Options{})
 	if err == nil {
-		t.Fatal("empty youtube config accepted")
+		t.Fatal("fetch without an API key succeeded")
+	}
+	if !strings.Contains(err.Error(), "YOUTUBE_API_KEY") {
+		t.Errorf("error does not name the variable: %v", err)
+	}
+}
+
+func TestYouTubeFetcherRejectsAChannelIDThatIsNotOne(t *testing.T) {
+	_, err := YouTubeFetcher{}.Fetch(context.Background(),
+		cfg(t, map[string]string{"channel_id": "lexfridman"}),
+		Options{YouTubeAPIKey: "k"})
+	if err == nil {
+		t.Fatal("a handle was accepted as a channel id")
+	}
+}
+
+// The API's error envelope is unwrapped to its sentence, same reasoning as
+// llm.snippet: "API key not valid" is the only part that says what to do.
+func TestYouTubeFetcherUnwrapsTheAPIErrorSentence(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		w.Write([]byte(`{"error":{"code":403,"message":"The request cannot be completed because you have exceeded your quota.","errors":[{"reason":"quotaExceeded"}]}}`))
+	}))
+	defer srv.Close()
+
+	restore := youtubeAPIBase
+	youtubeAPIBase = srv.URL
+	defer func() { youtubeAPIBase = restore }()
+
+	_, err := YouTubeFetcher{}.Fetch(context.Background(),
+		cfg(t, map[string]string{"channel_id": "UCtest"}),
+		Options{YouTubeAPIKey: "k"})
+	if err == nil {
+		t.Fatal("a 403 was treated as success")
+	}
+	if !strings.Contains(err.Error(), "exceeded your quota") {
+		t.Errorf("error lost the API's sentence: %v", err)
+	}
+	// The key travels in the query string, so it must not be echoed by an error
+	// built from the body.
+	if strings.Contains(err.Error(), "key=") {
+		t.Errorf("error may leak the key: %v", err)
 	}
 }
 

@@ -42,10 +42,13 @@ const (
 	KeySMTPPort        = "smtp_port"
 	KeySMTPUsername    = "smtp_username"
 	KeySMTPPasswordEnv = "smtp_password_env"
-	KeyDigestFrom      = "digest_from"
-	KeyDigestTo        = "digest_to"
-	KeyPingEnabled     = "ping_enabled"
-	KeyPingURL         = "ping_url"
+	// KeyYouTubeAPIKeyEnv holds the NAME of the env var carrying a YouTube Data
+	// API key, never the key. Same contract as the provider registry and SMTP.
+	KeyYouTubeAPIKeyEnv = "youtube_api_key_env"
+	KeyDigestFrom       = "digest_from"
+	KeyDigestTo         = "digest_to"
+	KeyPingEnabled      = "ping_enabled"
+	KeyPingURL          = "ping_url"
 
 	KeyHNMinPoints = "hn_min_points"
 	// Items published longer ago than this are not news and are skipped at
@@ -137,6 +140,9 @@ func defaultSettings() map[string]string {
 		KeySMTPPort:        "587",
 		KeySMTPUsername:    "resend",
 		KeySMTPPasswordEnv: "RESEND_API_KEY",
+		// Seeded to a name, not a value. Video discovery is dead without a key,
+		// and the error says so by name -- see sources.YouTubeFetcher.
+		KeyYouTubeAPIKeyEnv: "YOUTUBE_API_KEY",
 		// onboarding@resend.dev works without verifying a domain, but only to the
 		// address that owns the Resend account. Change both once a domain is set up.
 		KeyDigestFrom:  "Interstellar <onboarding@resend.dev>",

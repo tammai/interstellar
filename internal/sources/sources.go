@@ -30,6 +30,12 @@ type Item struct {
 // Options carries settings a fetcher may need beyond its own config.
 type Options struct {
 	HNMinPoints int // decision #4: 25
+
+	// YouTubeAPIKey is the resolved key VALUE, read from the environment by the
+	// caller at run time. Options carries it for the same reason it carries
+	// HNMinPoints: a fetcher needs it and has no business reading settings. Empty
+	// means unset, which YouTubeFetcher reports by env var name.
+	YouTubeAPIKey string
 }
 
 // Fetcher turns a source's JSON config into items.

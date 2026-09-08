@@ -55,6 +55,7 @@ variable for whichever you actually use:
 ```sh
 -e OPENROUTER_API_KEY=sk-or-...  # the shipped default — one key, every model
 -e GOOGLE_API_KEY=...            # the alternative: Google AI Studio
+-e YOUTUBE_API_KEY=...           # video discovery (YouTube Data API v3)
 ```
 
 Adding a **new key** needs a container restart, because the environment is fixed

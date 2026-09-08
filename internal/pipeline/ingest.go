@@ -8,6 +8,7 @@ package pipeline
 import (
 	"context"
 	"log/slog"
+	"os"
 	"sync"
 	"time"
 
@@ -98,7 +99,13 @@ func Ingest(ctx context.Context, db *store.DB, cfg config.Runtime, log *slog.Log
 		return result, nil
 	}
 
-	opts := sources.Options{HNMinPoints: cfg.HNMinPoints}
+	// The key is read from the environment here, per run, and handed to the
+	// fetcher -- never stored and never held across runs (§3.1's no-restart rule
+	// applies to the name, which lives in settings).
+	opts := sources.Options{
+		HNMinPoints:   cfg.HNMinPoints,
+		YouTubeAPIKey: os.Getenv(cfg.YouTubeAPIKeyEnv),
+	}
 
 	// The fuzzy-dedup index, read once. A lookup per feed entry would be a query
 	// inside the write loop, which already holds the only connection.

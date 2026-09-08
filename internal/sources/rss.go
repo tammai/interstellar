@@ -30,31 +30,12 @@ func (RSSFetcher) Fetch(ctx context.Context, cfg json.RawMessage, _ Options) ([]
 	return parseFeed(ctx, c.URL, "")
 }
 
-// YouTubeConfig is the sources.config shape for kind "youtube_rss". Either a
-// channel_id (turned into the standard feed URL) or an explicit url.
+// YouTubeConfig is the sources.config shape for kind "youtube_rss". The kind
+// keeps its name for migration reasons (see youtube.go); `url` is now only a
+// legacy carrier of the channel id, which is read back out of it.
 type YouTubeConfig struct {
 	ChannelID string `json:"channel_id"`
 	URL       string `json:"url"`
-}
-
-// YouTubeFetcher reads a channel's Atom feed. YouTube's feed is ordinary Atom,
-// so this is the RSS path with URL construction in front. Transcripts and video
-// summaries are explicitly Phase 1 (§2).
-type YouTubeFetcher struct{}
-
-func (YouTubeFetcher) Fetch(ctx context.Context, cfg json.RawMessage, _ Options) ([]Item, error) {
-	var c YouTubeConfig
-	if err := json.Unmarshal(cfg, &c); err != nil {
-		return nil, fmt.Errorf("youtube config: %w", err)
-	}
-	url := c.URL
-	if url == "" {
-		if c.ChannelID == "" {
-			return nil, fmt.Errorf("youtube config: channel_id or url is required")
-		}
-		url = "https://www.youtube.com/feeds/videos.xml?channel_id=" + c.ChannelID
-	}
-	return parseFeed(ctx, url, "video")
 }
 
 func parseFeed(ctx context.Context, url, detail string) ([]Item, error) {
