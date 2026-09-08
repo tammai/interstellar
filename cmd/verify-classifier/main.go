@@ -120,7 +120,7 @@ func printReport(r pipeline.VerifyReport) {
 			status = "ok (repaired)"
 		}
 		fmt.Printf("  batch %2d  %3d items → %3d verdicts  %6dms  %s\n",
-			b.Index, b.Items, b.Verdicts, b.Latency.Milliseconds(), status)
+			b.Index, b.Items, b.Verdicts, b.Latency.Milliseconds(), status+droppedNote(b.Dropped))
 		if b.Err != nil {
 			fmt.Printf("            %v\n", b.Err)
 		}
@@ -145,4 +145,13 @@ func printReport(r pipeline.VerifyReport) {
 				"doing the job; consider stepping up a tier.\n", r.MissingItems*100/r.Items)
 		}
 	}
+}
+
+// droppedNote is empty in the ordinary case, so a clean run's table stays a
+// column of "ok" rather than a column of "ok, 0 dropped".
+func droppedNote(n int) string {
+	if n == 0 {
+		return ""
+	}
+	return fmt.Sprintf("  (%d verdict(s) dropped: not in batch, or answered twice)", n)
 }

@@ -16,6 +16,11 @@ type BatchReport struct {
 	Index    int
 	Items    int
 	Verdicts int
+	// Dropped counts verdicts that were not answers to this batch: an id that
+	// was not in it, or one answered twice. Surfaced because a model doing
+	// either is a reason to distrust it, and netting out against a truncated
+	// batch is how it would otherwise stay invisible.
+	Dropped  int
 	Repaired bool
 	Err      error
 	Latency  time.Duration
@@ -101,11 +106,12 @@ func VerifyClassifier(
 		batch := items[offset:end]
 
 		batchStart := time.Now()
-		verdicts, repaired, err := classifyBatch(ctx, client, topic, batch, log)
+		verdicts, dropped, repaired, err := classifyBatch(ctx, client, topic, batch, log)
 		br := BatchReport{
 			Index:    i + 1,
 			Items:    len(batch),
 			Verdicts: len(verdicts),
+			Dropped:  dropped,
 			Repaired: repaired,
 			Err:      err,
 			Latency:  time.Since(batchStart),

@@ -162,8 +162,9 @@ func Classify(
 		go func() {
 			defer wg.Done()
 			for w := range jobs {
-				verdicts, repaired, err := classifyBatch(ctx, client, w.topic, w.batch, log)
+				verdicts, dropped, repaired, err := classifyBatch(ctx, client, w.topic, w.batch, log)
 				out := outcome{
+					dropped:    dropped,
 					repaired:   repaired,
 					err:        err,
 					topic:      w.topic.Title,
@@ -172,15 +173,11 @@ func Classify(
 					rangeIdx:   w.rangeIdx,
 				}
 				if err == nil {
-					known := itemIDSet(w.batch)
+					// verdicts are already whitelisted and deduplicated against
+					// the batch -- see keepAnswers, which classifyBatch applies
+					// because it is also what it reports as answered. All that
+					// is left here is §5.2's threshold.
 					for _, v := range verdicts {
-						// A model can hallucinate an id that wasn't in the
-						// batch; storing one would attach a verdict to an
-						// unrelated article.
-						if !known[v.ItemID] {
-							out.dropped++
-							continue
-						}
 						if v.Score < cfg.MatchThreshold {
 							continue // §5.2 keeps >= 4 only
 						}
@@ -362,7 +359,7 @@ func classifyBatch(
 	topic store.Topic,
 	batch []store.ClassifiableItem,
 	log *slog.Logger,
-) (verdicts []verdict, repaired bool, err error) {
+) (verdicts []verdict, dropped int, repaired bool, err error) {
 	prompt := classifyPrompt(topic, batch)
 
 	resp, err := client.Complete(ctx, llm.RoleClassifier, llm.Request{
@@ -374,18 +371,22 @@ func classifyBatch(
 		Expect:   len(batch),
 	})
 	if err != nil {
-		return nil, false, err
+		return nil, 0, false, err
 	}
 
-	verdicts, parseErr := parseVerdicts(resp.Text)
+	parsed, parseErr := parseVerdicts(resp.Text)
+	kept, dropped := keepAnswers(batch, parsed)
 	// Report before branching, so the reply that gets repaired is still on the
 	// record as the one that needed it. This is the measurement that would have
 	// caught the object-shape bug in the note below: a batch of thirty answered
 	// with one verdict parses cleanly and looks like a working model, and only
 	// asked-versus-answered says otherwise.
-	client.ReportReply(resp.CallID, len(verdicts), parseErr == nil)
+	//
+	// It reports `kept`, never the raw parse. Answered has to be answers to THIS
+	// batch, or the ratio it feeds stops meaning anything -- see keepAnswers.
+	client.ReportReply(resp.CallID, len(kept), parseErr == nil)
 	if parseErr == nil {
-		return verdicts, false, nil
+		return kept, dropped, false, nil
 	}
 
 	// One repair round-trip. Cheaper than losing thirty verdicts, and bounded so
@@ -405,15 +406,52 @@ func classifyBatch(
 		Repair:   true,
 	})
 	if repairErr != nil {
-		return nil, true, fmt.Errorf("unparseable output and repair failed: %w", repairErr)
+		return nil, 0, true, fmt.Errorf("unparseable output and repair failed: %w", repairErr)
 	}
 
-	verdicts, parseErr = parseVerdicts(repairResp.Text)
-	client.ReportReply(repairResp.CallID, len(verdicts), parseErr == nil)
+	parsed, parseErr = parseVerdicts(repairResp.Text)
+	kept, dropped = keepAnswers(batch, parsed)
+	client.ReportReply(repairResp.CallID, len(kept), parseErr == nil)
 	if parseErr != nil {
-		return nil, true, fmt.Errorf("unparseable output after repair: %w", parseErr)
+		return nil, 0, true, fmt.Errorf("unparseable output after repair: %w", parseErr)
 	}
-	return verdicts, true, nil
+	return kept, dropped, true, nil
+}
+
+// keepAnswers reduces a parsed reply to the verdicts that are actually answers to
+// this batch: in it, and counted once. Everything else is dropped and counted.
+//
+// Two failure modes, and only one of them was handled before. A hallucinated id
+// was already rejected, because storing one attaches a verdict to an unrelated
+// article. A REPEATED id was not: it passed the whitelist twice, so one item
+// answered twice was appended twice, counted twice in MatchesKept, and reported
+// twice as answered.
+//
+// The matches table saved it from being data loss -- PRIMARY KEY (item_id,
+// topic_id) with an upsert, so the second write updates the first row rather than
+// adding one. What it corrupted was measurement, in the two places measurement is
+// load-bearing. `items_out` could exceed `items_in`, so completeness read above
+// 100% (observed: 3427 answered against 3423 asked), and a batch over-answering
+// could cancel out another one silently truncating inside the same
+// provider/model/role group -- which is the exact failure completeness exists to
+// catch. And the hit-rate numerator inflated, on the diagnostic used to decide
+// whether a topic definition is drawn too tight.
+//
+// First verdict for an id wins. A model repeating itself with two different scores
+// is not expressing a considered second opinion, and taking the later one would
+// make the stored score depend on reply ordering.
+func keepAnswers(batch []store.ClassifiableItem, verdicts []verdict) (kept []verdict, dropped int) {
+	known := itemIDSet(batch)
+	seen := make(map[int64]bool, len(verdicts))
+	for _, v := range verdicts {
+		if !known[v.ItemID] || seen[v.ItemID] {
+			dropped++
+			continue
+		}
+		seen[v.ItemID] = true
+		kept = append(kept, v)
+	}
+	return kept, dropped
 }
 
 func parseVerdicts(text string) ([]verdict, error) {
