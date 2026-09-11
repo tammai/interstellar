@@ -7,6 +7,10 @@ star map.
 One **signal** is one story — clustered across every source that carried it. Size
 is relevance, gold is hot (three or more sources), and it dims as it ages.
 
+New here? **[docs/getting-started.md](docs/getting-started.md)** walks from an
+empty machine to a working sky, with a Claude Code session doing the driving.
+This file is the reference.
+
 ## Run it
 
 ```sh
