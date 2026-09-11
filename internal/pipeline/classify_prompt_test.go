@@ -146,3 +146,60 @@ func TestKeepAnswersKeepsTheFirstVerdictForARepeatedID(t *testing.T) {
 		t.Errorf("kept %+v, want the first verdict", kept[0])
 	}
 }
+
+// An uncovered matched item is the most expensive kind of silent loss in the
+// pipeline: it was fetched, classified, scored >= 4 and paid for, then left
+// without reaching the sky. The synthesizer prompt's rule is that every item_id
+// given comes back in exactly one story, so a gap is the model breaking that
+// rule -- or the write loop discarding a story and taking its items along.
+//
+// storedCoverage measures the second case too, which is why it reads what was
+// written rather than what was replied.
+func TestStoredCoverageCountsWhatTheSkyActuallyGot(t *testing.T) {
+	matched := []store.MatchedItem{{ItemID: 1}, {ItemID: 2}, {ItemID: 3}, {ItemID: 4}}
+
+	for _, tc := range []struct {
+		name    string
+		written []store.NewSignal
+		want    int
+	}{
+		{
+			name:    "every item placed",
+			written: []store.NewSignal{{ItemIDs: []int64{1, 2}}, {ItemIDs: []int64{3, 4}}},
+			want:    4,
+		},
+		{
+			name:    "the model omitted two",
+			written: []store.NewSignal{{ItemIDs: []int64{1, 2}}},
+			want:    2,
+		},
+		{
+			name: "an invented id does not count as coverage",
+			// Counting it would let a reply that drops half the batch and makes up
+			// the difference look complete -- the same reasoning as itemsCovered.
+			written: []store.NewSignal{{ItemIDs: []int64{1, 999}}},
+			want:    1,
+		},
+		{
+			name:    "one item in two stories is still one item covered",
+			written: []store.NewSignal{{ItemIDs: []int64{1}}, {ItemIDs: []int64{1}}},
+			want:    1,
+		},
+		{
+			name:    "nothing written loses everything",
+			written: nil,
+			want:    0,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := storedCoverage(matched, tc.written)
+			if got != tc.want {
+				t.Errorf("storedCoverage = %d, want %d (uncovered would read %d)",
+					got, tc.want, len(matched)-got)
+			}
+			if got > len(matched) {
+				t.Errorf("coverage %d exceeds the %d items offered", got, len(matched))
+			}
+		})
+	}
+}

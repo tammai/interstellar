@@ -31,9 +31,20 @@ const maxMatchesPerTopic = 40
 
 // SynthesizeResult summarizes a compose pass.
 type SynthesizeResult struct {
-	TopicsRun      int      `json:"topics_run"`
-	SignalsWritten int      `json:"signals_written"`
-	HotSignals     int      `json:"hot_signals"`
+	TopicsRun      int `json:"topics_run"`
+	SignalsWritten int `json:"signals_written"`
+	HotSignals     int `json:"hot_signals"`
+	// ItemsUncovered counts matched items that reached no stored signal, which is
+	// the same kind of fact classify reports as VerdictsDropped -- and the more
+	// expensive one, because an uncovered item was fetched, classified, scored >= 4
+	// and paid for, and then left the pipeline without appearing in the sky.
+	//
+	// Measured against what was STORED, not against the model's reply. The reply's
+	// own coverage is what llm_calls records via itemsCovered; this is narrower on
+	// purpose, because a story with an empty title or no surviving member ids is
+	// dropped by the write loop below and takes its items with it. Two causes, one
+	// symptom, and only the stored count says what the sky actually lost.
+	ItemsUncovered int      `json:"items_uncovered"`
 	Problems       []string `json:"problems,omitempty"`
 }
 
@@ -141,6 +152,17 @@ func Synthesize(
 			return result, err
 		}
 		result.SignalsWritten += len(toWrite)
+
+		// The prompt's rule is that every item given comes back in exactly one
+		// story, so anything missing here is the model not following it -- or a
+		// story this loop just discarded. Warned per topic rather than only summed,
+		// because "which topic is losing items" is the actionable half and a total
+		// buried in a run report is not.
+		if uncovered := len(matched) - storedCoverage(matched, toWrite); uncovered > 0 {
+			result.ItemsUncovered += uncovered
+			log.Warn("matched items reached no signal",
+				"topic", topic.Title, "uncovered", uncovered, "matched", len(matched))
+		}
 	}
 
 	// Count hot signals from what was actually stored, since source_count is
@@ -158,6 +180,7 @@ func Synthesize(
 		"topics", result.TopicsRun,
 		"signals", result.SignalsWritten,
 		"hot", result.HotSignals,
+		"uncovered", result.ItemsUncovered,
 	)
 	return result, nil
 }
@@ -233,6 +256,26 @@ func itemsCovered(matched []store.MatchedItem, signals []composedSignal) int {
 	}
 	seen := make(map[int64]bool, len(matched))
 	for _, s := range signals {
+		for _, id := range s.ItemIDs {
+			if known[id] {
+				seen[id] = true
+			}
+		}
+	}
+	return len(seen)
+}
+
+// storedCoverage counts how many matched items reached a signal that was actually
+// written. itemsCovered answers the neighbouring question about the model's reply;
+// this one answers what the sky got, and the two differ whenever the write loop
+// discards a story.
+func storedCoverage(matched []store.MatchedItem, written []store.NewSignal) int {
+	known := make(map[int64]bool, len(matched))
+	for _, m := range matched {
+		known[m.ItemID] = true
+	}
+	seen := make(map[int64]bool, len(matched))
+	for _, s := range written {
 		for _, id := range s.ItemIDs {
 			if known[id] {
 				seen[id] = true
