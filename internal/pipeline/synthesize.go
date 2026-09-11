@@ -44,7 +44,12 @@ type SynthesizeResult struct {
 	// purpose, because a story with an empty title or no surviving member ids is
 	// dropped by the write loop below and takes its items with it. Two causes, one
 	// symptom, and only the stored count says what the sky actually lost.
-	ItemsUncovered int      `json:"items_uncovered"`
+	ItemsUncovered int `json:"items_uncovered"`
+	// ItemsRecovered counts uncovered items that were written as their own
+	// single-item story. It normally equals ItemsUncovered; the two diverge only
+	// when an item has no title to draw, which is the case where something really
+	// was lost and the pair is what says so.
+	ItemsRecovered int      `json:"items_recovered"`
 	Problems       []string `json:"problems,omitempty"`
 }
 
@@ -148,21 +153,53 @@ func Synthesize(
 			})
 		}
 
+		// Anything the reply left out becomes its own single-item story rather than
+		// disappearing. The prompt's rule is that every item given comes back in
+		// exactly one story, so a gap is the model not following it -- and the item
+		// behind it was fetched, classified, scored >= 4 and paid for. Dropping it
+		// is the silent loss this project treats as the worst failure mode, and the
+		// weekly round-up already sets the precedent: degrade, never lose.
+		//
+		// No second model call. Everything a star needs is already on the match --
+		// the item's own title, and the REASON THE CLASSIFIER WROTE when it scored
+		// this item against this topic. That reason is about the right thing (why
+		// this item belongs to this topic), which is exactly what the panel shows.
+		//
+		// A recovered star is honest about being uncorroborated: one member, so
+		// source_count is 1, so it is small and can never be gold. A story nothing
+		// else carried should not look like one three outlets did.
+		if missing := uncoveredItems(matched, toWrite); len(missing) > 0 {
+			result.ItemsUncovered += len(missing)
+			for _, m := range missing {
+				title := strings.TrimSpace(m.Title)
+				if title == "" {
+					// Nothing sensible to draw. Counted as uncovered but not as
+					// recovered, so the two numbers diverge exactly when something
+					// really was lost.
+					continue
+				}
+				if len(title) > maxSignalTitle {
+					title = strings.TrimSpace(sources.Truncate(title, maxSignalTitle))
+				}
+				toWrite = append(toWrite, store.NewSignal{
+					RunDate: runDate,
+					TopicID: topic.ID,
+					Title:   title,
+					Reason:  strings.TrimSpace(m.Reason),
+					ItemIDs: []int64{m.ItemID},
+				})
+				result.ItemsRecovered++
+			}
+			// Warned per topic, because which topic the model is dropping items on
+			// is the actionable half; a run total says nothing you can act on.
+			log.Warn("matched items reached no signal, recovered as single-item stories",
+				"topic", topic.Title, "uncovered", len(missing), "matched", len(matched))
+		}
+
 		if err := db.ReplaceSignals(runDate, topic.ID, toWrite); err != nil {
 			return result, err
 		}
 		result.SignalsWritten += len(toWrite)
-
-		// The prompt's rule is that every item given comes back in exactly one
-		// story, so anything missing here is the model not following it -- or a
-		// story this loop just discarded. Warned per topic rather than only summed,
-		// because "which topic is losing items" is the actionable half and a total
-		// buried in a run report is not.
-		if uncovered := len(matched) - storedCoverage(matched, toWrite); uncovered > 0 {
-			result.ItemsUncovered += uncovered
-			log.Warn("matched items reached no signal",
-				"topic", topic.Title, "uncovered", uncovered, "matched", len(matched))
-		}
 	}
 
 	// Count hot signals from what was actually stored, since source_count is
@@ -181,6 +218,7 @@ func Synthesize(
 		"signals", result.SignalsWritten,
 		"hot", result.HotSignals,
 		"uncovered", result.ItemsUncovered,
+		"recovered", result.ItemsRecovered,
 	)
 	return result, nil
 }
@@ -270,19 +308,26 @@ func itemsCovered(matched []store.MatchedItem, signals []composedSignal) int {
 // this one answers what the sky got, and the two differ whenever the write loop
 // discards a story.
 func storedCoverage(matched []store.MatchedItem, written []store.NewSignal) int {
-	known := make(map[int64]bool, len(matched))
-	for _, m := range matched {
-		known[m.ItemID] = true
-	}
+	return len(matched) - len(uncoveredItems(matched, written))
+}
+
+// uncoveredItems returns the matched items that no written signal contains, in
+// the order they were offered. One source of truth for "what did not make it",
+// so the count and the recovery can never disagree about which items those are.
+func uncoveredItems(matched []store.MatchedItem, written []store.NewSignal) []store.MatchedItem {
 	seen := make(map[int64]bool, len(matched))
 	for _, s := range written {
 		for _, id := range s.ItemIDs {
-			if known[id] {
-				seen[id] = true
-			}
+			seen[id] = true
 		}
 	}
-	return len(seen)
+	var out []store.MatchedItem
+	for _, m := range matched {
+		if !seen[m.ItemID] {
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 func parseComposed(text string) ([]composedSignal, error) {

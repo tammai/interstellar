@@ -203,3 +203,46 @@ func TestStoredCoverageCountsWhatTheSkyActuallyGot(t *testing.T) {
 		})
 	}
 }
+
+// uncoveredItems is the single source of truth for "what did not make it", and
+// what the recovery pass turns into single-item stories. It returns the items
+// themselves rather than a count, because the recovery needs the title and the
+// classifier's reason -- which is what makes recovery possible without a second
+// model call.
+func TestUncoveredItemsReturnsWhatTheRecoveryNeeds(t *testing.T) {
+	matched := []store.MatchedItem{
+		{ItemID: 1, Title: "One", Reason: "r1"},
+		{ItemID: 2, Title: "Two", Reason: "r2"},
+		{ItemID: 3, Title: "Three", Reason: "r3"},
+	}
+	written := []store.NewSignal{{ItemIDs: []int64{2}}}
+
+	got := uncoveredItems(matched, written)
+	if len(got) != 2 {
+		t.Fatalf("got %d uncovered, want 2", len(got))
+	}
+	// Offered order, so a recovered star's position is not reply-dependent.
+	if got[0].ItemID != 1 || got[1].ItemID != 3 {
+		t.Errorf("uncovered = %d,%d; want 1,3 in offered order", got[0].ItemID, got[1].ItemID)
+	}
+	// The fields the recovery draws with must survive.
+	if got[0].Title != "One" || got[0].Reason != "r1" {
+		t.Errorf("lost the fields recovery needs: %+v", got[0])
+	}
+	// The two views must never disagree.
+	if c := storedCoverage(matched, written); c != len(matched)-len(got) {
+		t.Errorf("storedCoverage=%d disagrees with uncoveredItems=%d", c, len(got))
+	}
+}
+
+// A story the write loop discarded takes its items with it, and those must show
+// up as uncovered too -- otherwise the recovery would only ever see the model's
+// omissions and the second loss path would stay invisible.
+func TestUncoveredItemsSeesItemsLostToADiscardedStory(t *testing.T) {
+	matched := []store.MatchedItem{{ItemID: 1, Title: "A"}, {ItemID: 2, Title: "B"}}
+	// Nothing written at all, as happens when every story had an empty title.
+	got := uncoveredItems(matched, nil)
+	if len(got) != 2 {
+		t.Fatalf("got %d uncovered, want both items", len(got))
+	}
+}
