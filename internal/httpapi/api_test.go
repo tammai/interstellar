@@ -2413,3 +2413,175 @@ func TestAssetCachePolicyFollowsWhereAssetsComeFrom(t *testing.T) {
 		})
 	}
 }
+
+// --- the world model ---
+
+func seedWMSource(t *testing.T, db *store.DB) int64 {
+	t.Helper()
+	res, err := db.Exec(
+		`INSERT INTO sources (kind, name, config, active) VALUES ('rss', 'a feed', '{}', 1)`)
+	if err != nil {
+		t.Fatalf("insert source: %v", err)
+	}
+	id, _ := res.LastInsertId()
+	return id
+}
+
+func seedWMItem(t *testing.T, db *store.DB, sourceID int64, url string) int64 {
+	t.Helper()
+	res, err := db.Exec(
+		`INSERT INTO items (source_id, canonical_url, title) VALUES (?, ?, ?)`, sourceID, url, url)
+	if err != nil {
+		t.Fatalf("insert item: %v", err)
+	}
+	id, _ := res.LastInsertId()
+	return id
+}
+
+func TestCandidateReviewEndpoints(t *testing.T) {
+	_, h, db := testServer(t)
+
+	src := seedWMSource(t, db)
+	items := []int64{
+		seedWMItem(t, db, src, "https://a.test/1"),
+		seedWMItem(t, db, src, "https://a.test/2"),
+	}
+	if err := db.RecordCandidates([]store.CandidateSighting{
+		{Name: "Brand New Thing", ItemID: items[0], SourceID: src},
+		{Name: "Noise", ItemID: items[1], SourceID: src},
+	}); err != nil {
+		t.Fatalf("RecordCandidates: %v", err)
+	}
+
+	// min_sources=1 so a single-source seed shows up; the default of 3 is the
+	// brief's threshold and is exercised by the store tests.
+	w := do(t, h, "GET", "/api/candidates?min_sources=1", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("list candidates = %d: %s", w.Code, w.Body.String())
+	}
+	var list struct {
+		Candidates []store.Candidate `json:"candidates"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(list.Candidates) != 2 {
+		t.Fatalf("candidates = %d, want 2", len(list.Candidates))
+	}
+
+	var newThing, noise int64
+	for _, c := range list.Candidates {
+		switch c.Name {
+		case "Brand New Thing":
+			newThing = c.ID
+		case "Noise":
+			noise = c.ID
+		}
+	}
+
+	// A layer is required and never guessed: "which layer is this" is the whole
+	// judgment the review collects, and a candidate fitting none is itself the
+	// signal that a new layer exists.
+	if w := do(t, h, "POST", fmt.Sprintf("/api/candidates/%d/promote", newThing), `{}`); w.Code != http.StatusBadRequest {
+		t.Errorf("promote without a layer = %d, want 400", w.Code)
+	}
+
+	w = do(t, h, "POST", fmt.Sprintf("/api/candidates/%d/promote", newThing),
+		`{"layer":"coding_agents"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("promote = %d: %s", w.Code, w.Body.String())
+	}
+	var entity store.Entity
+	if err := json.Unmarshal(w.Body.Bytes(), &entity); err != nil {
+		t.Fatalf("decode entity: %v", err)
+	}
+	if entity.Name != "Brand New Thing" || entity.Layer != "coding_agents" {
+		t.Errorf("promoted entity = %+v", entity)
+	}
+
+	if w := do(t, h, "DELETE", fmt.Sprintf("/api/candidates/%d", noise), ""); w.Code != http.StatusNoContent {
+		t.Errorf("dismiss = %d, want 204", w.Code)
+	}
+
+	// Both decisions stick: neither name is offered again.
+	w = do(t, h, "GET", "/api/candidates?min_sources=1", "")
+	json.Unmarshal(w.Body.Bytes(), &list)
+	if len(list.Candidates) != 0 {
+		t.Errorf("decided candidates still offered: %+v", list.Candidates)
+	}
+
+	// The promoted name now appears on the watchlist.
+	w = do(t, h, "GET", "/api/entities", "")
+	if !strings.Contains(w.Body.String(), "Brand New Thing") {
+		t.Errorf("promoted entity missing from /api/entities: %s", w.Body.String())
+	}
+}
+
+// Promoting a name that already resolves is a 409 naming the collision, not a
+// 500: it is the owner's mistake to see, and a second row for a thing the map
+// already answers would split one history in two.
+func TestPromoteCandidateConflict(t *testing.T) {
+	_, h, db := testServer(t)
+
+	if _, err := db.ImportWatchlist([]store.EntityImport{
+		{Name: "Devin", Aliases: []string{"Windsurf"}, Layer: "coding_agents"},
+	}); err != nil {
+		t.Fatalf("ImportWatchlist: %v", err)
+	}
+	src := seedWMSource(t, db)
+	item := seedWMItem(t, db, src, "https://a.test/1")
+	db.RecordCandidates([]store.CandidateSighting{{Name: "windsurf", ItemID: item, SourceID: src}})
+
+	w := do(t, h, "GET", "/api/candidates?min_sources=1", "")
+	var list struct {
+		Candidates []store.Candidate `json:"candidates"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &list)
+	if len(list.Candidates) != 1 {
+		t.Fatalf("candidates = %d, want 1", len(list.Candidates))
+	}
+
+	w = do(t, h, "POST", fmt.Sprintf("/api/candidates/%d/promote", list.Candidates[0].ID),
+		`{"layer":"coding_agents"}`)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("promote a taken alias = %d, want 409: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "already resolves") {
+		t.Errorf("409 does not name the collision: %s", w.Body.String())
+	}
+}
+
+// The deltas endpoint is a dry run: it says what the next push would contain
+// without sending anything.
+func TestDeltasEndpointIsReadOnly(t *testing.T) {
+	_, h, db := testServer(t)
+
+	res, err := db.ImportWatchlist([]store.EntityImport{{Name: "Cursor", Layer: "coding_agents"}})
+	if err != nil || res.Added != 1 {
+		t.Fatalf("ImportWatchlist: %v", err)
+	}
+	entities, _ := db.Entities()
+	src := seedWMSource(t, db)
+	item := seedWMItem(t, db, src, "https://a.test/1")
+	if _, err := db.Exec(
+		`INSERT INTO claims (entity_id, item_id, change_type, source_type, summary, url, hash)
+		 VALUES (?, ?, 'launch', 'independent', 'shipped', 'https://a.test/1', 'h1')`,
+		entities[0].ID, item,
+	); err != nil {
+		t.Fatalf("seed claim: %v", err)
+	}
+
+	w := do(t, h, "GET", "/api/deltas", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("deltas = %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "Cursor") {
+		t.Errorf("delta missing: %s", w.Body.String())
+	}
+	// Reading must not stamp anything as pushed, or the real push would skip it.
+	var pushed int
+	db.QueryRow(`SELECT count(*) FROM claims WHERE pushed_at IS NOT NULL`).Scan(&pushed)
+	if pushed != 0 {
+		t.Errorf("reading the dry run marked %d claims pushed", pushed)
+	}
+}

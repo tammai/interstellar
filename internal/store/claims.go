@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"time"
 )
 
 // NewClaim is one extracted change, ready to write.
@@ -223,4 +224,14 @@ func (db *DB) ClaimHashesSince(since string) (map[string]bool, error) {
 		out[h] = true
 	}
 	return out, rows.Err()
+}
+
+// DaysAgo formats a timestamp n days back, in the format claims.seen_at uses.
+//
+// UTC, matching datetime('now'), which is what SQLite writes into seen_at when
+// nothing supplies a value. Comparing a local-time string against UTC-stamped
+// rows silently shifts the window by the timezone offset -- seven hours in
+// Asia/Bangkok, which is most of a working day at either end of the range.
+func DaysAgo(n int) string {
+	return time.Now().UTC().AddDate(0, 0, -n).Format("2006-01-02 15:04:05")
 }

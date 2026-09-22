@@ -99,6 +99,15 @@ func (s *Server) Routes() http.Handler {
 	// Constellation history: read-only over signals, no model, free to poll.
 	mux.HandleFunc("GET /api/trending", s.handleTrending)
 
+	// The world model. Read-only apart from the candidate review, which is the
+	// one place the owner's judgment enters it.
+	mux.HandleFunc("GET /api/entities", s.handleListEntities)
+	mux.HandleFunc("GET /api/claims", s.handleListClaims)
+	mux.HandleFunc("GET /api/deltas", s.handleListDeltas)
+	mux.HandleFunc("GET /api/candidates", s.handleListCandidates)
+	mux.HandleFunc("POST /api/candidates/{id}/promote", s.handlePromoteCandidate)
+	mux.HandleFunc("DELETE /api/candidates/{id}", s.handleDismissCandidate)
+
 	mux.HandleFunc("GET /api/topics", s.handleListTopics)
 	mux.HandleFunc("POST /api/topics", s.handleCreateTopic)
 	mux.HandleFunc("POST /api/topics/{id}/sources/suggest", s.handleSuggestSources)
