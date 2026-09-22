@@ -87,6 +87,10 @@ type Runtime struct {
 	HotThreshold      int
 
 	ClassifyWatermark string
+
+	ExtractEnabled   bool
+	ExtractBatchSize int
+	ExtractWatermark string
 }
 
 // Load resolves Runtime from the settings table. Malformed values fall back to
@@ -136,6 +140,13 @@ func Load(db *store.DB) (Runtime, error) {
 		HotThreshold:      integer(s, store.KeyHotThreshold, 3),
 
 		ClassifyWatermark: str(s, store.KeyClassifyWatermark, ""),
+
+		ExtractEnabled:   integer(s, store.KeyExtractEnabled, 1) == 1,
+		ExtractBatchSize: integer(s, store.KeyExtractBatchSize, 30),
+		// Read through str() like the classify mark: an empty value here and an
+		// absent row mean the same thing -- start from the beginning -- so there is
+		// nothing for the empty-is-meaningful trap to catch.
+		ExtractWatermark: str(s, store.KeyExtractWatermark, ""),
 	}, nil
 }
 

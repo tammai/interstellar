@@ -43,6 +43,15 @@ const (
 	// Its own name in the cost log, like transcript and weekly, so a suggestion
 	// pass is visible rather than blended into compose.
 	RoleSuggest Role = "suggest"
+	// RoleExtract pulls claims out of items for the world model. It runs on the
+	// CLASSIFIER's chain: reading a title and a summary and naming what changed is
+	// mechanical work over text that is already in front of it, which is what the
+	// cheap-first role is for -- unlike suggest, it recalls nothing.
+	//
+	// Its own name in the cost log because extraction and classification now read
+	// the same items on every run, and telling their costs apart is the whole
+	// evidence base for deciding later whether one can replace the other.
+	RoleExtract Role = "extract"
 )
 
 // attemptsPerRef bounds retries against a single provider before moving down the

@@ -62,6 +62,16 @@ const (
 	// Watermark: only items fetched after this are classified, so a second
 	// refresh in the same day costs nothing.
 	KeyClassifyWatermark = "last_classified_fetched_at"
+
+	// Claim extraction (migration 009). Its own watermark, deliberately separate
+	// from the classify one: the two stages advance independently, and sharing a
+	// mark would make either stage's stall silently skip items for the other.
+	KeyExtractWatermark = "last_extracted_fetched_at"
+	KeyExtractBatchSize = "extract_batch_size"
+	// Zero switches extraction off entirely, the same way transcripts_per_run: 0
+	// does. The stage is new and reads nothing downstream yet, so an owner who
+	// wants their morning exactly as it was can have it.
+	KeyExtractEnabled = "extract_enabled"
 )
 
 // defaultProviders ships the presets §3.1 names. Keys are referenced by env var
@@ -158,6 +168,25 @@ func defaultSettings() map[string]string {
 		KeyClassifyBatchSize: "30", // §5.2
 
 		KeyClassifyWatermark: "",
+
+		// Seeded EMPTY on purpose, including on an instance that already holds a
+		// month of items -- unlike the classify watermark, where an empty mark on a
+		// fresh instance merely means "everything" and there is nothing behind it.
+		//
+		// Here the backlog is the point. Velocity ("how often has this been
+		// mentioned in 14 days") and staleness ("nothing from this vendor in 60
+		// days") are both meaningless against an empty history: a world model built
+		// only from today says every entity is brand new and nothing is stale, which
+		// is wrong about every entity at once. Starting from zero gives it the
+		// history that is already sitting in `items`.
+		//
+		// The cost is bounded and small. extractWindowLimit caps a pass the way
+		// classifyWindowLimit does, so a backfill is at most a few dozen batched
+		// calls once, against a per-run cap that a steady-state run leaves mostly
+		// unspent -- classify only ever sees what is past its own mark.
+		KeyExtractWatermark: "",
+		KeyExtractBatchSize: "30", // same as classify; one item's worth of prompt each
+		KeyExtractEnabled:   "1",
 	}
 }
 
