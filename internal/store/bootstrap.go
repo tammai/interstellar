@@ -202,7 +202,23 @@ func defaultSettings() map[string]string {
 		// unspent -- classify only ever sees what is past its own mark.
 		KeyExtractWatermark: "",
 		KeyExtractBatchSize: "30", // same as classify; one item's worth of prompt each
-		KeyExtractEnabled:   "1",
+
+		// OFF, on measurement rather than caution. A first real pass over 1000 items
+		// (2026-09-22, deepseek-chat) produced 43 claims across 12 of 134 entities
+		// against 400 unresolved names -- and the claims themselves did not hold up:
+		// "GPT-6 Astra is a significant advancement in AI technology" was stored as a
+		// `launch`, which is commentary the prompt's own rule calls `none`, and two
+		// claims landed on the wrong entity because the model named a near-neighbour
+		// (langchain's alpha release attributed to LangGraph, V4.1 Flash to
+		// V4-Pro). Alias resolution has no way to catch that: the name it was given
+		// really does resolve, just not to the thing the item was about.
+		//
+		// Shipping it on would accumulate claims nobody should trust, which makes the
+		// eventual evaluation harder rather than easier -- the table would have to be
+		// cleared before any honest second measurement. Turn it on once the prompt
+		// holds the "none" line and the watchlist has first-party sources; the stage,
+		// its tests and its endpoints are all here and it is a one-key change.
+		KeyExtractEnabled: "0",
 	}
 }
 
