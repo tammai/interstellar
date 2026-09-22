@@ -48,15 +48,18 @@ type ExtractableItem struct {
 	Title        string
 	Summary      string
 	CanonicalURL string
-	SourceName   string
-	SourceKind   string
-	FetchedAt    string
+	// SourceID is carried for candidate sightings, whose promotion rule counts
+	// distinct SOURCES rather than mentions.
+	SourceID   int64
+	SourceName string
+	SourceKind string
+	FetchedAt  string
 }
 
 // ItemsForExtraction returns items fetched after the watermark, oldest first.
 func (db *DB) ItemsForExtraction(watermark string, limit int) ([]ExtractableItem, error) {
 	rows, err := db.Query(
-		`SELECT i.id, i.title, COALESCE(i.summary, ''), i.canonical_url,
+		`SELECT i.id, i.title, COALESCE(i.summary, ''), i.canonical_url, i.source_id,
 		        COALESCE(s.name, ''), COALESCE(s.kind, ''), i.fetched_at
 		   FROM items i
 		   LEFT JOIN sources s ON s.id = i.source_id
@@ -71,7 +74,7 @@ func (db *DB) ItemsForExtraction(watermark string, limit int) ([]ExtractableItem
 	var out []ExtractableItem
 	for rows.Next() {
 		var it ExtractableItem
-		if err := rows.Scan(&it.ID, &it.Title, &it.Summary, &it.CanonicalURL,
+		if err := rows.Scan(&it.ID, &it.Title, &it.Summary, &it.CanonicalURL, &it.SourceID,
 			&it.SourceName, &it.SourceKind, &it.FetchedAt); err != nil {
 			return nil, fmt.Errorf("scan extractable item: %w", err)
 		}

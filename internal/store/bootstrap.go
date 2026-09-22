@@ -50,6 +50,16 @@ const (
 	KeyPingEnabled      = "ping_enabled"
 	KeyPingURL          = "ping_url"
 
+	// Slack delivery for the daily delta digest.
+	//
+	// Separate keys from ping_*, which belong to the weekly round-up: different
+	// cadence, different content, and a different rule about what may travel. The
+	// webhook is referenced by env var NAME, never stored -- a Slack incoming
+	// webhook URL is a bearer credential, not an address, and anyone holding it can
+	// post into the workspace. Same contract as the provider keys and SMTP.
+	KeySlackEnabled    = "slack_enabled"
+	KeySlackWebhookEnv = "slack_webhook_env"
+
 	KeyHNMinPoints = "hn_min_points"
 	// Items published longer ago than this are not news and are skipped at
 	// ingest. Feeds routinely serve their whole archive.
@@ -159,6 +169,12 @@ func defaultSettings() map[string]string {
 		KeyDigestTo:    "",
 		KeyPingEnabled: "0",
 		KeyPingURL:     "",
+
+		// Off until the owner sets the variable and switches it on. Seeded to a
+		// NAME, like youtube_api_key_env: the error when it is unset then says
+		// which variable to set rather than "no webhook configured".
+		KeySlackEnabled:    "0",
+		KeySlackWebhookEnv: "SLACK_WEBHOOK_URL",
 
 		KeyHNMinPoints:       "25", // decision #4
 		KeyMaxItemAgeDays:    "30",

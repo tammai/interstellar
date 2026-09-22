@@ -56,10 +56,9 @@ type ExtractResult struct {
 	// being talked about rather than doing anything.
 	Mentions int `json:"mentions"`
 	// Unresolved counts entity names the model returned that no alias matches.
-	// These are the candidate table's input (design item 5), and until that exists
-	// they are dropped -- but counted, because a large number here means the
-	// watchlist has drifted behind the field, which is the single most useful
-	// thing this stage can tell you before candidates are built.
+	// They are recorded as candidates rather than dropped: in a field this young
+	// the highest-value signal is routinely the thing not on the watchlist yet, and
+	// a watchlist with no way to grow is one that silently goes out of date.
 	Unresolved       int      `json:"unresolved"`
 	UnresolvedNames  []string `json:"unresolved_names,omitempty"`
 	BatchesCommitted int      `json:"batches_committed"`
@@ -204,9 +203,10 @@ func Extract(
 	}()
 
 	var (
-		claims    []store.NewClaim
-		sightings []store.EntitySighting
-		fatal     error
+		claims     []store.NewClaim
+		sightings  []store.EntitySighting
+		candidates []store.CandidateSighting
+		fatal      error
 	)
 	// done[idx] marks a batch that came back parseable, for the prefix below.
 	done := make([]bool, len(queue))
@@ -242,8 +242,22 @@ func Extract(
 			for _, c := range ans.Claims {
 				entityID, ok := aliases[store.NormalizeEntityName(c.Entity)]
 				if !ok {
+					name := strings.TrimSpace(c.Entity)
+					if name == "" {
+						continue
+					}
 					result.Unresolved++
-					unresolved[strings.TrimSpace(c.Entity)] = true
+					unresolved[name] = true
+					// Recorded with its SOURCE, because promotion counts distinct
+					// sources rather than mentions: one aggregator repeating itself
+					// three times is one outlet with an opinion, and three outlets is
+					// the field noticing something.
+					candidates = append(candidates, store.CandidateSighting{
+						Name:     name,
+						ItemID:   item.ID,
+						SourceID: item.SourceID,
+						SeenAt:   item.FetchedAt,
+					})
 					continue
 				}
 				changeType := strings.ToLower(strings.TrimSpace(c.ChangeType))
@@ -327,6 +341,17 @@ func Extract(
 	}
 	result.ClaimsWritten = len(claims)
 
+	// Candidates are written OUTSIDE the pass transaction, deliberately. They are
+	// not part of the world model -- nothing reads them but a review list -- and a
+	// failure to record a name must never roll back the claims that did resolve.
+	// The watermark has already moved, so a lost candidate simply reappears the
+	// next time the name is mentioned, which is the whole premise of a threshold
+	// counted over fourteen days.
+	if err := db.RecordCandidates(candidates); err != nil {
+		log.Warn("could not record candidates", "err", err)
+		result.Problems = append(result.Problems, fmt.Sprintf("candidates: %v", err))
+	}
+
 	for name := range unresolved {
 		if len(result.UnresolvedNames) >= maxUnresolvedReported {
 			break
@@ -341,6 +366,7 @@ func Extract(
 		"claims", result.ClaimsWritten,
 		"mentions", result.Mentions,
 		"unresolved", result.Unresolved,
+		"candidates", len(candidates),
 	)
 	return result, nil
 }

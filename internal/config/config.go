@@ -73,6 +73,9 @@ type Runtime struct {
 	PingEnabled      bool
 	PingURL          string
 
+	SlackEnabled    bool
+	SlackWebhookEnv string
+
 	TranscriptsPerRun int
 	TranscriptLang    string
 
@@ -125,6 +128,9 @@ func Load(db *store.DB) (Runtime, error) {
 		DigestTo:         str(s, store.KeyDigestTo, ""),
 		PingEnabled:      integer(s, store.KeyPingEnabled, 0) == 1,
 		PingURL:          str(s, store.KeyPingURL, ""),
+
+		SlackEnabled:    integer(s, store.KeySlackEnabled, 0) == 1,
+		SlackWebhookEnv: str(s, store.KeySlackWebhookEnv, "SLACK_WEBHOOK_URL"),
 
 		TranscriptsPerRun: integer(s, store.KeyTranscriptsPerRun, 6),
 		TranscriptLang:    str(s, store.KeyTranscriptLang, "en"),
@@ -186,4 +192,19 @@ func float(s map[string]string, key string, def float64) float64 {
 		return def
 	}
 	return f
+}
+
+// SlackWebhook resolves the webhook URL from the environment at call time.
+//
+// The settings table holds the variable's NAME; the value is read here and never
+// written anywhere. Same contract as SMTPConfig.Password and the provider
+// registry, and for a sharper reason than either: a Slack incoming webhook URL is
+// a bearer credential, so storing it would put the ability to post into the
+// workspace in a file whose whole purpose is to be copied around as a backup.
+func (r Runtime) SlackWebhook() (string, bool) {
+	if r.SlackWebhookEnv == "" {
+		return "", false
+	}
+	v := os.Getenv(r.SlackWebhookEnv)
+	return v, v != ""
 }

@@ -214,6 +214,22 @@ func TestExtractCountsUnresolvedEntities(t *testing.T) {
 	if len(res.UnresolvedNames) != 1 || res.UnresolvedNames[0] != "Brand New Thing" {
 		t.Errorf("unresolved names = %v, want [Brand New Thing]", res.UnresolvedNames)
 	}
+
+	// Recorded as a candidate, not dropped: in a field this young the highest-value
+	// signal is routinely the thing not on the watchlist yet.
+	cands, err := db.PromotableCandidates(14, 1, 3)
+	if err != nil {
+		t.Fatalf("PromotableCandidates: %v", err)
+	}
+	if len(cands) != 1 || cands[0].Name != "Brand New Thing" {
+		t.Fatalf("candidates = %+v, want one named Brand New Thing", cands)
+	}
+	if cands[0].Sources != 1 {
+		t.Errorf("sources = %d, want 1", cands[0].Sources)
+	}
+	if len(cands[0].Samples) != 1 {
+		t.Errorf("samples = %v, want the item title that mentioned it", cands[0].Samples)
+	}
 }
 
 // Re-running over the same items must not duplicate claims or restamp them.

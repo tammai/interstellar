@@ -22,6 +22,7 @@ const (
 	StageClassifying  Stage = "classifying"
 	StageComposing    Stage = "composing"
 	StageExtracting   Stage = "extracting"
+	StagePushing      Stage = "pushing"
 )
 
 // State is a snapshot of the runner, safe to serialize straight to the API.
@@ -40,6 +41,7 @@ type State struct {
 	Classify   *ClassifyResult   `json:"classify,omitempty"`
 	Synthesize *SynthesizeResult `json:"synthesize,omitempty"`
 	Extract    *ExtractResult    `json:"extract,omitempty"`
+	Push       *PushResult       `json:"push,omitempty"`
 	LLMCalls   int               `json:"llm_calls"`
 }
 
@@ -259,12 +261,31 @@ func (r *Runner) execute(ctx context.Context) {
 		r.log.Warn("claim extraction incomplete", "err", extractErr)
 	}
 
+	// --- push the deltas ---
+	//
+	// After extraction, because it sends what extraction just found, and outside
+	// the LLM budget entirely: a push is HTTP to one webhook and costs no tokens.
+	//
+	// A failure here is logged, never fatal. The claims are written either way, and
+	// MarkDeltasPushed stamps only what was actually delivered -- so a Slack outage
+	// costs a day's notification, not a day's changes, and tomorrow's push picks
+	// them up.
+	r.setStage(StagePushing)
+	push, pushErr := Push(ctx, r.db, cfg, r.log)
+	r.mu.Lock()
+	r.state.Push = &push
+	r.mu.Unlock()
+	if pushErr != nil {
+		r.log.Warn("push failed", "err", pushErr)
+	}
+
 	r.log.Info("run complete",
 		"items_new", ingest.ItemsNew,
 		"transcripts", transcribe.Summarized,
 		"matches", classify.MatchesKept,
 		"signals", synth.SignalsWritten,
 		"claims", extract.ClaimsWritten,
+		"pushed", push.Deltas,
 		"llm_calls", client.Guard().UsedThisRun(),
 	)
 }

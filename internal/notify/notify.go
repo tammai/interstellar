@@ -275,7 +275,7 @@ func SendPing(ctx context.Context, url string, payload PingPayload) error {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "Interstellar/0.1")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := Client.Do(req)
 	if err != nil {
 		return err
 	}
