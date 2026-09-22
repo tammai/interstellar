@@ -284,3 +284,59 @@ func TestSeededHackerNewsConfigParses(t *testing.T) {
 		t.Errorf("seeded %d hn sources, want 1", n)
 	}
 }
+
+// Claims hang off items with no cascade, exactly as transcripts do, and a missed
+// clause in DeleteSource does not leave a stale row -- it makes the source
+// undeletable, which is how the transcript case presented. Pinned in both
+// directions: an orphaned item's claims go, and an item another source still
+// carries keeps its claims along with the item.
+func TestDeleteSourceRemovesClaims(t *testing.T) {
+	db := openTemp(t)
+
+	gone := addSource(t, db, "rss", "leaving")
+	kept := addSource(t, db, "rss", "staying")
+
+	var entity int64
+	if err := db.QueryRow(
+		`INSERT INTO entities (name, name_norm, layer) VALUES ('Cursor', 'cursor', 'coding_agents')
+		 RETURNING id`,
+	).Scan(&entity); err != nil {
+		t.Fatalf("insert entity: %v", err)
+	}
+
+	orphan := addItem(t, db, gone, "https://example.test/orphan")
+	shared := addItem(t, db, gone, "https://example.test/shared")
+	if _, err := db.Exec(
+		`INSERT INTO item_sources (item_id, source_id) VALUES (?, ?)`, shared, kept,
+	); err != nil {
+		t.Fatalf("second attribution: %v", err)
+	}
+
+	for _, item := range []int64{orphan, shared} {
+		if _, err := db.Exec(
+			`INSERT INTO claims (entity_id, item_id, change_type, source_type, summary, url, hash)
+			 VALUES (?, ?, 'launch', 'independent', 's', 'u', ?)`,
+			entity, item, fmt.Sprintf("h%d", item),
+		); err != nil {
+			t.Fatalf("insert claim: %v", err)
+		}
+	}
+
+	if err := db.DeleteSource(gone); err != nil {
+		t.Fatalf("DeleteSource: %v", err)
+	}
+
+	// The shared item survives, so its claim must too: the claim is a permanent
+	// answer about an item that still exists, and dropping it would lose history
+	// the entity is the whole point of keeping.
+	if n := count(t, db, "SELECT count(*) FROM claims"); n != 1 {
+		t.Errorf("claims left = %d, want 1", n)
+	}
+	if n := count(t, db, "SELECT count(*) FROM claims WHERE item_id = "+fmt.Sprint(shared)); n != 1 {
+		t.Errorf("shared item's claim = %d, want 1", n)
+	}
+	// The entity itself is untouched by a source going away.
+	if n := count(t, db, "SELECT count(*) FROM entities"); n != 1 {
+		t.Errorf("entities left = %d, want 1", n)
+	}
+}

@@ -164,6 +164,16 @@ func (db *DB) DeleteSource(id int64) error {
 	); err != nil {
 		return fmt.Errorf("delete orphaned transcripts: %w", err)
 	}
+	// Claims reference items the same way transcripts do, and fail the same way:
+	// the delete errors, the transaction rolls back, and the source stays on the
+	// list with nothing on screen explaining why. The claim goes because its item
+	// is going -- the entity it was about keeps every other claim it has, since
+	// those hang off items this source never carried.
+	if _, err := tx.Exec(
+		`DELETE FROM claims WHERE item_id IN (SELECT id FROM items WHERE source_id = ?)`, id,
+	); err != nil {
+		return fmt.Errorf("delete orphaned claims: %w", err)
+	}
 	if _, err := tx.Exec(`DELETE FROM items WHERE source_id = ?`, id); err != nil {
 		return fmt.Errorf("delete orphaned items: %w", err)
 	}
