@@ -133,6 +133,15 @@ func (db *DB) DeleteSource(id int64) error {
 	if _, err := tx.Exec(`DELETE FROM item_sources WHERE source_id = ?`, id); err != nil {
 		return fmt.Errorf("delete source %d attributions: %w", id, err)
 	}
+	// Candidate sightings carry source_id as well as item_id, because the
+	// promotion rule counts distinct SOURCES. That makes them fail here in a way
+	// claims cannot: a sighting survives its item being re-attributed elsewhere,
+	// so deleting only the orphans would leave rows pointing at a source that is
+	// about to vanish, and the delete would roll back with the source still on the
+	// list. Cleared by source first, then by orphaned item below.
+	if _, err := tx.Exec(`DELETE FROM candidate_sightings WHERE source_id = ?`, id); err != nil {
+		return fmt.Errorf("delete source %d candidate sightings: %w", id, err)
+	}
 	// items.source_id is a foreign key, so any item whose "first seen on" was
 	// this source has to be repointed. Point it at another source that carried
 	// it if one exists.
@@ -163,6 +172,22 @@ func (db *DB) DeleteSource(id int64) error {
 		`DELETE FROM item_transcripts WHERE item_id IN (SELECT id FROM items WHERE source_id = ?)`, id,
 	); err != nil {
 		return fmt.Errorf("delete orphaned transcripts: %w", err)
+	}
+	// Claims reference items the same way transcripts do, and fail the same way:
+	// the delete errors, the transaction rolls back, and the source stays on the
+	// list with nothing on screen explaining why. The claim goes because its item
+	// is going -- the entity it was about keeps every other claim it has, since
+	// those hang off items this source never carried.
+	if _, err := tx.Exec(
+		`DELETE FROM claims WHERE item_id IN (SELECT id FROM items WHERE source_id = ?)`, id,
+	); err != nil {
+		return fmt.Errorf("delete orphaned claims: %w", err)
+	}
+	if _, err := tx.Exec(
+		`DELETE FROM candidate_sightings
+		  WHERE item_id IN (SELECT id FROM items WHERE source_id = ?)`, id,
+	); err != nil {
+		return fmt.Errorf("delete orphaned candidate sightings: %w", err)
 	}
 	if _, err := tx.Exec(`DELETE FROM items WHERE source_id = ?`, id); err != nil {
 		return fmt.Errorf("delete orphaned items: %w", err)

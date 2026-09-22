@@ -21,6 +21,8 @@ const (
 	StageTranscribing Stage = "transcribing"
 	StageClassifying  Stage = "classifying"
 	StageComposing    Stage = "composing"
+	StageExtracting   Stage = "extracting"
+	StagePushing      Stage = "pushing"
 )
 
 // State is a snapshot of the runner, safe to serialize straight to the API.
@@ -38,6 +40,8 @@ type State struct {
 	Transcribe *TranscribeResult `json:"transcribe,omitempty"`
 	Classify   *ClassifyResult   `json:"classify,omitempty"`
 	Synthesize *SynthesizeResult `json:"synthesize,omitempty"`
+	Extract    *ExtractResult    `json:"extract,omitempty"`
+	Push       *PushResult       `json:"push,omitempty"`
 	LLMCalls   int               `json:"llm_calls"`
 }
 
@@ -227,11 +231,61 @@ func (r *Runner) execute(ctx context.Context) {
 		return
 	}
 
+	// --- extract claims ---
+	//
+	// LAST, after the sky is composed, and that ordering is deliberate. Extraction
+	// and the star map now read the same items on every run and share one per-run
+	// call cap, so whichever goes first can starve the other. The sky is the
+	// product and the world model is the new thing, so the new thing yields: a cap
+	// breach here costs a day of claims, and a cap breach the other way round would
+	// be an empty sky caused by a stage nothing on screen reads yet.
+	//
+	// Nothing downstream depends on claims yet, so position is otherwise free. When
+	// synthesis eventually reads them, this has to move back above it -- and at that
+	// point the budget question above has to be answered properly rather than by
+	// ordering.
+	//
+	// A failure is never fatal to the run, for the same reason transcripts are not:
+	// the watermark simply does not advance and the next run sees the same items.
+	r.setStage(StageExtracting)
+	extract, extractErr := Extract(ctx, r.db, client, cfg, r.log)
+	r.mu.Lock()
+	r.state.Extract = &extract
+	r.state.LLMCalls = client.Guard().UsedThisRun()
+	r.mu.Unlock()
+	if extractErr != nil {
+		if errors.Is(extractErr, llm.ErrCapReached) || errors.Is(extractErr, context.Canceled) {
+			r.stopReason(client, "claim extraction stopped", extractErr)
+			return
+		}
+		r.log.Warn("claim extraction incomplete", "err", extractErr)
+	}
+
+	// --- push the deltas ---
+	//
+	// After extraction, because it sends what extraction just found, and outside
+	// the LLM budget entirely: a push is HTTP to one webhook and costs no tokens.
+	//
+	// A failure here is logged, never fatal. The claims are written either way, and
+	// MarkDeltasPushed stamps only what was actually delivered -- so a Slack outage
+	// costs a day's notification, not a day's changes, and tomorrow's push picks
+	// them up.
+	r.setStage(StagePushing)
+	push, pushErr := Push(ctx, r.db, cfg, r.log)
+	r.mu.Lock()
+	r.state.Push = &push
+	r.mu.Unlock()
+	if pushErr != nil {
+		r.log.Warn("push failed", "err", pushErr)
+	}
+
 	r.log.Info("run complete",
 		"items_new", ingest.ItemsNew,
 		"transcripts", transcribe.Summarized,
 		"matches", classify.MatchesKept,
 		"signals", synth.SignalsWritten,
+		"claims", extract.ClaimsWritten,
+		"pushed", push.Deltas,
 		"llm_calls", client.Guard().UsedThisRun(),
 	)
 }
