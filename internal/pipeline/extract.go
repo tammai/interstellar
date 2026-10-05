@@ -222,8 +222,9 @@ func Extract(
 		finished++
 		reportProgress(ctx, finished, len(queue), "batches")
 		if out.err != nil {
-			if errors.Is(out.err, llm.ErrCapReached) || errors.Is(out.err, context.Canceled) ||
-				errors.Is(out.err, context.DeadlineExceeded) {
+			// The cap or the run's own cancellation; a timed-out model is a failed
+			// batch, not a stopped run.
+			if errors.Is(out.err, llm.ErrCapReached) || ctx.Err() != nil {
 				if fatal == nil {
 					fatal = out.err
 				}

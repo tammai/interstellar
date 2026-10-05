@@ -106,8 +106,10 @@ func Synthesize(
 
 		signals, err := composeTopic(ctx, client, topic, matched, log)
 		if err != nil {
-			if errors.Is(err, llm.ErrCapReached) || errors.Is(err, context.Canceled) ||
-				errors.Is(err, context.DeadlineExceeded) {
+			// Fatal only for the cap or the run's own cancellation. A model that
+			// timed out is this topic's failure, not the run's: treating it as a
+			// shutdown once let one slow topic stop compose for every topic after it.
+			if errors.Is(err, llm.ErrCapReached) || ctx.Err() != nil {
 				return result, err
 			}
 			log.Warn("synthesize failed", "topic", topic.Title, "err", err)

@@ -288,10 +288,11 @@ func Classify(
 		reportProgress(ctx, finished, len(queue), "batches")
 		topic := lanes[out.lane].topic
 		if out.err != nil {
-			if errors.Is(out.err, llm.ErrCapReached) || errors.Is(out.err, context.Canceled) ||
-				errors.Is(out.err, context.DeadlineExceeded) {
+			if errors.Is(out.err, llm.ErrCapReached) || ctx.Err() != nil {
 				// The guard stopping a run, or a shutdown. Keep draining so the
-				// workers can exit, then commit what was finished and stop.
+				// workers can exit, then commit what was finished and stop. A batch
+				// whose model merely timed out is not either: it is a failed batch,
+				// retried next run like any other.
 				if fatal == nil {
 					fatal = out.err
 				}

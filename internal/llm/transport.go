@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,8 +14,14 @@ import (
 
 // CallTimeout bounds a single model call. Generous, because a synthesizer pass
 // over a day of matches is not fast, but finite: §10 budgets the whole refresh
-// at three minutes.
-const CallTimeout = 120 * time.Second
+// at three minutes. A variable only so tests need not wait two minutes.
+var CallTimeout = 120 * time.Second
+
+// ErrCallTimeout is a model that did not answer within CallTimeout. It is
+// deliberately NOT context.DeadlineExceeded: the stages read that as the run
+// itself being cancelled, so one slow reply used to stop compose for every topic
+// after it. A slow model is a failed call, and the run carries on.
+var ErrCallTimeout = errors.New("model did not answer in time")
 
 // Message is one chat turn.
 type Message struct {
@@ -131,7 +138,7 @@ func asCallError(err error, target **callError) bool {
 
 // call performs one OpenAI-compatible chat completion against one provider.
 // This is the only function in the codebase that talks to a model.
-func call(ctx context.Context, client *http.Client, p Provider, model string, req Request) (Response, error) {
+func call(parent context.Context, client *http.Client, p Provider, model string, req Request) (Response, error) {
 	key, ok := p.APIKey()
 	if !ok {
 		// Non-retryable: no amount of backoff conjures a missing env var.
@@ -155,8 +162,20 @@ func call(ctx context.Context, client *http.Client, p Provider, model string, re
 		return Response{}, &callError{err: fmt.Errorf("encode request: %w", err), retryable: false}
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, CallTimeout)
+	ctx, cancel := context.WithTimeout(parent, CallTimeout)
 	defer cancel()
+
+	// timedOut is this call's own deadline firing while the run carries on. It is
+	// reported as ErrCallTimeout and NOT retried against the same model: a model
+	// that took two minutes to not answer will very likely do it again, and the
+	// retry is another two minutes of the run's three. The chain's next model --
+	// usually a faster tier -- is the better second attempt.
+	timedOut := func() bool {
+		return errors.Is(ctx.Err(), context.DeadlineExceeded) && parent.Err() == nil
+	}
+	timeoutErr := func() error {
+		return &callError{err: fmt.Errorf("%s did not answer within %s: %w", p.Name, CallTimeout, ErrCallTimeout), retryable: false}
+	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.Endpoint(), bytes.NewReader(payload))
 	if err != nil {
@@ -169,7 +188,11 @@ func call(ctx context.Context, client *http.Client, p Provider, model string, re
 
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		// Transport failures (including context deadline) are worth a retry.
+		if timedOut() {
+			return Response{}, timeoutErr()
+		}
+		// Other transport failures -- a reset connection, a DNS blip -- are worth
+		// a retry against the same model.
 		return Response{}, &callError{err: fmt.Errorf("call %s: %w", p.Name, err), retryable: true}
 	}
 	defer resp.Body.Close()
@@ -178,6 +201,11 @@ func call(ctx context.Context, client *http.Client, p Provider, model string, re
 	// forever.
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if err != nil {
+		// The common case for a slow model: the provider sends its headers at
+		// once and the body only when the model finishes.
+		if timedOut() {
+			return Response{}, timeoutErr()
+		}
 		return Response{}, &callError{err: fmt.Errorf("read %s response: %w", p.Name, err), retryable: true}
 	}
 

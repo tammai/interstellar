@@ -111,8 +111,9 @@ func Transcribe(
 
 		summary, err := summarizeTranscript(ctx, client, v.Title, transcript, log)
 		if err != nil {
-			if errors.Is(err, llm.ErrCapReached) || errors.Is(err, context.Canceled) ||
-				errors.Is(err, context.DeadlineExceeded) {
+			// The cap or the run's own cancellation; a timed-out model is one
+			// video's failure.
+			if errors.Is(err, llm.ErrCapReached) || ctx.Err() != nil {
 				// Store what was fetched so the next run only pays for the summary,
 				// then stop: the cap applies to every remaining video too.
 				if saveErr := db.SaveTranscript(store.TranscriptRecord{
