@@ -194,8 +194,12 @@ func WriteWeekly(
 			{Role: "system", Content: weeklySystemPrompt},
 			{Role: "user", Content: weeklyPrompt(start, end, stories)},
 		},
-		JSONMode:  true,
-		MaxTokens: 1600,
+		JSONMode: true,
+		// Room for a reasoning model to think before it writes. The limit counts
+		// thinking tokens too, and at 1600 a reasoning synthesizer could spend the
+		// lot and return nothing; the prompt's fixed shape is what keeps a plain
+		// model's answer short, not this number.
+		MaxTokens: 6000,
 	})
 	if err != nil {
 		return result, err

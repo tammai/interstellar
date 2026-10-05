@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/tammai/interstellar/internal/config"
+	"github.com/tammai/interstellar/internal/llm"
 	"github.com/tammai/interstellar/internal/store"
 )
 
@@ -199,5 +200,36 @@ func TestRunnerSurfacesCapBannerWithGuidance(t *testing.T) {
 	// The banner has to tell the owner what to do, not just that it stopped.
 	if !strings.Contains(banner, "cap") || !strings.Contains(banner, "Settings") {
 		t.Errorf("banner = %q; should name the cap and where to change it", banner)
+	}
+}
+
+// A reasoning model given too small a limit thinks through all of it and returns
+// no text: a 200, a successful call, and nothing a run could use. The test button
+// reported that as a working model. It must fail, and say why.
+func TestTestCallFailsOnAnEmptyReply(t *testing.T) {
+	isolateFromRealKeys(t)
+	db := testDB(t)
+	runner := NewRunner(db, testEnv(), quietLogger())
+
+	for _, tc := range []struct {
+		reply  string
+		wantOK bool
+	}{{`{"ok":true}`, true}, {"", false}, {"   ", false}} {
+		model := newFakeModel(t, func(string) string { return tc.reply })
+		cfg, err := llm.LoadConfig(map[string]string{
+			store.KeyProviders:        fmt.Sprintf(`[{"name":"fake","base_url":%q,"api_key_env":""}]`, model.URL),
+			store.KeyClassifierModel:  "fake/c",
+			store.KeySynthesizerModel: "fake/thinker",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = runner.TestCall(context.Background(), cfg, llm.RoleSynthesizer)
+		if tc.wantOK && err != nil {
+			t.Errorf("reply %q: TestCall = %v, want success", tc.reply, err)
+		}
+		if !tc.wantOK && (err == nil || !strings.Contains(err.Error(), "no text")) {
+			t.Errorf("reply %q: TestCall = %v, want a failure naming the empty reply", tc.reply, err)
+		}
 	}
 }

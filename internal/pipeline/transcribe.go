@@ -181,7 +181,9 @@ func summarizeTranscript(
 			{Role: "user", Content: fmt.Sprintf(
 				"VIDEO TITLE: %s\n%s\nTRANSCRIPT:\n%s\n\nSummarize it.", title, note, text)},
 		},
-		MaxTokens: 300,
+		// Headroom for thinking: this runs on the classifier's chain, and a
+		// router there can pick a reasoning effort per request.
+		MaxTokens: 1500,
 	})
 	if err != nil {
 		return "", err

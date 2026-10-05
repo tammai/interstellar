@@ -3,7 +3,9 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -235,11 +237,23 @@ func (r *Runner) startCatchup(round int) {
 // would otherwise loop on the same items), or the run stopped on something other
 // than its per-run cap -- a dead provider is not fixed by asking again. The daily
 // cap is what bounds the spend, and it already survives restarts.
+//
+// It is also what marks the run idle, in the same locked step as the decision.
+// Idle first and decision second left a moment where a run read as finished with
+// nothing to follow -- long enough for the Schedule screen to show a chain as
+// over between two of its runs, and for a test waiting on the chain to stop early.
 func (r *Runner) afterRun(ctx context.Context, round int) {
 	carryOn, ended := r.shouldCatchUp()
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	now := time.Now()
+	r.state.Stage = StageIdle
+	r.state.EndedAt = &now
+	r.state.Progress = nil
+	r.state.StageStartedAt = nil
+	r.guard = nil
+
 	if ctx.Err() != nil {
 		return // stopped or shutting down; never chain behind a Stop
 	}
@@ -311,18 +325,10 @@ func (r *Runner) shouldCatchUp() (carryOn bool, ended string) {
 // Ingest runs even with no model configured -- items accumulate and the sky shows
 // empty constellations, which is a more useful first-run state than nothing at
 // all. Only the LLM stages need readiness.
+//
+// It leaves the run marked as running: afterRun, which every caller runs next,
+// marks it idle in the same step as deciding what comes after it -- see there.
 func (r *Runner) execute(ctx context.Context, catchup bool) {
-	defer func() {
-		r.mu.Lock()
-		ended := time.Now()
-		r.state.Stage = StageIdle
-		r.state.EndedAt = &ended
-		r.state.Progress = nil
-		r.state.StageStartedAt = nil
-		r.guard = nil
-		r.mu.Unlock()
-	}()
-
 	ctx = withProgress(ctx, func(p Progress) {
 		r.mu.Lock()
 		defer r.mu.Unlock()
@@ -544,6 +550,9 @@ type TestResult struct {
 	LatencyMS int64
 }
 
+// testCallMaxTokens bounds the test call's reply; see TestCall.
+const testCallMaxTokens = 1024
+
 // TestCall runs a trivial prompt through a role's configured chain.
 //
 // This is §3.1's "any swap is verifiable in 10 seconds" promise. It uses the
@@ -559,11 +568,16 @@ func (r *Runner) TestCall(ctx context.Context, cfg llm.Config, role llm.Role) (T
 
 	// Ask for something with an unmistakable right answer, so a provider that
 	// returns 200 with junk is still visibly wrong.
+	//
+	// The limit is generous for a nine-character answer on purpose. A reasoning
+	// model spends output tokens thinking before it writes, and the old limit of 64
+	// let GPT-5 Mini think through all of it and answer nothing -- which the button
+	// then reported as a working model.
 	req := llm.Request{
 		Messages: []llm.Message{
 			{Role: "user", Content: `Reply with exactly this JSON and nothing else: {"ok":true}`},
 		},
-		MaxTokens: 64,
+		MaxTokens: testCallMaxTokens,
 	}
 
 	start := time.Now()
@@ -571,6 +585,14 @@ func (r *Runner) TestCall(ctx context.Context, cfg llm.Config, role llm.Role) (T
 	elapsed := time.Since(start).Milliseconds()
 	if err != nil {
 		return TestResult{LatencyMS: elapsed}, err
+	}
+	// A call that succeeded and said nothing is not a working model. Reported as a
+	// failure, with the likely reason, because the runs it is vouching for need
+	// text: a compose pass that gets an empty reply produces no stars.
+	if strings.TrimSpace(resp.Text) == "" {
+		return TestResult{LatencyMS: elapsed}, fmt.Errorf(
+			"%s/%s answered with no text after %d output tokens -- a reasoning model can spend its whole token limit thinking",
+			resp.Provider, resp.Model, resp.Usage.TokensOut)
 	}
 
 	return TestResult{

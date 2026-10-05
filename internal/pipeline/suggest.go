@@ -148,8 +148,9 @@ func SuggestSources(
 			{Role: "system", Content: suggestSystemPrompt},
 			{Role: "user", Content: suggestPrompt(topic)},
 		},
-		JSONMode:  true,
-		MaxTokens: 1200,
+		JSONMode: true,
+		// Headroom for a reasoning model's thinking, which this limit also counts.
+		MaxTokens: 4000,
 		// No Expect: the prompt asks for "up to" a count, so a model returning
 		// four good feeds instead of eight has not dropped anything. Recording a
 		// soft target as a denominator would make every honest reply read as

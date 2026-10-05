@@ -147,7 +147,7 @@ func TestCatchupPausesWhenTheDayIsNearlySpent(t *testing.T) {
 	final := rig.settle(t)
 
 	if final.Catchup == nil || !strings.Contains(final.Catchup.Ended, "daily cap") {
-		t.Fatalf("catch-up = %+v, want it paused on the daily cap", final.Catchup)
+		t.Fatalf("catch-up = %+v, want it paused on the daily cap (banner %q, stopped_by %q, classify %+v, synth %+v)", final.Catchup, final.Banner, final.StoppedBy, final.Classify, final.Synthesize)
 	}
 	if final.Classify == nil || final.Classify.ItemsPending == 0 {
 		t.Error("the backlog emptied; the test is not exercising the cap")
