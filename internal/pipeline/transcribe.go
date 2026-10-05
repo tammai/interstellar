@@ -68,7 +68,8 @@ func Transcribe(
 		return result, nil
 	}
 
-	for _, v := range videos {
+	for i, v := range videos {
+		reportProgress(ctx, i, len(videos), "videos")
 		if err := ctx.Err(); err != nil {
 			return result, err
 		}

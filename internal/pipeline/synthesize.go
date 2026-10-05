@@ -82,7 +82,8 @@ func Synthesize(
 		return result, err
 	}
 
-	for _, topic := range topics {
+	for i, topic := range topics {
+		reportProgress(ctx, i, len(topics), "topics")
 		if topic.NeedsSetup() {
 			continue
 		}

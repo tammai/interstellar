@@ -16,13 +16,13 @@ func newTopic(t *testing.T, db *DB, title string) int64 {
 	return id
 }
 
-func TestCommitClassifyPassWritesStatsAndWatermark(t *testing.T) {
+func TestCommitClassifyPassWritesStatsAndCursor(t *testing.T) {
 	db := openTemp(t)
 	topic := newTopic(t, db, "Agents")
 
 	err := db.CommitClassifyPass(today(), []TopicStat{
 		{TopicID: topic, ItemsConsidered: 30, MatchesKept: 4, Batches: 1},
-	}, "2026-08-12T09:40:00Z")
+	}, map[int64]string{topic: "2026-08-12 09:40:00#17"})
 	if err != nil {
 		t.Fatalf("CommitClassifyPass: %v", err)
 	}
@@ -46,13 +46,13 @@ func TestCommitClassifyPassWritesStatsAndWatermark(t *testing.T) {
 		t.Errorf("run days = %d, want 1", got.RunDays)
 	}
 
-	// The watermark rides along in the same transaction.
-	mark, ok, err := db.Setting(KeyClassifyWatermark)
-	if err != nil || !ok {
-		t.Fatalf("watermark not set: ok=%v err=%v", ok, err)
+	// The cursor rides along in the same transaction.
+	got2, err := db.Topic(topic)
+	if err != nil {
+		t.Fatalf("Topic: %v", err)
 	}
-	if mark != "2026-08-12T09:40:00Z" {
-		t.Errorf("watermark = %q, want the value the pass committed", mark)
+	if got2.ClassifiedThrough != "2026-08-12 09:40:00#17" {
+		t.Errorf("cursor = %q, want the value the pass committed", got2.ClassifiedThrough)
 	}
 }
 
@@ -68,7 +68,7 @@ func TestCommitClassifyPassAccumulatesWithinADay(t *testing.T) {
 		{{TopicID: topic, ItemsConsidered: 30, MatchesKept: 3, Batches: 1}},
 		{{TopicID: topic, ItemsConsidered: 12, MatchesKept: 2, Batches: 1}},
 	} {
-		if err := db.CommitClassifyPass(day, pass, ""); err != nil {
+		if err := db.CommitClassifyPass(day, pass, nil); err != nil {
 			t.Fatalf("CommitClassifyPass: %v", err)
 		}
 	}
@@ -85,22 +85,29 @@ func TestCommitClassifyPassAccumulatesWithinADay(t *testing.T) {
 	}
 }
 
-// An empty watermark means "unchanged" and must not blank out the stored one.
-func TestCommitClassifyPassLeavesWatermarkAloneWhenEmpty(t *testing.T) {
+// A topic missing from the cursor map keeps its cursor: a pass that could not
+// move one topic must not blank it.
+func TestCommitClassifyPassLeavesOtherCursorsAlone(t *testing.T) {
 	db := openTemp(t)
-	topic := newTopic(t, db, "Agents")
+	moved := newTopic(t, db, "Agents")
+	stuck := newTopic(t, db, "Weights")
 
-	if err := db.SetSetting(KeyClassifyWatermark, "2026-08-11T09:00:00Z"); err != nil {
-		t.Fatalf("seed watermark: %v", err)
+	if err := db.CommitClassifyPass(today(), nil, map[int64]string{
+		moved: "2026-08-11 09:00:00#1", stuck: "2026-08-11 09:00:00#1",
+	}); err != nil {
+		t.Fatalf("seed cursors: %v", err)
 	}
 	if err := db.CommitClassifyPass(today(),
-		[]TopicStat{{TopicID: topic, ItemsConsidered: 5, MatchesKept: 1, Batches: 1}}, ""); err != nil {
+		[]TopicStat{{TopicID: moved, ItemsConsidered: 5, MatchesKept: 1, Batches: 1}},
+		map[int64]string{moved: "2026-08-12 09:00:00#9"}); err != nil {
 		t.Fatalf("CommitClassifyPass: %v", err)
 	}
 
-	mark, _, _ := db.Setting(KeyClassifyWatermark)
-	if mark != "2026-08-11T09:00:00Z" {
-		t.Errorf("watermark = %q, want the seeded value untouched", mark)
+	if got, _ := db.Topic(stuck); got.ClassifiedThrough != "2026-08-11 09:00:00#1" {
+		t.Errorf("untouched cursor = %q, want the seeded value", got.ClassifiedThrough)
+	}
+	if got, _ := db.Topic(moved); got.ClassifiedThrough != "2026-08-12 09:00:00#9" {
+		t.Errorf("moved cursor = %q", got.ClassifiedThrough)
 	}
 }
 
@@ -112,7 +119,7 @@ func TestTopicHitRatesIncludesTopicsWithNoStats(t *testing.T) {
 	newTopic(t, db, "Silent")
 
 	if err := db.CommitClassifyPass(today(),
-		[]TopicStat{{TopicID: busy, ItemsConsidered: 10, MatchesKept: 1, Batches: 1}}, ""); err != nil {
+		[]TopicStat{{TopicID: busy, ItemsConsidered: 10, MatchesKept: 1, Batches: 1}}, nil); err != nil {
 		t.Fatalf("CommitClassifyPass: %v", err)
 	}
 
@@ -151,7 +158,7 @@ func TestTopicHitRatesDistinguishesZeroFromUnknown(t *testing.T) {
 	topic := newTopic(t, db, "Agents")
 
 	if err := db.CommitClassifyPass(today(),
-		[]TopicStat{{TopicID: topic, ItemsConsidered: 400, MatchesKept: 0, Batches: 14}}, ""); err != nil {
+		[]TopicStat{{TopicID: topic, ItemsConsidered: 400, MatchesKept: 0, Batches: 14}}, nil); err != nil {
 		t.Fatalf("CommitClassifyPass: %v", err)
 	}
 
@@ -172,11 +179,11 @@ func TestTopicHitRatesHonorsTheWindow(t *testing.T) {
 
 	old := RunDate(time.Now().AddDate(0, 0, -30))
 	if err := db.CommitClassifyPass(old,
-		[]TopicStat{{TopicID: topic, ItemsConsidered: 99, MatchesKept: 40, Batches: 4}}, ""); err != nil {
+		[]TopicStat{{TopicID: topic, ItemsConsidered: 99, MatchesKept: 40, Batches: 4}}, nil); err != nil {
 		t.Fatalf("CommitClassifyPass: %v", err)
 	}
 	if err := db.CommitClassifyPass(today(),
-		[]TopicStat{{TopicID: topic, ItemsConsidered: 10, MatchesKept: 1, Batches: 1}}, ""); err != nil {
+		[]TopicStat{{TopicID: topic, ItemsConsidered: 10, MatchesKept: 1, Batches: 1}}, nil); err != nil {
 		t.Fatalf("CommitClassifyPass: %v", err)
 	}
 
@@ -205,7 +212,7 @@ func TestDeleteTopicRemovesItsStats(t *testing.T) {
 	topic := newTopic(t, db, "Agents")
 
 	if err := db.CommitClassifyPass(today(),
-		[]TopicStat{{TopicID: topic, ItemsConsidered: 10, MatchesKept: 1, Batches: 1}}, ""); err != nil {
+		[]TopicStat{{TopicID: topic, ItemsConsidered: 10, MatchesKept: 1, Batches: 1}}, nil); err != nil {
 		t.Fatalf("CommitClassifyPass: %v", err)
 	}
 	if err := db.DeleteTopic(topic); err != nil {

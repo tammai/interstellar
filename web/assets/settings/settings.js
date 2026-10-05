@@ -132,6 +132,10 @@ class Settings {
     const broken = status && (!status.ready || (status.failures || []).length > 0);
     this.tabButtons.get('model')?.classList.toggle('attention', !!broken);
     if (this.screen === 'model') this.refreshModel();
+    // In place, never through rerenderCurrent: the panel sits above the schedule's
+    // fields, and a poll every 1.5s during a run would otherwise take the field
+    // being typed into along with it.
+    if (this.screen === 'schedule') this.renderProgress();
   }
 
   // The header line: what the popover's footer note said, minus the "no restart"
@@ -1401,6 +1405,15 @@ class Settings {
     const body = this.screenFrame('Schedule',
       `Times are local to the container (${s.timezone}). The aim is a fresh sky before you look at it.`);
 
+    // The run itself, above the settings that shape it. A first run over many
+    // sources takes minutes and may take more than one run to catch up, and the
+    // only other place that said anything was a single word in the header.
+    const progress = section(body, 'Progress');
+    progress.classList.add('progress');
+    this.progressEl = document.createElement('div');
+    progress.append(this.progressEl, this.runNowControl());
+    this.renderProgress();
+
     // Two groups of four columns. The split is not cosmetic: the first group is
     // everything about the run itself -- when it happens and what it may spend --
     // and those four are read together, because moving a time and raising a cap
@@ -1488,14 +1501,38 @@ class Settings {
       }
     };
 
-    // "Run now" used to close the sheet, because the sheet was covering the sky
-    // it had just told to refresh. Nothing is covered here, so the button reports
-    // where it stands instead: this page has no stars to show, and bouncing the
-    // reader back to the star map to find out whether the run started is worse
-    // than one line of text.
+    const actions = document.createElement('div');
+    actions.className = 'card-actions wide';
+    actions.append(save);
+    body.append(actions, result);
+
+    if (this.status?.next_runs?.length) {
+      const next = document.createElement('p');
+      next.className = 'note';
+      next.textContent = 'Next runs: ' +
+        this.status.next_runs.map((t) => new Date(t).toLocaleString()).join(' · ');
+      body.append(next);
+    }
+  }
+
+  // "Run now" used to close the sheet, because the sheet was covering the sky it
+  // had just told to refresh. Nothing is covered here, so the button reports where
+  // it stands instead, and the progress panel above it shows the run as it goes.
+  runNowControl() {
+    const wrap = document.createElement('div');
+    wrap.className = 'progress-actions';
+
     const now = document.createElement('button');
     now.className = 'btn-quiet';
     now.textContent = 'Run now';
+
+    const result = document.createElement('span');
+    result.className = 'test-result';
+    result.setAttribute('role', 'status');
+    // Cleared by renderProgress once the run it announced is over: the panel
+    // above says how that run went, and "Started." under a stopped run reads wrong.
+    this.runNowResult = result;
+
     now.onclick = async () => {
       now.disabled = true;
       result.className = 'test-result';
@@ -1510,24 +1547,135 @@ class Settings {
       result.className = 'test-result ok';
       // 409 is not a failure: it means a run is already going, which is the state
       // the button was asking for.
-      result.textContent = res.status === 409
-        ? 'A run is already going. Watch it in the header.'
-        : 'Started. Watch it in the header, and the sky when it finishes.';
+      result.textContent = res.status === 409 ? 'A run is already going.' : 'Started.';
       this.changed();
     };
 
-    const actions = document.createElement('div');
-    actions.className = 'card-actions wide';
-    actions.append(save, now);
-    body.append(actions, result);
+    wrap.append(now, result);
+    return wrap;
+  }
 
-    if (this.status?.next_runs?.length) {
-      const next = document.createElement('p');
-      next.className = 'note';
-      next.textContent = 'Next runs: ' +
-        this.status.next_runs.map((t) => new Date(t).toLocaleString()).join(' · ');
-      body.append(next);
+  // The progress panel: where the current run is, or where the last one ended,
+  // stage by stage, with the call budget and the classifier backlog beside it.
+  //
+  // Rebuilt from `status` on every poll, inside its own element only. Nothing in
+  // it takes focus, so replacing its children cannot steal a caret.
+  renderProgress() {
+    const box = this.progressEl;
+    if (!box || !box.isConnected) return;
+    const s = this.status;
+    if (!s) { box.textContent = ''; return }
+
+    const run = s.run || {};
+    const running = run.stage && run.stage !== 'idle';
+    const stopped = !running && !!run.banner;
+    const now = Date.now();
+    if (this.progressWasRunning && !running && this.runNowResult) {
+      this.runNowResult.textContent = '';
     }
+    this.progressWasRunning = running;
+
+    const head = document.createElement('div');
+    head.className = 'pg-head';
+
+    const pill = document.createElement('span');
+    pill.className = 'pg-pill' + (running ? ' run' : stopped ? ' bad' : '');
+    const line = document.createElement('span');
+    line.className = 'pg-line';
+
+    if (running) {
+      pill.textContent = 'Running';
+      line.textContent = `${stageLabel(run.stage)} · started ${clock(run.started_at)} · ` +
+        `${duration(now - Date.parse(run.started_at))} so far`;
+    } else if (run.started_at) {
+      pill.textContent = stopped ? 'Stopped' : 'Idle';
+      const took = run.ended_at ? duration(Date.parse(run.ended_at) - Date.parse(run.started_at)) : '';
+      line.textContent = `Last run ${clock(run.started_at)}` + (took ? `, took ${took}` : '');
+    } else {
+      pill.textContent = 'Idle';
+      line.textContent = 'No run since the server started.';
+    }
+    head.append(pill, line);
+
+    const parts = [head];
+
+    if (stopped) {
+      const why = document.createElement('p');
+      why.className = 'note bad';
+      why.textContent = run.banner;
+      parts.push(why);
+    }
+
+    // The stages, in the order a run takes them. A row is done when its result
+    // exists and the run has moved past it, running while it is the stage, and
+    // stopped when the run ended there with a banner.
+    const list = document.createElement('ol');
+    list.className = 'pg-stages';
+    const at = RUN_STAGES.findIndex(([stage]) => stage === run.stage);
+    const stoppedAt = RUN_STAGES.findIndex(([stage]) => stage === run.stopped_at);
+    RUN_STAGES.forEach(([stage, label, key], i) => {
+      const result = run[key];
+      let state = 'pending';
+      if (running) {
+        state = i < at ? (result ? 'done' : 'skipped') : i === at ? 'running' : 'pending';
+      } else if (run.started_at) {
+        if (stopped && i === stoppedAt) state = 'stopped';
+        else if (stopped && stoppedAt >= 0 && i > stoppedAt) state = 'skipped';
+        else state = result ? 'done' : 'skipped';
+      }
+      list.append(stageRow(label, state, stageDetail(key, result),
+        state === 'running' ? run.progress : null,
+        state === 'running' && run.stage_started_at ? now - Date.parse(run.stage_started_at) : null));
+    });
+    parts.push(list);
+
+    // Budget: this run against its cap, today against the daily one.
+    const meters = document.createElement('div');
+    meters.className = 'pg-meters';
+    if (running || run.started_at) {
+      meters.append(meter('LLM calls this run', run.llm_calls || 0, run.call_cap_run || s.call_cap_run));
+    }
+    meters.append(meter('LLM calls today', s.calls_today || 0, s.call_cap_day));
+    parts.push(meters);
+
+    // The classifier backlog, which is what decides whether the next run is an
+    // ordinary morning or a catch-up.
+    const backlog = document.createElement('div');
+    backlog.className = 'pg-backlog';
+    const pending = s.items_pending || 0;
+    const catching = (s.backlog || []).filter((b) => b.catching_up);
+    const summary = document.createElement('p');
+    summary.className = 'pg-backlog-line';
+    if (!pending) {
+      summary.textContent = 'The classifier is caught up: every topic has judged everything in the sky\'s window.';
+    } else {
+      summary.textContent = `${count(pending)} ${pending === 1 ? 'item is' : 'items are'} waiting to be classified. ` +
+        (running ? 'This run is working through them.' : 'The next run picks them up where the last one stopped.');
+    }
+    backlog.append(summary);
+    if (catching.length) {
+      const ul = document.createElement('ul');
+      ul.className = 'pg-catching';
+      for (const b of catching) {
+        const li = document.createElement('li');
+        const name = document.createElement('span');
+        name.textContent = b.title;
+        const n = document.createElement('span');
+        n.className = 'pg-dim';
+        n.textContent = `catching up · ${count(b.pending)} to go`;
+        li.append(name, n);
+        ul.append(li);
+      }
+      backlog.append(ul);
+      const hint = document.createElement('p');
+      hint.className = 'note';
+      hint.textContent = 'A topic added, resumed or given its definition since the others last ran judges the sky\'s window ' +
+        'it missed. Only that topic pays for it, and it never holds the others back.';
+      backlog.append(hint);
+    }
+    parts.push(backlog);
+
+    box.replaceChildren(...parts);
   }
 
   // ---------- signal quality ----------
@@ -1617,8 +1765,124 @@ class Settings {
       'Matches are raw verdicts; signals are what the synthesizer composed from them and what the sky actually shows.';
     body.append(note);
 
+    await this.renderDetail(body);
     await this.renderModelReliability(body);
     await this.renderHistory(body);
+  }
+
+  // Where items go between arriving and the sky, which sources earn their place,
+  // and what it cost -- over the same window as the hit rate above.
+  //
+  // The hit rate says whether a topic's definition works. It cannot say that a
+  // busy source never matches anything, that most matches never become a star, or
+  // that one role is spending most of the budget; those are the questions here.
+  async renderDetail(body) {
+    const data = await fetchJSON(`/api/quality/detail?days=${this.qualityDays}`);
+    if (!data) return;
+
+    // ---- funnel ----
+    const flow = section(body, 'From feed to sky');
+    const f = data.funnel;
+    if (!f.items_ingested && !f.signals) {
+      const none = document.createElement('p');
+      none.className = 'note';
+      none.textContent = 'Nothing arrived in this window yet.';
+      flow.append(none);
+    } else {
+      const tiles = document.createElement('div');
+      tiles.className = 'quality-summary funnel';
+      // Each step is a share of the one before it, so the drop is readable as
+      // "where items went" rather than as five unrelated totals.
+      const step = (value, label, of) => {
+        const tile = statTile(count(value), label);
+        if (of != null) {
+          const pct = document.createElement('span');
+          pct.className = 'stat-share';
+          pct.textContent = of > 0 ? `${formatRate(value / of)} of previous` : '—';
+          tile.append(pct);
+        }
+        return tile;
+      };
+      tiles.append(
+        step(f.items_ingested, 'items ingested'),
+        step(f.items_matched, 'matched a topic', f.items_ingested),
+        step(f.items_in_signals, 'reached a star', f.items_matched),
+        step(f.signals, 'signals'),
+        step(f.hot_signals, 'hot (3+ sources)', f.signals),
+      );
+      flow.append(tiles);
+      const note = document.createElement('p');
+      note.className = 'note';
+      note.textContent = 'Matched but never reached a star usually means an item older than the compose window, ' +
+        'or a story the synthesizer folded into another. A wide gap between ingested and matched is the topics; ' +
+        'between matched and stars, the synthesizer.';
+      flow.append(note);
+    }
+
+    // ---- sources ----
+    const srcWrap = section(body, 'Source yield');
+    const sources = (data.sources || []).filter((y) => y.items > 0 || y.active);
+    if (!sources.length) {
+      const none = document.createElement('p');
+      none.className = 'note';
+      none.textContent = 'No sources yet.';
+      srcWrap.append(none);
+    } else {
+      srcWrap.append(detailTable(`Source yield over ${data.days} days`,
+        [['Source', 'qt-topic'], ['Items', 'qt-n'], ['Matched', 'qt-n'], ['Rate', 'qt-rate'], ['In stars', 'qt-n']],
+        sources.map((y) => {
+          const name = document.createElement('span');
+          name.textContent = y.name;
+          const tags = [quietTag(SOURCE_KIND_SHORT[y.kind] || y.kind)];
+          if (!y.active) tags.push(quietTag('paused'));
+          const rate = formatRate(y.match_rate);
+          const row = [[name, ...tags], y.items ? count(y.items) : '—',
+            y.items ? count(y.matched) : '—', rate, y.items ? count(y.in_signals) : '—'];
+          return { cells: row, flag: y.active && y.items >= 30 && y.match_rate >= 0 && y.match_rate < 0.02 };
+        })));
+      const note = document.createElement('p');
+      note.className = 'note';
+      note.textContent = 'Items a source carried in this window, and how many matched any topic. ' +
+        'An active source with plenty of items and almost no matches is costing classifier calls for nothing — ' +
+        'those rows are marked. Items carried by several sources count for each of them.';
+      srcWrap.append(note);
+    }
+
+    // ---- spend ----
+    const spendWrap = section(body, 'Spend by role');
+    const spend = data.spend || [];
+    if (!spend.length) {
+      const none = document.createElement('p');
+      none.className = 'note';
+      none.textContent = 'No model calls in this window yet.';
+      spendWrap.append(none);
+    } else {
+      const calls = spend.reduce((n, r) => n + r.calls, 0);
+      spendWrap.append(detailTable(`LLM spend by role over ${data.days} days`,
+        [['Role', 'qt-topic'], ['Calls', 'qt-n'], ['Failed', 'qt-n'], ['Input', 'qt-n'], ['Output', 'qt-n']],
+        spend.map((r) => ({
+          cells: [ROLE_NAMES[r.role] || r.role, count(r.calls), r.failed ? count(r.failed) : '—',
+            compact(r.tokens_in), compact(r.tokens_out)],
+          warn: r.failed > 0 ? 2 : -1,
+        }))));
+      const note = document.createElement('p');
+      note.className = 'note';
+      note.textContent = `Input and output are tokens. ${count(calls)} calls in all, failed attempts included — a fallback that fired is billed as two. ` +
+        (f.signals ? `That is about ${(calls / f.signals).toFixed(1)} calls per signal.` : '');
+      spendWrap.append(note);
+    }
+
+    // ---- by day ----
+    const daily = data.daily || [];
+    if (daily.length > 1) {
+      const dayWrap = section(body, 'By day');
+      dayWrap.append(detailTable(`Per-day counts over ${data.days} days`,
+        [['Day', 'qt-topic'], ['Ingested', 'qt-n'], ['Matched', 'qt-n'], ['Signals', 'qt-n'], ['Calls', 'qt-n']],
+        daily.map((d) => ({
+          cells: [new Date(d.date + 'T12:00:00').toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' }),
+            count(d.ingested), count(d.matched), count(d.signals), count(d.calls)],
+        }))));
+    }
   }
 
   // Per-model reliability, directly under the per-topic hit rate.
@@ -2202,6 +2466,155 @@ function labelledField(control, label, help) {
   return wrap;
 }
 
+// The run's stages in order: [stage as the runner names it, label, result key].
+const RUN_STAGES = [
+  ['ingesting', 'Ingest', 'ingest'],
+  ['transcribing', 'Transcripts', 'transcribe'],
+  ['classifying', 'Classify', 'classify'],
+  ['composing', 'Compose', 'synthesize'],
+  ['extracting', 'Claims', 'extract'],
+  ['pushing', 'Push', 'push'],
+];
+
+function stageLabel(stage) {
+  return RUN_STAGES.find(([s]) => s === stage)?.[1] ?? stage;
+}
+
+// One line per stage result, the numbers that say whether it did its job.
+function stageDetail(key, r) {
+  if (!r) return '';
+  const bits = [];
+  switch (key) {
+    case 'ingest':
+      bits.push(`${r.sources_ok}/${r.sources_tried} sources`, `${count(r.items_new)} new items`);
+      if (r.items_merged) bits.push(`${r.items_merged} merged`);
+      if (r.failures?.length) bits.push(`${r.failures.length} failed`);
+      break;
+    case 'transcribe':
+      if (!r.considered) return 'No videos due.';
+      bits.push(`${r.summarized} summarized`);
+      if (r.no_captions) bits.push(`${r.no_captions} without captions`);
+      if (r.failed) bits.push(`${r.failed} failed`);
+      break;
+    case 'classify':
+      if (!r.batches) return r.items_pending ? `${count(r.items_pending)} waiting` : 'Nothing new to judge.';
+      bits.push(`${count(r.items_considered)} items`, `${count(r.batches)} batches`, `${count(r.matches_kept)} matches`);
+      if (r.repairs) bits.push(`${r.repairs} repaired`);
+      if (r.ranges_committed < r.ranges_total) bits.push(`${r.ranges_total - r.ranges_committed} batches to retry`);
+      if (r.budget_limited) bits.push(`sized to the budget, ${count(r.items_pending)} left for next run`);
+      break;
+    case 'synthesize':
+      bits.push(`${r.topics_run} topics`, `${r.signals_written} signals`, `${r.hot_signals} hot`);
+      if (r.items_uncovered) bits.push(`${r.items_uncovered} items recovered`);
+      break;
+    case 'extract':
+      if (!r.batches) return 'Nothing to extract.';
+      bits.push(`${r.claims_written} claims from ${count(r.items_considered)} items`);
+      break;
+    case 'push':
+      if (r.skipped) return r.skipped;
+      bits.push(`${r.deltas} changes`, r.sent ? 'sent' : 'not sent');
+      break;
+  }
+  return bits.join(' · ');
+}
+
+const STAGE_MARK = { done: '✓', running: '', stopped: '!', skipped: '–', pending: '' };
+const STAGE_WORD = { done: 'done', running: 'running', stopped: 'stopped', skipped: 'not run', pending: 'waiting' };
+
+function stageRow(label, state, detail, progress, elapsedMs) {
+  const li = document.createElement('li');
+  li.className = `pg-stage ${state}`;
+
+  const mark = document.createElement('span');
+  mark.className = 'pg-mark';
+  mark.setAttribute('aria-hidden', 'true');
+  mark.textContent = STAGE_MARK[state];
+
+  const name = document.createElement('span');
+  name.className = 'pg-name';
+  name.textContent = label;
+
+  const status = document.createElement('span');
+  status.className = 'pg-state';
+  status.textContent = STAGE_WORD[state] + (elapsedMs != null ? ` · ${duration(elapsedMs)}` : '');
+
+  const body = document.createElement('div');
+  body.className = 'pg-body';
+  if (progress && progress.total) {
+    const bar = document.createElement('div');
+    bar.className = 'pg-bar';
+    bar.setAttribute('role', 'progressbar');
+    bar.setAttribute('aria-valuemin', '0');
+    bar.setAttribute('aria-valuemax', String(progress.total));
+    bar.setAttribute('aria-valuenow', String(progress.done));
+    bar.setAttribute('aria-label', `${label}: ${progress.done} of ${progress.total} ${progress.unit}`);
+    const fill = document.createElement('span');
+    fill.style.width = `${Math.min(100, (progress.done / progress.total) * 100)}%`;
+    bar.append(fill);
+    const n = document.createElement('span');
+    n.className = 'pg-dim';
+    n.textContent = `${count(progress.done)} / ${count(progress.total)} ${progress.unit}`;
+    body.append(bar, n);
+  } else if (detail) {
+    body.textContent = detail;
+  }
+
+  li.append(mark, name, status, body);
+  return li;
+}
+
+// A labelled meter. No cap reads as unlimited rather than as an empty bar.
+function meter(label, used, cap) {
+  const wrap = document.createElement('div');
+  wrap.className = 'pg-meter';
+  const l = document.createElement('span');
+  l.className = 'field-label';
+  l.textContent = label;
+  const v = document.createElement('span');
+  v.className = 'pg-meter-value';
+  v.textContent = cap > 0 ? `${count(used)} / ${count(cap)}` : `${count(used)} · no cap`;
+  wrap.append(l, v);
+  if (cap > 0) {
+    const bar = document.createElement('div');
+    bar.className = 'pg-bar' + (used >= cap ? ' full' : '');
+    const fill = document.createElement('span');
+    fill.style.width = `${Math.min(100, (used / cap) * 100)}%`;
+    bar.append(fill);
+    wrap.append(bar);
+  }
+  return wrap;
+}
+
+function count(n) {
+  return Number(n || 0).toLocaleString();
+}
+
+function clock(iso) {
+  const d = new Date(iso);
+  const sameDay = d.toDateString() === new Date().toDateString();
+  return sameDay
+    ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+function duration(ms) {
+  if (!(ms >= 0)) return '';
+  const sec = Math.round(ms / 1000);
+  if (sec < 60) return `${sec}s`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ${sec % 60}s`;
+  return `${Math.floor(min / 60)}h ${min % 60}m`;
+}
+
+// Token counts run to millions; a column 62px wide needs them short.
+function compact(n) {
+  n = Number(n || 0);
+  if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(n >= 1e4 ? 0 : 1) + 'k';
+  return String(n);
+}
+
 function section(parent, title) {
   const wrap = document.createElement('section');
   wrap.className = 'screen-section';
@@ -2253,6 +2666,54 @@ function statTile(value, label) {
 
   tile.append(v, l);
   return tile;
+}
+
+const SOURCE_KIND_SHORT = { rss: 'rss', hn_search: 'hn', youtube_rss: 'youtube' };
+const ROLE_NAMES = {
+  classifier: 'Classifier', synthesizer: 'Synthesizer', chat: 'Ask', test: 'Test calls',
+  transcript: 'Transcripts', weekly: 'Weekly', extract: 'Claims', suggest: 'Suggestions',
+};
+
+// A five-column table in the quality-table style. A cell is text or an array of
+// nodes; `flag` marks the rate cell, `warn` the index of a cell to colour.
+function detailTable(label, columns, rows) {
+  const table = document.createElement('div');
+  table.className = 'quality-table';
+  table.setAttribute('role', 'table');
+  table.setAttribute('aria-label', label);
+
+  const head = document.createElement('div');
+  head.className = 'qt-row qt-head';
+  head.setAttribute('role', 'row');
+  for (const [text, cls] of columns) {
+    const cell = document.createElement('span');
+    cell.className = cls;
+    cell.setAttribute('role', 'columnheader');
+    cell.textContent = text;
+    head.append(cell);
+  }
+  table.append(head);
+
+  for (const row of rows) {
+    const tr = document.createElement('div');
+    tr.className = 'qt-row';
+    tr.setAttribute('role', 'row');
+    row.cells.forEach((value, i) => {
+      const cell = document.createElement('span');
+      cell.className = columns[i][1];
+      cell.setAttribute('role', 'cell');
+      if (Array.isArray(value)) cell.append(...value);
+      else cell.textContent = value;
+      if (row.flag && columns[i][1] === 'qt-rate') {
+        cell.classList.add('bad');
+        cell.title = 'Plenty of items, almost none matching any topic.';
+      }
+      if (row.warn === i) cell.classList.add('warn');
+      tr.append(cell);
+    });
+    table.append(tr);
+  }
+  return table;
 }
 
 // qualityRow is one topic. Flags the two shapes worth acting on: a definition

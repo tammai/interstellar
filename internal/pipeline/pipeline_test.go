@@ -3,7 +3,6 @@ package pipeline
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -814,11 +813,10 @@ func TestClassifyStatsExcludeFailedBatches(t *testing.T) {
 	}
 }
 
-// An aborted pass leaves its items unclaimed -- the watermark does not advance, so
-// the next run classifies them again. Recording this pass's denominator would count
-// those same items twice and understate every hit rate, so stats and watermark are
-// committed together or not at all.
-func TestClassifyRecordsNoStatsWhenTheCapAborts(t *testing.T) {
+// A budget of one call still makes progress, and it is attributed exactly: the
+// topic whose batch ran keeps its verdict, its stats and its cursor; the topic
+// that never got a turn records nothing and stays behind for the next run.
+func TestClassifyOnABudgetOfOneCommitsOnlyWhatRan(t *testing.T) {
 	db := testDB(t)
 	src := seedSource(t, db, "Blog")
 	first := seedTopic(t, db, "Agents", "Agent harnesses.")
@@ -826,27 +824,27 @@ func TestClassifyRecordsNoStatsWhenTheCapAborts(t *testing.T) {
 	seedItem(t, db, src, "https://x.test/a", "A post")
 
 	model := newFakeModel(t, scoreAllHigh)
-
-	// A run cap of one against two topics: one batch lands cleanly and the other
-	// is refused. The successful one is exactly the work that must not be
-	// recorded, because its items go back into the next run's window.
 	client := clientForCapped(t, db, model, 1)
 
-	if _, err := Classify(context.Background(), db, client, testConfig(), testRunDate, quietLogger()); !errors.Is(err, llm.ErrCapReached) {
-		t.Fatalf("Classify error = %v, want ErrCapReached", err)
+	res, err := Classify(context.Background(), db, client, testConfig(), testRunDate, quietLogger())
+	if err != nil {
+		t.Fatalf("Classify = %v; a budget-sized pass must not hit the cap", err)
+	}
+	if !res.BudgetLimited || res.ItemsPending != 1 {
+		t.Errorf("budget_limited=%v pending=%d, want true/1", res.BudgetLimited, res.ItemsPending)
 	}
 
-	for _, topic := range []int64{first, second} {
-		s := statsFor(t, db, topic)
-		if s.ItemsConsidered != 0 || s.Batches != 0 {
-			t.Errorf("topic %d: considered=%d batches=%d, want 0/0 — an aborted pass records nothing, "+
-				"including the batch that succeeded", topic, s.ItemsConsidered, s.Batches)
-		}
+	if s := statsFor(t, db, first); s.ItemsConsidered != 1 || s.Batches != 1 {
+		t.Errorf("first topic: considered=%d batches=%d, want 1/1", s.ItemsConsidered, s.Batches)
 	}
-
-	// And the watermark stayed put, which is what makes the re-run correct.
-	if mark, ok, _ := db.Setting(store.KeyClassifyWatermark); ok && mark != "" {
-		t.Errorf("watermark = %q, want unset after an aborted pass", mark)
+	if got, _ := db.Topic(first); got.ClassifiedThrough == "" {
+		t.Error("first topic's cursor did not move")
+	}
+	if s := statsFor(t, db, second); s.ItemsConsidered != 0 || s.Batches != 0 {
+		t.Errorf("second topic: considered=%d batches=%d, want 0/0", s.ItemsConsidered, s.Batches)
+	}
+	if got, _ := db.Topic(second); got.ClassifiedThrough != "" {
+		t.Errorf("second topic's cursor = %q, want unset: it was never asked", got.ClassifiedThrough)
 	}
 }
 
@@ -875,11 +873,7 @@ func TestClassifyStatsAccumulateAcrossPassesInADay(t *testing.T) {
 		t.Fatalf("age the second item: %v", err)
 	}
 
-	cfg2 := cfg
-	mark, _, _ := db.Setting(store.KeyClassifyWatermark)
-	cfg2.ClassifyWatermark = mark
-
-	if _, err := Classify(context.Background(), db, clientFor(t, db, model), cfg2, testRunDate, quietLogger()); err != nil {
+	if _, err := Classify(context.Background(), db, clientFor(t, db, model), cfg, testRunDate, quietLogger()); err != nil {
 		t.Fatalf("second Classify: %v", err)
 	}
 

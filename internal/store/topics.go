@@ -16,6 +16,10 @@ type Topic struct {
 	Active     bool
 	PosX       float64
 	PosY       float64
+	// ClassifiedThrough is this topic's classify cursor (store.FormatWatermark),
+	// empty when it has never been classified. Written only by
+	// CommitClassifyPass -- never by CreateTopic or UpdateTopic.
+	ClassifiedThrough string
 }
 
 // NeedsSetup reports whether the owner still has to write this topic's
@@ -37,7 +41,7 @@ func (db *DB) AllTopics() ([]Topic, error) {
 func (db *DB) topics(where, order string) ([]Topic, error) {
 	query := fmt.Sprintf(
 		`SELECT id, title, definition, priority, active,
-		        COALESCE(pos_x, 0), COALESCE(pos_y, 0)
+		        COALESCE(pos_x, 0), COALESCE(pos_y, 0), COALESCE(classified_through, '')
 		   FROM topics %s %s`, where, order)
 
 	rows, err := db.Query(query)
@@ -49,8 +53,29 @@ func (db *DB) topics(where, order string) ([]Topic, error) {
 	var out []Topic
 	for rows.Next() {
 		var t Topic
-		if err := rows.Scan(&t.ID, &t.Title, &t.Definition, &t.Priority, &t.Active, &t.PosX, &t.PosY); err != nil {
+		if err := rows.Scan(&t.ID, &t.Title, &t.Definition, &t.Priority, &t.Active, &t.PosX, &t.PosY,
+			&t.ClassifiedThrough); err != nil {
 			return nil, fmt.Errorf("scan topic: %w", err)
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// topicPositions reads only what placing a new constellation needs. Narrower than
+// AllTopics on purpose: migration tests create topics against older schemas, and
+// a column added since must not break a placement that never reads it.
+func (db *DB) topicPositions() ([]Topic, error) {
+	rows, err := db.Query(`SELECT id, COALESCE(pos_x, 0), COALESCE(pos_y, 0) FROM topics ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("topic positions: %w", err)
+	}
+	defer rows.Close()
+	var out []Topic
+	for rows.Next() {
+		var t Topic
+		if err := rows.Scan(&t.ID, &t.PosX, &t.PosY); err != nil {
+			return nil, fmt.Errorf("scan topic position: %w", err)
 		}
 		out = append(out, t)
 	}
@@ -62,9 +87,9 @@ func (db *DB) Topic(id int64) (Topic, error) {
 	var t Topic
 	err := db.QueryRow(
 		`SELECT id, title, definition, priority, active,
-		        COALESCE(pos_x, 0), COALESCE(pos_y, 0)
+		        COALESCE(pos_x, 0), COALESCE(pos_y, 0), COALESCE(classified_through, '')
 		   FROM topics WHERE id = ?`, id,
-	).Scan(&t.ID, &t.Title, &t.Definition, &t.Priority, &t.Active, &t.PosX, &t.PosY)
+	).Scan(&t.ID, &t.Title, &t.Definition, &t.Priority, &t.Active, &t.PosX, &t.PosY, &t.ClassifiedThrough)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Topic{}, ErrNotFound
 	}
@@ -78,7 +103,7 @@ func (db *DB) Topic(id int64) (Topic, error) {
 // given.
 func (db *DB) CreateTopic(t Topic) (int64, error) {
 	if t.PosX == 0 && t.PosY == 0 {
-		existing, err := db.AllTopics()
+		existing, err := db.topicPositions()
 		if err != nil {
 			return 0, err
 		}

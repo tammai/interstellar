@@ -35,6 +35,9 @@ type State struct {
 	// provider that never came back. Empty when the last run was clean. §10
 	// requires the cap to "surface a UI banner", and this is it.
 	Banner string `json:"banner,omitempty"`
+	// StoppedAt is the stage the banner was raised in, so the Schedule screen can
+	// mark that stage rather than guess from which results are missing.
+	StoppedAt Stage `json:"stopped_at,omitempty"`
 
 	Ingest     *IngestResult     `json:"ingest,omitempty"`
 	Transcribe *TranscribeResult `json:"transcribe,omitempty"`
@@ -43,6 +46,17 @@ type State struct {
 	Extract    *ExtractResult    `json:"extract,omitempty"`
 	Push       *PushResult       `json:"push,omitempty"`
 	LLMCalls   int               `json:"llm_calls"`
+
+	// Progress is the current stage's count, live while it runs, and
+	// StageStartedAt when that stage began. Both exist for the Schedule screen,
+	// which draws a run as it happens rather than only once it is over: a first
+	// run over many sources takes minutes, and "classifying…" for minutes with no
+	// number beside it reads as hung.
+	Progress       *Progress  `json:"progress,omitempty"`
+	StageStartedAt *time.Time `json:"stage_started_at,omitempty"`
+	// CallCapRun is the per-run cap this run is spending against, fixed when the
+	// run's client is built.
+	CallCapRun int `json:"call_cap_run,omitempty"`
 }
 
 // Running reports whether a run is in flight.
@@ -65,6 +79,9 @@ type Runner struct {
 
 	mu    sync.Mutex
 	state State
+	// guard is the running client's spend guard, so a progress report can carry
+	// the live call count without every stage reporting it. Nil outside a run.
+	guard *llm.Guard
 	// cancel stops an in-flight run on shutdown.
 	cancel context.CancelFunc
 }
@@ -92,7 +109,7 @@ func (r *Runner) Start(reason string) error {
 	now := time.Now()
 	ctx, cancel := context.WithCancel(context.Background())
 	r.cancel = cancel
-	r.state = State{Stage: StageIngesting, StartedAt: &now}
+	r.state = State{Stage: StageIngesting, StartedAt: &now, StageStartedAt: &now}
 	r.mu.Unlock()
 
 	r.log.Info("run started", "reason", reason)
@@ -125,7 +142,7 @@ func (r *Runner) RunNow(ctx context.Context, reason string) error {
 	now := time.Now()
 	runCtx, cancel := context.WithCancel(ctx)
 	r.cancel = cancel
-	r.state = State{Stage: StageIngesting, StartedAt: &now}
+	r.state = State{Stage: StageIngesting, StartedAt: &now, StageStartedAt: &now}
 	r.mu.Unlock()
 
 	defer cancel()
@@ -145,8 +162,20 @@ func (r *Runner) execute(ctx context.Context) {
 		ended := time.Now()
 		r.state.Stage = StageIdle
 		r.state.EndedAt = &ended
+		r.state.Progress = nil
+		r.state.StageStartedAt = nil
+		r.guard = nil
 		r.mu.Unlock()
 	}()
+
+	ctx = withProgress(ctx, func(p Progress) {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		r.state.Progress = &p
+		if r.guard != nil {
+			r.state.LLMCalls = r.guard.UsedThisRun()
+		}
+	})
 
 	cfg, err := config.Load(r.db)
 	if err != nil {
@@ -179,12 +208,19 @@ func (r *Runner) execute(ctx context.Context) {
 		return
 	}
 	if !llmCfg.Ready() {
+		// Recorded against the first model stage, which is the one that could not
+		// start: ingest itself finished.
+		r.setStage(StageTranscribing)
 		r.finishWithBanner(readinessBanner(llmCfg))
 		return
 	}
 
 	runDate := store.RunDate(time.Now().In(r.env.Location))
 	client := llm.NewClient(llmCfg, r.db, runDate, r.log)
+	r.mu.Lock()
+	r.guard = client.Guard()
+	r.state.CallCapRun = llmCfg.MaxCallsPerRun
+	r.mu.Unlock()
 
 	// --- transcripts ---
 	//
@@ -291,8 +327,11 @@ func (r *Runner) execute(ctx context.Context) {
 }
 
 func (r *Runner) setStage(s Stage) {
+	now := time.Now()
 	r.mu.Lock()
 	r.state.Stage = s
+	r.state.StageStartedAt = &now
+	r.state.Progress = nil
 	r.mu.Unlock()
 }
 
@@ -320,6 +359,7 @@ func (r *Runner) fail(what string, err error) {
 func (r *Runner) finishWithBanner(banner string) {
 	r.mu.Lock()
 	r.state.Banner = banner
+	r.state.StoppedAt = r.state.Stage
 	r.mu.Unlock()
 }
 

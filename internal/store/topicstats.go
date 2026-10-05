@@ -14,18 +14,18 @@ type TopicStat struct {
 	Batches         int
 }
 
-// CommitClassifyPass records a finished pass: the per-topic stats, and the
-// watermark saying those items are done with.
+// CommitClassifyPass records a pass: the per-topic stats, and each topic's cursor
+// saying which items it is done with.
 //
 // One transaction, because the two must move together. Stats written without the
-// watermark would count the same items again on the next run -- inflating every
-// denominator and quietly understating every hit rate -- and a watermark written
+// cursor would count the same items again on the next run -- inflating every
+// denominator and quietly understating every hit rate -- and a cursor written
 // without the stats would lose the pass entirely with no way to recompute it.
 //
-// watermark may be empty, meaning "unchanged"; stats may be empty, meaning the
-// pass classified nothing.
-func (db *DB) CommitClassifyPass(runDate string, stats []TopicStat, watermark string) error {
-	if len(stats) == 0 && watermark == "" {
+// cursors holds only the topics whose cursor moved; stats may be empty, meaning
+// the pass classified nothing.
+func (db *DB) CommitClassifyPass(runDate string, stats []TopicStat, cursors map[int64]string) error {
+	if len(stats) == 0 && len(cursors) == 0 {
 		return nil
 	}
 
@@ -37,7 +37,7 @@ func (db *DB) CommitClassifyPass(runDate string, stats []TopicStat, watermark st
 
 	for _, s := range stats {
 		// Accumulate rather than replace: a day can hold several passes, each
-		// seeing only what the watermark had not already covered.
+		// seeing only what the cursors had not already covered.
 		if _, err := tx.Exec(
 			`INSERT INTO topic_stats
 			        (run_date, topic_id, items_considered, matches_kept, batches)
@@ -53,13 +53,11 @@ func (db *DB) CommitClassifyPass(runDate string, stats []TopicStat, watermark st
 		}
 	}
 
-	if watermark != "" {
+	for topicID, cursor := range cursors {
 		if _, err := tx.Exec(
-			`INSERT INTO settings (key, value) VALUES (?, ?)
-			 ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-			KeyClassifyWatermark, watermark,
+			`UPDATE topics SET classified_through = ? WHERE id = ?`, cursor, topicID,
 		); err != nil {
-			return fmt.Errorf("advance classify watermark: %w", err)
+			return fmt.Errorf("advance classify cursor for topic %d: %w", topicID, err)
 		}
 	}
 

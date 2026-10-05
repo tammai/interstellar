@@ -217,7 +217,10 @@ func Extract(
 		itemByID[it.ID] = it
 	}
 
+	finished := 0
 	for out := range results {
+		finished++
+		reportProgress(ctx, finished, len(queue), "batches")
 		if out.err != nil {
 			if errors.Is(out.err, llm.ErrCapReached) || errors.Is(out.err, context.Canceled) ||
 				errors.Is(out.err, context.DeadlineExceeded) {
@@ -323,17 +326,13 @@ func Extract(
 	}
 	result.BatchesCommitted = prefix
 
+	// The prefix's last item is the cursor, as in classify -- a timestamp alone can
+	// land inside a same-second group and skip the rest of it. See
+	// store.FormatWatermark.
 	watermark := ""
 	if prefix > 0 {
-		high := cfg.ExtractWatermark
-		for _, it := range items[:queue[prefix-1].end] {
-			if it.FetchedAt > high {
-				high = it.FetchedAt
-			}
-		}
-		if high != cfg.ExtractWatermark {
-			watermark = high
-		}
+		last := items[queue[prefix-1].end-1]
+		watermark = store.FormatWatermark(last.FetchedAt, last.ID)
 	}
 
 	if err := db.CommitExtractPass(claims, sightings, watermark); err != nil {

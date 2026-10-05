@@ -3,6 +3,9 @@ package store
 import (
 	"errors"
 	"fmt"
+	"math"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -114,16 +117,17 @@ func (db *DB) ItemSourceNames(itemID int64) ([]string, error) {
 	return out, rows.Err()
 }
 
-// ItemsSince returns items fetched after the watermark, oldest first. This is
-// the classifier's work queue: an empty watermark means everything.
+// ItemsSince returns items after the watermark, oldest first. This is the
+// classifier's work queue: an empty watermark means everything.
 func (db *DB) ItemsSince(watermark string, limit int) ([]ClassifiableItem, error) {
+	at, id := ParseWatermark(watermark)
 	query := `SELECT i.id, i.title, COALESCE(i.summary, ''), i.fetched_at,
 	                 COALESCE((SELECT s.name FROM sources s WHERE s.id = i.source_id), '')
 	            FROM items i
-	           WHERE i.fetched_at > ?
+	           WHERE (i.fetched_at, i.id) > (?, ?)
 	           ORDER BY i.fetched_at, i.id
 	           LIMIT ?`
-	rows, err := db.Query(query, watermark, limit)
+	rows, err := db.Query(query, at, id, limit)
 	if err != nil {
 		return nil, fmt.Errorf("items since %q: %w", watermark, err)
 	}
@@ -138,6 +142,64 @@ func (db *DB) ItemsSince(watermark string, limit int) ([]ClassifiableItem, error
 		out = append(out, it)
 	}
 	return out, rows.Err()
+}
+
+// CountItemsSince counts what is still waiting behind a watermark -- the backlog a
+// budget-limited pass left for the next run.
+func (db *DB) CountItemsSince(watermark string) (int, error) {
+	at, id := ParseWatermark(watermark)
+	var n int
+	err := db.QueryRow(
+		`SELECT count(*) FROM items WHERE (fetched_at, id) > (?, ?)`, at, id).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count items since %q: %w", watermark, err)
+	}
+	return n, nil
+}
+
+// FormatWatermark is the classify and extract cursor: the last item a pass
+// claimed, as fetched_at AND id.
+//
+// fetched_at alone is not a position. It has second resolution and ingest writes a
+// feed's items inside one second -- 135 of them in one second on a real instance --
+// while a pass checkpoints every 30. A timestamp-only mark that landed inside such
+// a group made `fetched_at > mark` skip the rest of the group forever, which is the
+// silent loss the prefix rule exists to prevent arriving by a different door.
+// (fetched_at, id) is the same order ItemsSince reads in, so it is exact.
+func FormatWatermark(fetchedAt string, id int64) string {
+	return fmt.Sprintf("%s#%d", fetchedAt, id)
+}
+
+// LaterWatermark returns whichever of two watermarks is further along. An empty
+// one is the start of time.
+func LaterWatermark(a, b string) string {
+	if a == "" {
+		return b
+	}
+	if b == "" {
+		return a
+	}
+	aAt, aID := ParseWatermark(a)
+	bAt, bID := ParseWatermark(b)
+	if aAt > bAt || (aAt == bAt && aID >= bID) {
+		return a
+	}
+	return b
+}
+
+// ParseWatermark splits a stored watermark into its cursor.
+//
+// A bare timestamp is the pre-cursor format, still in every upgraded instance's
+// settings. It meant "everything up to and including this second", so it reads as
+// that second with an id no item can exceed -- the upgrade re-reads nothing and
+// skips nothing it did not already skip.
+func ParseWatermark(s string) (fetchedAt string, id int64) {
+	if i := strings.LastIndexByte(s, '#'); i >= 0 {
+		if n, err := strconv.ParseInt(s[i+1:], 10, 64); err == nil {
+			return s[:i], n
+		}
+	}
+	return s, math.MaxInt64
 }
 
 // ClassifiableItem is the projection the classifier prompt needs -- deliberately

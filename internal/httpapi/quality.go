@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/tammai/interstellar/internal/config"
 	"github.com/tammai/interstellar/internal/store"
 )
 
@@ -111,4 +112,34 @@ func (s *Server) handleModelStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.json(w, http.StatusOK, out)
+}
+
+// handleQualityDetail serves the funnel, per-source yield, spend by role and the
+// per-day breakdown under the hit-rate table. Same ?days= window, so everything on
+// the screen is read over one span.
+func (s *Server) handleQualityDetail(w http.ResponseWriter, r *http.Request) {
+	days := qualityWindowDefault
+	if raw := r.URL.Query().Get("days"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > qualityWindowMax {
+			s.error(w, http.StatusBadRequest, "days must be a whole number between 1 and 365", nil)
+			return
+		}
+		days = n
+	}
+
+	cfg, err := config.Load(s.DB)
+	if err != nil {
+		s.error(w, http.StatusInternalServerError, "could not read settings", err)
+		return
+	}
+	detail, err := s.DB.QualityDetailOver(days, cfg.HotThreshold)
+	if err != nil {
+		s.error(w, http.StatusInternalServerError, "could not read quality detail", err)
+		return
+	}
+	s.json(w, http.StatusOK, struct {
+		Days int `json:"days"`
+		store.QualityDetail
+	}{days, detail})
 }

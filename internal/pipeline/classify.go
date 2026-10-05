@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/tammai/interstellar/internal/config"
 	"github.com/tammai/interstellar/internal/llm"
@@ -16,8 +17,14 @@ import (
 
 // classifyWindowLimit caps how many items one pass will consider. A safety net,
 // not a normal path: at ~250 items/day the watermark keeps batches small, but a
-// first run against a fresh volume can pull a source's entire backlog.
+// first run against a fresh volume can pull a source's entire backlog. The call
+// budget usually binds first -- see classifyBudget.
 const classifyWindowLimit = 2000
+
+// composeCallsPerTopic is the budget classify leaves for compose: one call per
+// topic plus its one repair. Compose runs after classify on the same per-run cap,
+// and a classify pass that spends all of it leaves a backlog run with no sky.
+const composeCallsPerTopic = 2
 
 // maxSummaryChars truncates summaries in the prompt. Relevance is decided by
 // the first couple of sentences; the rest is tokens billed per topic per batch.
@@ -38,12 +45,17 @@ type ClassifyResult struct {
 	TopicsRun       int `json:"topics_run"`
 	Batches         int `json:"batches"`
 	MatchesKept     int `json:"matches_kept"`
-	// RangesCommitted/RangesTotal say how much of the window the watermark could
-	// claim. Anything short of the total means a topic failed and those items will
-	// be offered again next run -- worth surfacing, because it is also the shape of
-	// a stalled watermark.
-	RangesCommitted int      `json:"ranges_committed"`
-	RangesTotal     int      `json:"ranges_total"`
+	// RangesCommitted/RangesTotal count batches: how many the topics' cursors could
+	// claim, out of how many were queued. Anything short of the total means a batch
+	// failed and its items will be offered again next run -- worth surfacing,
+	// because it is also the shape of a stalled cursor.
+	RangesCommitted int `json:"ranges_committed"`
+	RangesTotal     int `json:"ranges_total"`
+	// BudgetLimited means the queue was cut to fit the run's remaining call budget,
+	// and ItemsPending is how many distinct items some topic has yet to judge.
+	// Together they are the difference between "caught up" and "catching up".
+	BudgetLimited   bool     `json:"budget_limited,omitempty"`
+	ItemsPending    int      `json:"items_pending"`
 	VerdictsDropped int      `json:"verdicts_dropped"`
 	Repairs         int      `json:"repairs"`
 	Problems        []string `json:"problems,omitempty"`
@@ -93,63 +105,107 @@ func Classify(
 		return result, nil
 	}
 
-	items, err := db.ItemsSince(cfg.ClassifyWatermark, classifyWindowLimit)
-	if err != nil {
-		return result, err
-	}
-	result.ItemsConsidered = len(items)
-	if len(items) == 0 {
-		return result, nil
-	}
-
 	batchSize := cfg.ClassifyBatchSize
 	if batchSize <= 0 {
 		batchSize = 30
 	}
 
-	// Track the high-water mark as we go, but only commit it if the whole pass
-	// completes. A partial pass that advanced the watermark would silently skip
-	// items forever.
-	highWater := cfg.ClassifyWatermark
+	budget, limited, err := classifyBudget(client, len(ready))
+	if err != nil {
+		return result, err
+	}
+	floor := classifyFloor(cfg)
 
-	// Every (topic, batch) pair is independent, so build the whole work list and
-	// run it through a bounded pool. Sequentially this is topics x batches round
-	// trips end to end -- measured at ~25s each against a real provider, which
-	// blows §10's three-minute budget several times over before the day's second
-	// topic is finished.
-	// Item ranges are identical for every topic, so a range index identifies "this
-	// slice of items" across all of them. That is what makes it possible to tell
-	// whether a slice has been judged by everyone, which the watermark depends on.
+	// Each topic reads from its own cursor. On an ordinary day they all sit at the
+	// same place and read the same items; a topic that was added, resumed or given
+	// its definition since the last run sits further back and reads more -- that is
+	// the backfill, and it costs only that topic's calls. The floor stops a topic
+	// paused for months from re-reading all of it: nothing older than the sky's
+	// window can reach the sky.
 	type itemRange struct{ start, end int }
-	var ranges []itemRange
-	for start := 0; start < len(items); start += batchSize {
-		ranges = append(ranges, itemRange{start: start, end: min(start+batchSize, len(items))})
+	type lane struct {
+		topic  store.Topic
+		items  []store.ClassifiableItem
+		ranges []itemRange
+		// done[i] is whether range i came back with verdicts. The cursor moves over
+		// the unbroken prefix of these, and nothing else.
+		done []bool
+	}
+	lanes := make([]*lane, 0, len(ready))
+	for _, t := range ready {
+		items, err := db.ItemsSince(store.LaterWatermark(t.ClassifiedThrough, floor), classifyWindowLimit)
+		if err != nil {
+			return result, err
+		}
+		l := &lane{topic: t, items: items}
+		for start := 0; start < len(items); start += batchSize {
+			l.ranges = append(l.ranges, itemRange{start: start, end: min(start+batchSize, len(items))})
+		}
+		l.done = make([]bool, len(l.ranges))
+		lanes = append(lanes, l)
 	}
 
+	// Round-robin by range: every topic's range 0, then every topic's range 1.
+	//
+	// The order is what makes an aborted pass worth anything, since a cursor only
+	// moves over a prefix. Topic-major order -- topic 1 through its whole window,
+	// then topic 2 -- meant a pass the cap stopped part-way had committed nothing
+	// for the later topics, and a first run over a big backlog aborted, re-ran from
+	// the beginning, and aborted in the same place every time. It is also what
+	// keeps a backfilling topic from starving the others: their few ranges of new
+	// items are all in the first rounds, and the catch-up runs on after them.
 	type work struct {
-		topic    store.Topic
-		batch    []store.ClassifiableItem
+		lane     int
 		rangeIdx int
 	}
 	var queue []work
-	for _, topic := range ready {
-		result.TopicsRun++
-		for i, r := range ranges {
-			queue = append(queue, work{topic: topic, batch: items[r.start:r.end], rangeIdx: i})
+	for i := 0; ; i++ {
+		added := false
+		for li, l := range lanes {
+			if i < len(l.ranges) {
+				queue = append(queue, work{lane: li, rangeIdx: i})
+				added = true
+			}
+		}
+		if !added {
+			break
 		}
 	}
-	result.Batches = len(queue)
+	if limited && len(queue) > budget {
+		queue = queue[:budget]
+		result.BudgetLimited = true
+	}
 
+	result.TopicsRun = len(ready)
+	result.Batches = len(queue)
+	result.RangesTotal = len(queue)
+	distinct := map[int64]bool{}
+	for _, w := range queue {
+		l := lanes[w.lane]
+		r := l.ranges[w.rangeIdx]
+		for _, it := range l.items[r.start:r.end] {
+			distinct[it.ID] = true
+		}
+	}
+	result.ItemsConsidered = len(distinct)
+	if len(queue) == 0 {
+		return result, nil
+	}
+
+	// Every (topic, batch) pair is independent, so the whole work list runs through
+	// a bounded pool. Sequentially this is topics x batches round trips end to end
+	// -- measured at ~25s each against a real provider, which blows §10's
+	// three-minute budget several times over before the day's second topic is
+	// finished.
 	type outcome struct {
 		matches  []store.Match
 		dropped  int
 		repaired bool
-		topic    string
-		topicID  int64
+		lane     int
+		rangeIdx int
 		// considered is the batch size, carried so per-topic stats can count only
 		// the batches that actually came back parseable.
 		considered int
-		rangeIdx   int
 		err        error
 	}
 
@@ -162,15 +218,17 @@ func Classify(
 		go func() {
 			defer wg.Done()
 			for w := range jobs {
-				verdicts, dropped, repaired, err := classifyBatch(ctx, client, w.topic, w.batch, log)
+				l := lanes[w.lane]
+				r := l.ranges[w.rangeIdx]
+				batch := l.items[r.start:r.end]
+				verdicts, dropped, repaired, err := classifyBatch(ctx, client, l.topic, batch, log)
 				out := outcome{
 					dropped:    dropped,
 					repaired:   repaired,
 					err:        err,
-					topic:      w.topic.Title,
-					topicID:    w.topic.ID,
-					considered: len(w.batch),
+					lane:       w.lane,
 					rangeIdx:   w.rangeIdx,
+					considered: len(batch),
 				}
 				if err == nil {
 					// verdicts are already whitelisted and deduplicated against
@@ -183,7 +241,7 @@ func Classify(
 						}
 						out.matches = append(out.matches, store.Match{
 							ItemID:  v.ItemID,
-							TopicID: w.topic.ID,
+							TopicID: l.topic.ID,
 							Score:   v.Score,
 							Reason:  strings.TrimSpace(v.Reason),
 						})
@@ -213,35 +271,35 @@ func Classify(
 	// All database writes happen here, on one goroutine.
 	//
 	// Successful batches are buffered rather than folded into stats immediately,
-	// because whether their work counts depends on something not known until every
-	// batch has landed: how far the watermark can move. See the prefix calculation
-	// below.
+	// because whether their work counts on an aborted pass depends on how far each
+	// cursor can move, which is not known until every batch has landed.
 	type success struct {
-		topicID    int64
+		lane       int
 		rangeIdx   int
 		considered int
 		matches    int
 	}
 	var successes []success
-	// judged[rangeIdx] counts how many topics returned a verdict for that slice.
-	judged := make([]int, len(ranges))
 
 	var fatal error
+	finished := 0
 	for out := range results {
+		finished++
+		reportProgress(ctx, finished, len(queue), "batches")
+		topic := lanes[out.lane].topic
 		if out.err != nil {
 			if errors.Is(out.err, llm.ErrCapReached) || errors.Is(out.err, context.Canceled) ||
 				errors.Is(out.err, context.DeadlineExceeded) {
 				// The guard stopping a run, or a shutdown. Keep draining so the
-				// workers can exit, but remember to stop afterwards without
-				// advancing the watermark.
+				// workers can exit, then commit what was finished and stop.
 				if fatal == nil {
 					fatal = out.err
 				}
 				continue
 			}
-			log.Warn("classify batch failed", "topic", out.topic, "err", out.err)
+			log.Warn("classify batch failed", "topic", topic.Title, "err", out.err)
 			result.Problems = append(result.Problems,
-				fmt.Sprintf("topic %q: %v", out.topic, out.err))
+				fmt.Sprintf("topic %q: %v", topic.Title, out.err))
 			continue
 		}
 		if out.repaired {
@@ -255,62 +313,45 @@ func Classify(
 		result.MatchesKept += len(out.matches)
 
 		successes = append(successes, success{
-			topicID: out.topicID, rangeIdx: out.rangeIdx,
+			lane: out.lane, rangeIdx: out.rangeIdx,
 			considered: out.considered, matches: len(out.matches),
 		})
-		judged[out.rangeIdx]++
-	}
-	if fatal != nil {
-		// Deliberately no stats and no watermark. An aborted pass leaves its items
-		// unclaimed, so the next run classifies them again -- recording this pass's
-		// denominator now would count those items twice and understate the topic.
-		return result, fatal
+		lanes[out.lane].done[out.rangeIdx] = true
 	}
 
-	// The watermark may only pass items EVERY ready topic has judged.
+	// A topic's cursor may only pass items that topic has judged, so it moves over
+	// the unbroken prefix of its ranges and stops at the first gap.
 	//
-	// It is a single high-water mark, so it can only move over an unbroken prefix:
-	// if the first slice went unjudged by one topic, nothing behind it can be
-	// claimed either. Advancing regardless -- which is what this did before -- left
-	// a permanent hole in that topic's coverage, visible only as a topic that
-	// mysteriously matches nothing.
+	// Advancing regardless -- which the single shared watermark once did -- left a
+	// permanent hole in that topic's coverage, visible only as a topic that
+	// mysteriously matches nothing. The cost of the honest version is that a topic
+	// failing persistently re-classifies the same items every run. That is the
+	// right way round: it is bounded by the call cap, it is loud (a problem reported
+	// every run, and a zero in the hit-rate view), and it now stalls only the topic
+	// that is failing -- the others' cursors are their own.
 	//
-	// The cost of the honest version is that a topic failing persistently on the
-	// first slice stalls the watermark and re-classifies the same items every run.
-	// That is the right way round: it is bounded by the per-run call cap, it is
-	// loud (a problem reported every run, and a zero in the hit-rate view), and §10
-	// gates the classifier on 100% JSON parsing precisely so this path stays rare.
-	// Silent data loss is neither bounded nor visible.
-	prefix := len(ranges)
-	for i, n := range judged {
-		if n < len(ready) {
-			prefix = i
-			break
-		}
-	}
-	result.RangesCommitted = prefix
-	result.RangesTotal = len(ranges)
-
-	if prefix > 0 {
-		for _, it := range items[:ranges[prefix-1].end] {
-			if it.FetchedAt > highWater {
-				highWater = it.FetchedAt
+	// Items are read in (fetched_at, id) order, so a prefix's last item is the
+	// cursor -- see store.FormatWatermark for why a timestamp alone is not.
+	prefix := make([]int, len(lanes))
+	cursors := map[int64]string{}
+	for li, l := range lanes {
+		prefix[li] = len(l.done)
+		for i, ok := range l.done {
+			if !ok {
+				prefix[li] = i
+				break
 			}
 		}
+		result.RangesCommitted += prefix[li]
+		if prefix[li] > 0 {
+			last := l.items[l.ranges[prefix[li]-1].end-1]
+			cursors[l.topic.ID] = store.FormatWatermark(last.FetchedAt, last.ID)
+		}
 	}
 
-	watermark := ""
-	if highWater != cfg.ClassifyWatermark {
-		watermark = highWater
-	}
-
-	// Stats cover EVERY successful batch, including ones behind an unadvanced
-	// watermark -- deliberately unlike the aborted-pass path, which records nothing.
-	//
-	// The distinction is what can be attributed. An aborted pass has no idea how much
-	// of the window it got through, so counting any of it is guesswork. A partially
-	// judged pass knows exactly what each topic did, and that is real work worth
-	// showing.
+	// Stats cover EVERY successful batch of a completed pass, including ones behind
+	// a cursor that could not move. A partially judged pass knows exactly what each
+	// topic did, and that is real work worth showing.
 	//
 	// The first version of this gated stats on the prefix too, and the result was
 	// perverse: one topic failing on the first slice blanked the hit-rate view for
@@ -318,14 +359,23 @@ func Classify(
 	// failing one. Re-classifying a slice next run does double-count it -- but it
 	// double-counts numerator and denominator together, so the rate the view exists
 	// to show is unchanged.
+	//
+	// An ABORTED pass counts only the prefixes it commits. The ranges behind them go
+	// back into the next run's window, and with round-robin order they are the
+	// batches still in flight when the cap landed -- so leaving them out costs a
+	// handful of batches of stats, and counting them would count them twice.
 	stats := map[int64]*store.TopicStat{}
 	statOrder := make([]int64, 0, len(ready))
 	for _, sc := range successes {
-		st := stats[sc.topicID]
+		if fatal != nil && sc.rangeIdx >= prefix[sc.lane] {
+			continue
+		}
+		id := lanes[sc.lane].topic.ID
+		st := stats[id]
 		if st == nil {
-			st = &store.TopicStat{TopicID: sc.topicID}
-			stats[sc.topicID] = st
-			statOrder = append(statOrder, sc.topicID)
+			st = &store.TopicStat{TopicID: id}
+			stats[id] = st
+			statOrder = append(statOrder, id)
 		}
 		st.ItemsConsidered += sc.considered
 		st.MatchesKept += sc.matches
@@ -336,8 +386,21 @@ func Classify(
 	for _, id := range statOrder {
 		pass = append(pass, *stats[id])
 	}
-	if err := db.CommitClassifyPass(runDate, pass, watermark); err != nil {
+	if err := db.CommitClassifyPass(runDate, pass, cursors); err != nil {
 		return result, err
+	}
+
+	_, pending, err := ClassifyBacklog(db, cfg)
+	if err != nil {
+		return result, err
+	}
+	result.ItemsPending = pending
+
+	if fatal != nil {
+		log.Warn("classify stopped; finished ranges committed",
+			"batches", result.RangesCommitted, "of", result.RangesTotal,
+			"pending", result.ItemsPending, "err", fatal)
+		return result, fatal
 	}
 
 	log.Info("classify complete",
@@ -347,8 +410,101 @@ func Classify(
 		"matches", result.MatchesKept,
 		"dropped", result.VerdictsDropped,
 		"repairs", result.Repairs,
+		"pending", result.ItemsPending,
 	)
 	return result, nil
+}
+
+// classifyBudget is how many classifier calls this pass may make: what the run's
+// remaining budget affords after compose's share.
+//
+// A full first-run window across seven topics is hundreds of calls -- more than
+// the seeded per-run cap of 400, before compose has spent anything. Discovering
+// that by hitting the cap meant a first run over many sources never reached the
+// sky. So the pass takes what the budget affords and the rest waits for the next
+// run, with the cursors saying exactly where.
+//
+// It always allows at least one batch, so a pass makes progress even when the
+// budget is nearly gone; if that overruns, the abort path commits what finished.
+// The estimate counts one call per batch -- repairs and fallback hops cost more,
+// and that is also what the abort path is for.
+func classifyBudget(client *llm.Client, topics int) (calls int, limited bool, err error) {
+	left, capped, err := client.RunBudgetLeft()
+	if err != nil || !capped {
+		return 0, false, err
+	}
+	return max(left-composeCallsPerTopic*topics, 1), true, nil
+}
+
+// classifyFloor is the oldest item a topic will catch up on: the sky's window. A
+// matched item older than that cannot reach a star, so judging it would spend
+// calls on nothing the owner can see.
+func classifyFloor(cfg config.Runtime) string {
+	days := cfg.SkyDays
+	if days <= 0 {
+		days = 7
+	}
+	at := time.Now().UTC().AddDate(0, 0, -days).Format(time.DateTime)
+	return store.FormatWatermark(at, 0)
+}
+
+// TopicBacklog is how far one topic is from caught up.
+type TopicBacklog struct {
+	TopicID int64  `json:"topic_id"`
+	Title   string `json:"title"`
+	Pending int    `json:"pending"`
+	// CatchingUp marks a topic behind the others -- added, resumed or given its
+	// definition since they last ran -- as opposed to one simply waiting on new
+	// items like everyone else.
+	CatchingUp bool `json:"catching_up"`
+}
+
+// ClassifyBacklog reports, per ready topic, how many items it has yet to judge,
+// and how many distinct items are waiting for at least one topic.
+//
+// It reads the same cursors and floor the classify pass does, so the number on
+// screen is the number the next run will work through.
+func ClassifyBacklog(db *store.DB, cfg config.Runtime) ([]TopicBacklog, int, error) {
+	topics, err := db.ActiveTopics()
+	if err != nil {
+		return nil, 0, err
+	}
+	floor := classifyFloor(cfg)
+
+	var ready []store.Topic
+	lead := ""
+	for _, t := range topics {
+		if t.NeedsSetup() {
+			continue
+		}
+		ready = append(ready, t)
+		lead = store.LaterWatermark(lead, t.ClassifiedThrough)
+	}
+
+	out := make([]TopicBacklog, 0, len(ready))
+	earliest := ""
+	for _, t := range ready {
+		start := store.LaterWatermark(t.ClassifiedThrough, floor)
+		n, err := db.CountItemsSince(start)
+		if err != nil {
+			return nil, 0, err
+		}
+		out = append(out, TopicBacklog{
+			TopicID: t.ID, Title: t.Title, Pending: n,
+			CatchingUp: n > 0 && t.ClassifiedThrough != lead,
+		})
+		if earliest == "" || store.LaterWatermark(earliest, start) == earliest {
+			earliest = start
+		}
+	}
+	if earliest == "" {
+		return out, 0, nil
+	}
+	total, err := db.CountItemsSince(earliest)
+	if err != nil {
+		return nil, 0, err
+	}
+	return out, total, nil
 }
 
 // classifyBatch runs one topic against one batch, with a single repair attempt if
