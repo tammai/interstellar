@@ -1,6 +1,9 @@
 package store
 
-import "fmt"
+import (
+	"database/sql"
+	"fmt"
+)
 
 // Settings keys. Everything the owner can change lives here rather than in env,
 // because §3.1 requires changes to take effect without a restart.
@@ -447,8 +450,18 @@ var seedSources = []struct {
 	{"youtube_rss", "YouTube · add your channel ID", `{"channel_id":""}`, false},
 }
 
+// Seed markers record that a table has had its defaults, so they arrive once per
+// database rather than whenever the table is empty. Without them an owner who
+// deleted every topic or source to start clean got the full default list back on
+// the next restart. Migration 012 sets both on databases that predate them.
+const (
+	keySeededTopics  = "seeded_topics"
+	keySeededSources = "seeded_sources"
+)
+
 // Bootstrap fills an empty database. Each section is independently guarded, so
-// this is safe to run on every boot and will not resurrect rows the owner deleted.
+// this is safe to run on every boot and will not resurrect rows the owner deleted
+// -- including all of them.
 func (db *DB) Bootstrap() error {
 	if err := db.seedSettings(); err != nil {
 		return err
@@ -478,17 +491,9 @@ func (db *DB) seedSettings() error {
 }
 
 func (db *DB) seedTopics() error {
-	var n int
-	if err := db.QueryRow("SELECT count(*) FROM topics").Scan(&n); err != nil {
-		return fmt.Errorf("count topics: %w", err)
-	}
-	if n > 0 {
-		return nil
-	}
-
-	tx, err := db.Begin()
-	if err != nil {
-		return fmt.Errorf("seed topics: begin: %w", err)
+	tx, proceed, err := db.beginSeed("topics", keySeededTopics)
+	if err != nil || !proceed {
+		return err
 	}
 	defer tx.Rollback()
 
@@ -506,17 +511,9 @@ func (db *DB) seedTopics() error {
 }
 
 func (db *DB) seedSources() error {
-	var n int
-	if err := db.QueryRow("SELECT count(*) FROM sources").Scan(&n); err != nil {
-		return fmt.Errorf("count sources: %w", err)
-	}
-	if n > 0 {
-		return nil
-	}
-
-	tx, err := db.Begin()
-	if err != nil {
-		return fmt.Errorf("seed sources: begin: %w", err)
+	tx, proceed, err := db.beginSeed("sources", keySeededSources)
+	if err != nil || !proceed {
+		return err
 	}
 	defer tx.Rollback()
 
@@ -534,4 +531,34 @@ func (db *DB) seedSources() error {
 		}
 	}
 	return tx.Commit()
+}
+
+// beginSeed decides whether a table gets its defaults, and opens the transaction
+// they go in with the marker already written -- so the rows and the record that
+// they were seeded commit together or not at all.
+//
+// A table that already has rows is marked and left alone: whatever is there is the
+// owner's, seeded or not. proceed is false whenever there is nothing to insert, and
+// the returned transaction is then nil.
+func (db *DB) beginSeed(table, marker string) (tx *sql.Tx, proceed bool, err error) {
+	if _, done, err := db.Setting(marker); err != nil || done {
+		return nil, false, err
+	}
+	var n int
+	if err := db.QueryRow("SELECT count(*) FROM " + table).Scan(&n); err != nil {
+		return nil, false, fmt.Errorf("count %s: %w", table, err)
+	}
+
+	tx, err = db.Begin()
+	if err != nil {
+		return nil, false, fmt.Errorf("seed %s: begin: %w", table, err)
+	}
+	if _, err := tx.Exec(`INSERT INTO settings (key, value) VALUES (?, '1')`, marker); err != nil {
+		tx.Rollback()
+		return nil, false, fmt.Errorf("mark %s seeded: %w", table, err)
+	}
+	if n > 0 {
+		return nil, false, tx.Commit()
+	}
+	return tx, true, nil
 }
