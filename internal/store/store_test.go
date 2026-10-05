@@ -3,6 +3,8 @@ package store
 import (
 	"path/filepath"
 	"testing"
+
+	"github.com/tammai/interstellar/seed"
 )
 
 func openTemp(t *testing.T) *DB {
@@ -103,13 +105,17 @@ func TestBootstrapSeedsAndIsIdempotent(t *testing.T) {
 		}
 	}
 
+	want, err := ParseSeed(seed.Default())
+	if err != nil {
+		t.Fatalf("the embedded default seed does not parse: %v", err)
+	}
 	topics := count(t, db, "SELECT count(*) FROM topics")
 	sources := count(t, db, "SELECT count(*) FROM sources")
-	if topics != len(placeholderTopics) {
-		t.Errorf("seeded %d topics, want %d", topics, len(placeholderTopics))
+	if topics != len(want.Topics) {
+		t.Errorf("seeded %d topics, want %d", topics, len(want.Topics))
 	}
-	if sources != len(seedSources) {
-		t.Errorf("seeded %d sources, want %d", sources, len(seedSources))
+	if sources != len(want.Sources) {
+		t.Errorf("seeded %d sources, want %d", sources, len(want.Sources))
 	}
 
 	// Seeded topics carry the prototype's constellation positions, so a fresh

@@ -1,8 +1,13 @@
 package store
 
 import (
+	"bytes"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"strings"
+
+	"github.com/tammai/interstellar/seed"
 )
 
 // Settings keys. Everything the owner can change lives here rather than in env,
@@ -224,232 +229,6 @@ func defaultSettings() map[string]string {
 	}
 }
 
-// placeholderTopics carries the seven topic names and the constellation
-// positions from the approved prototype, so a fresh instance renders the sky the
-// mock promised. Definitions are deliberately empty: §7 says the UI shows a
-// setup hint until topics are edited, and an empty definition is that signal.
-var placeholderTopics = []struct {
-	Title      string
-	PosX, PosY float64
-}{
-	{"Agents & Harness Engineering", 0.21, 0.34},
-	{"Evolving Software Roles", 0.11, 0.72},
-	{"Open-weight & On-prem", 0.46, 0.22},
-	{"Voice AI", 0.74, 0.15},
-	{"Claude Code & Coding Agents", 0.63, 0.50},
-	{"LLM Ops", 0.85, 0.68},
-	{"Small-team AI Product", 0.33, 0.78},
-}
-
-// seedSources is a starter set, not Long's curated list -- §9 references a rev-2
-// list that never made it into rev 3. Every instance owner prunes their own, so
-// these exist to make a fresh install produce a non-empty sky on day one.
-//
-// Every RSS URL here was verified to return 200 before being seeded. A feed that
-// 404s forever is worse than no feed: it teaches the owner to ignore the failure
-// list, which is the one place a genuinely broken source shows up.
-var seedSources = []struct {
-	Kind, Name, Config string
-	Active             bool
-}{
-	// --- practitioners and analysis ---
-	{"rss", "Simon Willison", `{"url":"https://simonwillison.net/atom/everything/"}`, true},
-	{"rss", "Latent Space", `{"url":"https://www.latent.space/feed"}`, true},
-	{"rss", "Pragmatic Engineer", `{"url":"https://blog.pragmaticengineer.com/rss/"}`, true},
-	{"rss", "Eugene Yan", `{"url":"https://eugeneyan.com/rss/"}`, true},
-	{"rss", "Hamel Husain", `{"url":"https://hamel.dev/index.xml"}`, true},
-	{"rss", "Interconnects", `{"url":"https://www.interconnects.ai/feed"}`, true},
-	{"rss", "Ahead of AI", `{"url":"https://magazine.sebastianraschka.com/feed"}`, true},
-	{"rss", "Lilian Weng", `{"url":"https://lilianweng.github.io/index.xml"}`, true},
-	{"rss", "Chip Huyen", `{"url":"https://huyenchip.com/feed.xml"}`, true},
-	{"rss", "Phil Schmid", `{"url":"https://www.philschmid.de/rss"}`, true},
-	{"rss", "Answer.AI", `{"url":"https://www.answer.ai/index.xml"}`, true},
-	{"rss", "Vicki Boykis", `{"url":"https://vickiboykis.com/index.xml"}`, true},
-
-	// --- press ---
-	//
-	// The trade press earns its place through source_count, not through being first:
-	// these four are the outlets that carry the SAME story as each other and as the
-	// labs' own posts, and a story three of them ran is what §6's gold star is for.
-	// The practitioner feeds above rarely corroborate each other -- one person writes
-	// one post -- so before these, source_count came almost entirely from Hacker News.
-	//
-	// One row per outlet, for exactly the reason migration 007 collapsed Hacker News:
-	// two rows on one masthead make one story look like two independent reports.
-	// These are section feeds rather than the whole site, which is what keeps them to
-	// ~7-20 items a day instead of the several hundred a general tech feed carries.
-	{"rss", "TechCrunch · AI", `{"url":"https://techcrunch.com/category/artificial-intelligence/feed/"}`, true},
-	// Note the URL shape: /rss/<section>/index.xml, not /<section>/rss/index.xml. The
-	// obvious guess 404s.
-	{"rss", "The Verge · AI", `{"url":"https://www.theverge.com/rss/ai-artificial-intelligence/index.xml"}`, true},
-	{"rss", "MIT Technology Review · AI", `{"url":"https://www.technologyreview.com/topic/artificial-intelligence/feed/"}`, true},
-	{"rss", "VentureBeat · AI", `{"url":"https://venturebeat.com/category/ai/feed/"}`, true},
-
-	// --- software roles and practice ---
-	{"rss", "Martin Fowler", `{"url":"https://martinfowler.com/feed.atom"}`, true},
-	{"rss", "ByteByteGo", `{"url":"https://blog.bytebytego.com/feed"}`, true},
-
-	// --- labs and open weights ---
-	// Anthropic, through two UNOFFICIAL feeds, and the qualifier matters. Anthropic
-	// publishes none of its own: no <link rel="alternate"> on either page, and 404 at
-	// /rss.xml, /news/rss.xml, /news/rss, /news/feed and /feed.xml (checked
-	// 2026-08-18). Both rows below are third-party mirrors of first-party pages, and
-	// both were run through the real fetcher -- the openrss.org mirror was tried
-	// first and rejected, because it answers 200 with an HTML page, which is the
-	// "200 in a browser, zero items in the parser" trap this convention exists for.
-	//
-	// They are TWO ROWS because they are two publications, not one outlet twice:
-	// claude.com/blog carries product and customer writing, anthropic.com/news
-	// carries corporate and research announcements, and their item links go to those
-	// two different first-party domains. The cost to know about: an announcement
-	// cross-posted to both counts twice toward source_count. That cannot reach the
-	// gold threshold on its own (§6 wants >= 3) but it does mean one press pickup is
-	// enough to gild an Anthropic cross-post. Park one row if that starts showing up.
-	//
-	// Being mirrors is the standing risk, and it is the acceptable kind: a mirror
-	// that stops updating goes quiet rather than wrong, and §10's per-source
-	// try/continue means one that disappears cannot take a run down. A mirror can
-	// also rewrite a title or a link, which no first-party feed can -- worth knowing
-	// before either row is trusted for anything but reading.
-	{"rss", "Anthropic · News (unofficial mirror)", `{"url":"https://rsshub.bestblogs.dev/anthropic/news"}`, true},
-	{"rss", "Claude Blog (unofficial mirror)", `{"url":"https://tim-hilde.github.io/anthropic-rss/rss.xml"}`, true},
-
-	{"rss", "Hugging Face", `{"url":"https://huggingface.co/blog/feed.xml"}`, true},
-	// openai.com/news. The old /blog/rss.xml 307s here, so this is the same feed
-	// under its current address -- NOT a second one to add alongside it. Two rows on
-	// one publisher inflate source_count, which is the whole lesson of migration 007.
-	{"rss", "OpenAI", `{"url":"https://openai.com/news/rss.xml"}`, true},
-	{"rss", "Google AI", `{"url":"https://blog.google/technology/ai/rss/"}`, true},
-	{"rss", "DeepMind", `{"url":"https://deepmind.google/blog/rss.xml"}`, true},
-	{"rss", "Qwen", `{"url":"https://qwenlm.github.io/blog/index.xml"}`, true},
-	{"rss", "Together AI", `{"url":"https://www.together.ai/blog/rss.xml"}`, true},
-	{"rss", "Replicate", `{"url":"https://replicate.com/blog/rss"}`, true},
-	{"rss", "Ollama", `{"url":"https://ollama.com/blog/rss.xml"}`, true},
-	{"rss", "Mozilla AI", `{"url":"https://blog.mozilla.ai/rss/"}`, true},
-	{"rss", "LangChain", `{"url":"https://www.langchain.com/blog/rss.xml"}`, true},
-
-	// GitHub release feeds. `releases.atom` is ordinary Atom, so these need no new
-	// fetcher -- and deliberately so: a dedicated kind would mean widening the
-	// CHECK constraint on sources.kind, which in SQLite is a whole-table rebuild,
-	// bought for nothing but a nicer item title. The classifier already sees the
-	// source name next to the title, so "v0.5.13" arrives as
-	// "GitHub · ollama/ollama — v0.5.13" in everything but literal string terms.
-	//
-	// Which repos ship active was decided from measured release cadence, not taste:
-	//   - dormant (no release in 90 days) are not seeded at all -- autogen,
-	//     text-generation-inference, faster-whisper, aider and fish-speech were all
-	//     dropped here
-	//   - over ~8 releases a week is tag churn rather than news, and is seeded
-	//     inactive: those repos publish nightly-ish builds whose titles are version
-	//     numbers, so every one costs a classification call to score low. llama.cpp
-	//     alone ships about 70 a week
-	{"rss", "GitHub · anthropics/claude-code", `{"url":"https://github.com/anthropics/claude-code/releases.atom"}`, true},
-	{"rss", "GitHub · sst/opencode", `{"url":"https://github.com/sst/opencode/releases.atom"}`, true},
-	{"rss", "GitHub · All-Hands-AI/OpenHands", `{"url":"https://github.com/All-Hands-AI/OpenHands/releases.atom"}`, true},
-	{"rss", "GitHub · continuedev/continue", `{"url":"https://github.com/continuedev/continue/releases.atom"}`, true},
-	{"rss", "GitHub · browser-use/browser-use", `{"url":"https://github.com/browser-use/browser-use/releases.atom"}`, true},
-	{"rss", "GitHub · modelcontextprotocol/servers", `{"url":"https://github.com/modelcontextprotocol/servers/releases.atom"}`, true},
-	{"rss", "GitHub · modelcontextprotocol/python-sdk", `{"url":"https://github.com/modelcontextprotocol/python-sdk/releases.atom"}`, true},
-	{"rss", "GitHub · openai/openai-agents-python", `{"url":"https://github.com/openai/openai-agents-python/releases.atom"}`, true},
-	{"rss", "GitHub · crewAIInc/crewAI", `{"url":"https://github.com/crewAIInc/crewAI/releases.atom"}`, true},
-	{"rss", "GitHub · ollama/ollama", `{"url":"https://github.com/ollama/ollama/releases.atom"}`, true},
-	{"rss", "GitHub · vllm-project/vllm", `{"url":"https://github.com/vllm-project/vllm/releases.atom"}`, true},
-	{"rss", "GitHub · huggingface/transformers", `{"url":"https://github.com/huggingface/transformers/releases.atom"}`, true},
-	{"rss", "GitHub · ggml-org/whisper.cpp", `{"url":"https://github.com/ggml-org/whisper.cpp/releases.atom"}`, true},
-	{"rss", "GitHub · k2-fsa/sherpa-onnx", `{"url":"https://github.com/k2-fsa/sherpa-onnx/releases.atom"}`, true},
-	{"rss", "GitHub · pipecat-ai/pipecat", `{"url":"https://github.com/pipecat-ai/pipecat/releases.atom"}`, true},
-	{"rss", "GitHub · livekit/agents", `{"url":"https://github.com/livekit/agents/releases.atom"}`, true},
-	{"rss", "GitHub · BerriAI/litellm", `{"url":"https://github.com/BerriAI/litellm/releases.atom"}`, true},
-	{"rss", "GitHub · langchain-ai/langchain", `{"url":"https://github.com/langchain-ai/langchain/releases.atom"}`, true},
-	{"rss", "GitHub · run-llama/llama_index", `{"url":"https://github.com/run-llama/llama_index/releases.atom"}`, true},
-
-	// Seeded inactive: all six release far too often for their titles to be news.
-	// Switch one on if you want its churn.
-	{"rss", "GitHub · ggml-org/llama.cpp (high volume)", `{"url":"https://github.com/ggml-org/llama.cpp/releases.atom"}`, false},
-	{"rss", "GitHub · cline/cline (high volume)", `{"url":"https://github.com/cline/cline/releases.atom"}`, false},
-	{"rss", "GitHub · unslothai/unsloth (high volume)", `{"url":"https://github.com/unslothai/unsloth/releases.atom"}`, false},
-	{"rss", "GitHub · google-gemini/gemini-cli (high volume)", `{"url":"https://github.com/google-gemini/gemini-cli/releases.atom"}`, false},
-	{"rss", "GitHub · Arize-ai/phoenix (high volume)", `{"url":"https://github.com/Arize-ai/phoenix/releases.atom"}`, false},
-	{"rss", "GitHub · langfuse/langfuse (high volume)", `{"url":"https://github.com/langfuse/langfuse/releases.atom"}`, false},
-
-	// Hacker News: ONE source, two mechanisms behind it.
-	//
-	// It is one row because source_count is `count(DISTINCT source_id)` and a row
-	// per keyword made one story look like several outlets -- see migration 007.
-	//
-	// The keywords run at a LOW bar and the firehose at a HIGH one, because they
-	// cover opposite failures. Keywords only find vocabulary someone thought of,
-	// and what they find rarely trends: the median AI-shaped story on HN scores 3,
-	// and 1,435 of 1,549 in a 30-day sample sat under 50 points, so a popularity
-	// bar throws away the model releases this exists to catch. The firehose finds
-	// the big story no keyword anticipated, but it cannot be the whole answer --
-	// at 50 points it sees 7% of the AI-shaped stories, and dropping it to 1 point
-	// means reading 1,008 stories a day of which ~95% are not about AI.
-	//
-	// Keywords are single concepts, not phrases: Algolia needs every word present,
-	// so "open weight model" matched almost nothing while "Qwen" matches cleanly.
-	// Acronyms are safe here ONLY because hnSearch turns typo tolerance off; with
-	// it on, "MoE" returned 554 stories containing no such term.
-	{"hn_search", "Hacker News", `{
-		"min_points": 10,
-		"firehose_min_points": 100,
-		"queries": [
-			{"query":"agent"},
-			{"query":"coding agent"},
-			{"query":"MCP"},
-			{"query":"Claude"},
-			{"query":"Cursor"},
-			{"query":"Copilot"},
-			{"query":"eval"},
-			{"query":"observability"},
-			{"query":"LLM"},
-			{"query":"local LLM"},
-			{"query":"open-weight"},
-			{"query":"inference"},
-			{"query":"Qwen"},
-			{"query":"DeepSeek"},
-			{"query":"Kimi"},
-			{"query":"GLM"},
-			{"query":"Mistral"},
-			{"query":"Llama"},
-			{"query":"vLLM"},
-			{"query":"Hugging Face"},
-			{"query":"voice agent"},
-			{"query":"AI startup"}
-		]
-	}`, true},
-
-	// YouTube. Every ID below was resolved from the channel's rel="canonical" link
-	// and then verified against the <title> its own feed returns -- not scraped
-	// from a "channelId" match in the page HTML, which picks up the *recommended*
-	// channels in the sidebar. That mistake seeded Karpathy's row with
-	// 3Blue1Brown's ID and looked entirely plausible until the feed titles were
-	// checked.
-	//
-	// §9 wants "channels Long actually watches", so treat these as a starting set
-	// to prune rather than a recommendation.
-	{"youtube_rss", "YouTube · Latent Space", `{"channel_id":"UCvi5jNRoRVm436TVAXet1kQ"}`, true},
-	{"youtube_rss", "YouTube · AI Engineer", `{"channel_id":"UCLKPca3kwwd-B59HNr-_lvA"}`, true},
-	{"youtube_rss", "YouTube · Andrej Karpathy", `{"channel_id":"UCXUPKJO5MZQN11PqgIvyuvQ"}`, true},
-	{"youtube_rss", "YouTube · Yannic Kilcher", `{"channel_id":"UCZHmQk67mSJgfCCTn7xBfew"}`, true},
-	{"youtube_rss", "YouTube · Two Minute Papers", `{"channel_id":"UCbfYPyITQ-7l4upoX8nvctg"}`, true},
-	{"youtube_rss", "YouTube · IndyDevDan", `{"channel_id":"UC_x36zCEGilGpB1m-V4gmjg"}`, true},
-	{"youtube_rss", "YouTube · ThePrimeagen", `{"channel_id":"UC8ENHE5xdFSwx71u3fDH5Xw"}`, true},
-	// Added 2026-08-18. Every id below was run through `make feedcheck` and
-	// confirmed against the title the feed itself returns, per the convention --
-	// YouTube answers a rate-limited request with a 404 or a 500 that looks
-	// exactly like a wrong channel id, so each one was probed until it answered.
-	{"youtube_rss", "YouTube · Lex Fridman", `{"channel_id":"UCSHZKyawb77ixDdsGog4iWA"}`, true},
-	{"youtube_rss", "YouTube · AI Explained", `{"channel_id":"UCNJ1Ymd5yFuUPtn21xtRbbw"}`, true},
-	{"youtube_rss", "YouTube · Matt Wolfe", `{"channel_id":"UChpleBmo18P08aKCIgti38g"}`, true},
-	{"youtube_rss", "YouTube · Fireship", `{"channel_id":"UCsBjURrPoezykLs9EqgamOA"}`, true},
-
-	// Inactive on purpose, and kept even though seven real channels now ship: it
-	// is the only place the youtube_rss config shape is discoverable in Settings
-	// without deleting a working row to look at it.
-	{"youtube_rss", "YouTube · add your channel ID", `{"channel_id":""}`, false},
-}
-
 // Seed markers record that a table has had its defaults, so they arrive once per
 // database rather than whenever the table is empty. Without them an owner who
 // deleted every topic or source to start clean got the full default list back on
@@ -459,17 +238,41 @@ const (
 	keySeededSources = "seeded_sources"
 )
 
-// Bootstrap fills an empty database. Each section is independently guarded, so
-// this is safe to run on every boot and will not resurrect rows the owner deleted
-// -- including all of them.
+// Bootstrap fills an empty database from the embedded default seed. See
+// BootstrapWith.
 func (db *DB) Bootstrap() error {
+	return db.BootstrapWith(func() (Seed, error) { return ParseSeed(seed.Default()) })
+}
+
+// BootstrapWith fills an empty database: default settings, then topics and sources
+// from the seed load returns. Each section is independently guarded, so this is
+// safe to run on every boot and will not resurrect rows the owner deleted --
+// including all of them.
+//
+// load is called only if a table still needs seeding, which on any database past
+// its first boot is never. So a seed file edited, broken or removed later cannot
+// stop an existing instance from starting; it only matters to a new one, and a new
+// one refuses to start on a seed that does not parse rather than start half-filled.
+func (db *DB) BootstrapWith(load func() (Seed, error)) error {
 	if err := db.seedSettings(); err != nil {
 		return err
 	}
-	if err := db.seedTopics(); err != nil {
+
+	var s *Seed
+	get := func() (Seed, error) {
+		if s == nil {
+			loaded, err := load()
+			if err != nil {
+				return Seed{}, err
+			}
+			s = &loaded
+		}
+		return *s, nil
+	}
+	if err := db.seedTopics(get); err != nil {
 		return err
 	}
-	return db.seedSources()
+	return db.seedSources(get)
 }
 
 // seedSettings inserts any missing key without overwriting one the owner has set.
@@ -490,44 +293,64 @@ func (db *DB) seedSettings() error {
 	return db.SetSettings(missing)
 }
 
-func (db *DB) seedTopics() error {
+func (db *DB) seedTopics(get func() (Seed, error)) error {
 	tx, proceed, err := db.beginSeed("topics", keySeededTopics)
 	if err != nil || !proceed {
 		return err
 	}
 	defer tx.Rollback()
 
-	for i, t := range placeholderTopics {
-		_, err := tx.Exec(
+	s, err := get()
+	if err != nil {
+		return err
+	}
+	// Placed in seed order, each against the ones before it, exactly as adding
+	// them one at a time in Settings would place them.
+	var placed []Topic
+	for _, t := range s.Topics {
+		pos := Topic{}
+		if t.PosX != nil && t.PosY != nil {
+			pos.PosX, pos.PosY = *t.PosX, *t.PosY
+		} else {
+			pos.PosX, pos.PosY = NextTopicPosition(placed)
+		}
+		placed = append(placed, pos)
+
+		active := t.Active == nil || *t.Active
+		if _, err := tx.Exec(
 			`INSERT INTO topics (title, definition, priority, active, pos_x, pos_y)
-			 VALUES (?, '', ?, 1, ?, ?)`,
-			t.Title, len(placeholderTopics)-i, t.PosX, t.PosY,
-		)
-		if err != nil {
+			 VALUES (?, ?, ?, ?, ?, ?)`,
+			strings.TrimSpace(t.Title), strings.TrimSpace(t.Definition), t.Priority,
+			boolToInt(active), pos.PosX, pos.PosY,
+		); err != nil {
 			return fmt.Errorf("seed topic %q: %w", t.Title, err)
 		}
 	}
 	return tx.Commit()
 }
 
-func (db *DB) seedSources() error {
+func (db *DB) seedSources(get func() (Seed, error)) error {
 	tx, proceed, err := db.beginSeed("sources", keySeededSources)
 	if err != nil || !proceed {
 		return err
 	}
 	defer tx.Rollback()
 
-	for _, s := range seedSources {
-		active := 0
-		if s.Active {
-			active = 1
+	s, err := get()
+	if err != nil {
+		return err
+	}
+	for _, src := range s.Sources {
+		// Compacted, so a seeded row's config reads like one written by the UI.
+		var cfg bytes.Buffer
+		if err := json.Compact(&cfg, src.Config); err != nil {
+			return fmt.Errorf("seed source %q: config: %w", src.Name, err)
 		}
-		_, err := tx.Exec(
+		if _, err := tx.Exec(
 			`INSERT INTO sources (kind, name, config, active) VALUES (?, ?, ?, ?)`,
-			s.Kind, s.Name, s.Config, active,
-		)
-		if err != nil {
-			return fmt.Errorf("seed source %q: %w", s.Name, err)
+			src.Kind, strings.TrimSpace(src.Name), cfg.String(), boolToInt(src.Active),
+		); err != nil {
+			return fmt.Errorf("seed source %q: %w", src.Name, err)
 		}
 	}
 	return tx.Commit()

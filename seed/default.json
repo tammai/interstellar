@@ -1,0 +1,676 @@
+{
+  "version": 1,
+  "topics": [
+    {
+      "title": "Agents & Harness Engineering",
+      "definition": "",
+      "priority": 7,
+      "active": true,
+      "pos_x": 0.21,
+      "pos_y": 0.34
+    },
+    {
+      "title": "Evolving Software Roles",
+      "definition": "",
+      "priority": 6,
+      "active": true,
+      "pos_x": 0.11,
+      "pos_y": 0.72
+    },
+    {
+      "title": "Open-weight & On-prem",
+      "definition": "",
+      "priority": 5,
+      "active": true,
+      "pos_x": 0.46,
+      "pos_y": 0.22
+    },
+    {
+      "title": "Voice AI",
+      "definition": "",
+      "priority": 4,
+      "active": true,
+      "pos_x": 0.74,
+      "pos_y": 0.15
+    },
+    {
+      "title": "Claude Code & Coding Agents",
+      "definition": "",
+      "priority": 3,
+      "active": true,
+      "pos_x": 0.63,
+      "pos_y": 0.5
+    },
+    {
+      "title": "LLM Ops",
+      "definition": "",
+      "priority": 2,
+      "active": true,
+      "pos_x": 0.85,
+      "pos_y": 0.68
+    },
+    {
+      "title": "Small-team AI Product",
+      "definition": "",
+      "priority": 1,
+      "active": true,
+      "pos_x": 0.33,
+      "pos_y": 0.78
+    }
+  ],
+  "sources": [
+    {
+      "kind": "rss",
+      "name": "Simon Willison",
+      "config": {
+        "url": "https://simonwillison.net/atom/everything/"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "Latent Space",
+      "config": {
+        "url": "https://www.latent.space/feed"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "Pragmatic Engineer",
+      "config": {
+        "url": "https://blog.pragmaticengineer.com/rss/"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "Eugene Yan",
+      "config": {
+        "url": "https://eugeneyan.com/rss/"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "Hamel Husain",
+      "config": {
+        "url": "https://hamel.dev/index.xml"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "Interconnects",
+      "config": {
+        "url": "https://www.interconnects.ai/feed"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "Ahead of AI",
+      "config": {
+        "url": "https://magazine.sebastianraschka.com/feed"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "Lilian Weng",
+      "config": {
+        "url": "https://lilianweng.github.io/index.xml"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "Chip Huyen",
+      "config": {
+        "url": "https://huyenchip.com/feed.xml"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "Phil Schmid",
+      "config": {
+        "url": "https://www.philschmid.de/rss"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "Answer.AI",
+      "config": {
+        "url": "https://www.answer.ai/index.xml"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "Vicki Boykis",
+      "config": {
+        "url": "https://vickiboykis.com/index.xml"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "TechCrunch · AI",
+      "config": {
+        "url": "https://techcrunch.com/category/artificial-intelligence/feed/"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "The Verge · AI",
+      "config": {
+        "url": "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "MIT Technology Review · AI",
+      "config": {
+        "url": "https://www.technologyreview.com/topic/artificial-intelligence/feed/"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "VentureBeat · AI",
+      "config": {
+        "url": "https://venturebeat.com/category/ai/feed/"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "Martin Fowler",
+      "config": {
+        "url": "https://martinfowler.com/feed.atom"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "ByteByteGo",
+      "config": {
+        "url": "https://blog.bytebytego.com/feed"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "Anthropic · News (unofficial mirror)",
+      "config": {
+        "url": "https://rsshub.bestblogs.dev/anthropic/news"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "Claude Blog (unofficial mirror)",
+      "config": {
+        "url": "https://tim-hilde.github.io/anthropic-rss/rss.xml"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "Hugging Face",
+      "config": {
+        "url": "https://huggingface.co/blog/feed.xml"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "OpenAI",
+      "config": {
+        "url": "https://openai.com/news/rss.xml"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "Google AI",
+      "config": {
+        "url": "https://blog.google/technology/ai/rss/"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "DeepMind",
+      "config": {
+        "url": "https://deepmind.google/blog/rss.xml"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "Qwen",
+      "config": {
+        "url": "https://qwenlm.github.io/blog/index.xml"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "Together AI",
+      "config": {
+        "url": "https://www.together.ai/blog/rss.xml"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "Replicate",
+      "config": {
+        "url": "https://replicate.com/blog/rss"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "Ollama",
+      "config": {
+        "url": "https://ollama.com/blog/rss.xml"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "Mozilla AI",
+      "config": {
+        "url": "https://blog.mozilla.ai/rss/"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "LangChain",
+      "config": {
+        "url": "https://www.langchain.com/blog/rss.xml"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "GitHub · anthropics/claude-code",
+      "config": {
+        "url": "https://github.com/anthropics/claude-code/releases.atom"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "GitHub · sst/opencode",
+      "config": {
+        "url": "https://github.com/sst/opencode/releases.atom"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "GitHub · All-Hands-AI/OpenHands",
+      "config": {
+        "url": "https://github.com/All-Hands-AI/OpenHands/releases.atom"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "GitHub · continuedev/continue",
+      "config": {
+        "url": "https://github.com/continuedev/continue/releases.atom"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "GitHub · browser-use/browser-use",
+      "config": {
+        "url": "https://github.com/browser-use/browser-use/releases.atom"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "GitHub · modelcontextprotocol/servers",
+      "config": {
+        "url": "https://github.com/modelcontextprotocol/servers/releases.atom"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "GitHub · modelcontextprotocol/python-sdk",
+      "config": {
+        "url": "https://github.com/modelcontextprotocol/python-sdk/releases.atom"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "GitHub · openai/openai-agents-python",
+      "config": {
+        "url": "https://github.com/openai/openai-agents-python/releases.atom"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "GitHub · crewAIInc/crewAI",
+      "config": {
+        "url": "https://github.com/crewAIInc/crewAI/releases.atom"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "GitHub · ollama/ollama",
+      "config": {
+        "url": "https://github.com/ollama/ollama/releases.atom"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "GitHub · vllm-project/vllm",
+      "config": {
+        "url": "https://github.com/vllm-project/vllm/releases.atom"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "GitHub · huggingface/transformers",
+      "config": {
+        "url": "https://github.com/huggingface/transformers/releases.atom"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "GitHub · ggml-org/whisper.cpp",
+      "config": {
+        "url": "https://github.com/ggml-org/whisper.cpp/releases.atom"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "GitHub · k2-fsa/sherpa-onnx",
+      "config": {
+        "url": "https://github.com/k2-fsa/sherpa-onnx/releases.atom"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "GitHub · pipecat-ai/pipecat",
+      "config": {
+        "url": "https://github.com/pipecat-ai/pipecat/releases.atom"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "GitHub · livekit/agents",
+      "config": {
+        "url": "https://github.com/livekit/agents/releases.atom"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "GitHub · BerriAI/litellm",
+      "config": {
+        "url": "https://github.com/BerriAI/litellm/releases.atom"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "GitHub · langchain-ai/langchain",
+      "config": {
+        "url": "https://github.com/langchain-ai/langchain/releases.atom"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "GitHub · run-llama/llama_index",
+      "config": {
+        "url": "https://github.com/run-llama/llama_index/releases.atom"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "GitHub · ggml-org/llama.cpp (high volume)",
+      "config": {
+        "url": "https://github.com/ggml-org/llama.cpp/releases.atom"
+      },
+      "active": false
+    },
+    {
+      "kind": "rss",
+      "name": "GitHub · cline/cline (high volume)",
+      "config": {
+        "url": "https://github.com/cline/cline/releases.atom"
+      },
+      "active": false
+    },
+    {
+      "kind": "rss",
+      "name": "GitHub · unslothai/unsloth (high volume)",
+      "config": {
+        "url": "https://github.com/unslothai/unsloth/releases.atom"
+      },
+      "active": false
+    },
+    {
+      "kind": "rss",
+      "name": "GitHub · google-gemini/gemini-cli (high volume)",
+      "config": {
+        "url": "https://github.com/google-gemini/gemini-cli/releases.atom"
+      },
+      "active": false
+    },
+    {
+      "kind": "rss",
+      "name": "GitHub · Arize-ai/phoenix (high volume)",
+      "config": {
+        "url": "https://github.com/Arize-ai/phoenix/releases.atom"
+      },
+      "active": false
+    },
+    {
+      "kind": "rss",
+      "name": "GitHub · langfuse/langfuse (high volume)",
+      "config": {
+        "url": "https://github.com/langfuse/langfuse/releases.atom"
+      },
+      "active": false
+    },
+    {
+      "kind": "hn_search",
+      "name": "Hacker News",
+      "config": {
+        "min_points": 10,
+        "firehose_min_points": 100,
+        "queries": [
+          {
+            "query": "agent"
+          },
+          {
+            "query": "coding agent"
+          },
+          {
+            "query": "MCP"
+          },
+          {
+            "query": "Claude"
+          },
+          {
+            "query": "Cursor"
+          },
+          {
+            "query": "Copilot"
+          },
+          {
+            "query": "eval"
+          },
+          {
+            "query": "observability"
+          },
+          {
+            "query": "LLM"
+          },
+          {
+            "query": "local LLM"
+          },
+          {
+            "query": "open-weight"
+          },
+          {
+            "query": "inference"
+          },
+          {
+            "query": "Qwen"
+          },
+          {
+            "query": "DeepSeek"
+          },
+          {
+            "query": "Kimi"
+          },
+          {
+            "query": "GLM"
+          },
+          {
+            "query": "Mistral"
+          },
+          {
+            "query": "Llama"
+          },
+          {
+            "query": "vLLM"
+          },
+          {
+            "query": "Hugging Face"
+          },
+          {
+            "query": "voice agent"
+          },
+          {
+            "query": "AI startup"
+          }
+        ]
+      },
+      "active": true
+    },
+    {
+      "kind": "youtube_rss",
+      "name": "YouTube · Latent Space",
+      "config": {
+        "channel_id": "UCvi5jNRoRVm436TVAXet1kQ"
+      },
+      "active": true
+    },
+    {
+      "kind": "youtube_rss",
+      "name": "YouTube · AI Engineer",
+      "config": {
+        "channel_id": "UCLKPca3kwwd-B59HNr-_lvA"
+      },
+      "active": true
+    },
+    {
+      "kind": "youtube_rss",
+      "name": "YouTube · Andrej Karpathy",
+      "config": {
+        "channel_id": "UCXUPKJO5MZQN11PqgIvyuvQ"
+      },
+      "active": true
+    },
+    {
+      "kind": "youtube_rss",
+      "name": "YouTube · Yannic Kilcher",
+      "config": {
+        "channel_id": "UCZHmQk67mSJgfCCTn7xBfew"
+      },
+      "active": true
+    },
+    {
+      "kind": "youtube_rss",
+      "name": "YouTube · Two Minute Papers",
+      "config": {
+        "channel_id": "UCbfYPyITQ-7l4upoX8nvctg"
+      },
+      "active": true
+    },
+    {
+      "kind": "youtube_rss",
+      "name": "YouTube · IndyDevDan",
+      "config": {
+        "channel_id": "UC_x36zCEGilGpB1m-V4gmjg"
+      },
+      "active": true
+    },
+    {
+      "kind": "youtube_rss",
+      "name": "YouTube · ThePrimeagen",
+      "config": {
+        "channel_id": "UC8ENHE5xdFSwx71u3fDH5Xw"
+      },
+      "active": true
+    },
+    {
+      "kind": "youtube_rss",
+      "name": "YouTube · Lex Fridman",
+      "config": {
+        "channel_id": "UCSHZKyawb77ixDdsGog4iWA"
+      },
+      "active": true
+    },
+    {
+      "kind": "youtube_rss",
+      "name": "YouTube · AI Explained",
+      "config": {
+        "channel_id": "UCNJ1Ymd5yFuUPtn21xtRbbw"
+      },
+      "active": true
+    },
+    {
+      "kind": "youtube_rss",
+      "name": "YouTube · Matt Wolfe",
+      "config": {
+        "channel_id": "UChpleBmo18P08aKCIgti38g"
+      },
+      "active": true
+    },
+    {
+      "kind": "youtube_rss",
+      "name": "YouTube · Fireship",
+      "config": {
+        "channel_id": "UCsBjURrPoezykLs9EqgamOA"
+      },
+      "active": true
+    },
+    {
+      "kind": "youtube_rss",
+      "name": "YouTube · add your channel ID",
+      "config": {
+        "channel_id": ""
+      },
+      "active": false
+    }
+  ]
+}

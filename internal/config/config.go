@@ -23,6 +23,7 @@ import (
 // Env is the process-level configuration, read once at startup.
 type Env struct {
 	Port     string
+	DataDir  string
 	DBPath   string
 	Location *time.Location
 }
@@ -46,6 +47,7 @@ func FromEnv() (Env, error) {
 
 	return Env{
 		Port:     port,
+		DataDir:  dataDir,
 		DBPath:   filepath.Join(dataDir, "interstellar.db"),
 		Location: loc,
 	}, nil

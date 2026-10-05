@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -20,6 +21,7 @@ import (
 	"github.com/tammai/interstellar/internal/httpapi"
 	"github.com/tammai/interstellar/internal/pipeline"
 	"github.com/tammai/interstellar/internal/store"
+	"github.com/tammai/interstellar/seed"
 	"github.com/tammai/interstellar/web"
 )
 
@@ -44,7 +46,22 @@ func run(log *slog.Logger) error {
 	}
 	defer db.Close()
 
-	if err := db.Bootstrap(); err != nil {
+	// The seed is read only if the database is new; see store.BootstrapWith. An
+	// override that will not parse stops a first boot here, with every problem
+	// listed, rather than starting an instance with half of what was meant.
+	if err := db.BootstrapWith(func() (store.Seed, error) {
+		data, origin, err := seed.Resolve(env.DataDir)
+		if err != nil {
+			return store.Seed{}, err
+		}
+		s, err := store.ParseSeed(data)
+		if err != nil {
+			return store.Seed{}, fmt.Errorf("%s: %w", origin, err)
+		}
+		log.Info("seeding a new database", "from", origin,
+			"topics", len(s.Topics), "sources", len(s.Sources))
+		return s, nil
+	}); err != nil {
 		return err
 	}
 

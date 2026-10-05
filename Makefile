@@ -71,6 +71,16 @@ verify-classifier:
 feedcheck:
 	go run ./cmd/feedcheck $(URLS)
 
+## seedcheck: validate a seed file and probe every source in it
+# Run before committing seed/default.json or dropping a seed.json into DATA_DIR.
+# Probes each feed with the app's own fetcher; set YOUTUBE_API_KEY to include
+# YouTube channels. OFFLINE=1 validates the file without fetching anything.
+#   make seedcheck                      # seed/default.json
+#   make seedcheck SEED=.devdata/seed.json
+SEED ?= seed/default.json
+seedcheck:
+	go run ./cmd/seedcheck $(if $(OFFLINE),-offline) $(SEED)
+
 ## size: check the image against the <30MB target from §3
 size: docker
 	@bytes=$$(docker image inspect $(IMAGE):$(TAG) --format '{{.Size}}'); \
@@ -88,4 +98,4 @@ run: docker
 clean:
 	rm -rf bin $(DEV_DATA)
 
-.PHONY: help dev build test test-race test-ui lint verify-classifier docker docker-multiarch size run clean
+.PHONY: help dev build test test-race test-ui lint verify-classifier docker docker-multiarch size run clean seedcheck feedcheck
