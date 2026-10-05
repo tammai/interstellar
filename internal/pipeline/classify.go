@@ -453,9 +453,9 @@ type TopicBacklog struct {
 	TopicID int64  `json:"topic_id"`
 	Title   string `json:"title"`
 	Pending int    `json:"pending"`
-	// CatchingUp marks a topic behind the others -- added, resumed or given its
-	// definition since they last ran -- as opposed to one simply waiting on new
-	// items like everyone else.
+	// CatchingUp marks a topic more than one batch behind the topic with the least
+	// left to do -- added, resumed or given its definition since the others last
+	// ran -- as opposed to one simply waiting on new items like everyone else.
 	CatchingUp bool `json:"catching_up"`
 }
 
@@ -471,31 +471,40 @@ func ClassifyBacklog(db *store.DB, cfg config.Runtime) ([]TopicBacklog, int, err
 	}
 	floor := classifyFloor(cfg)
 
-	var ready []store.Topic
-	lead := ""
+	batchSize := cfg.ClassifyBatchSize
+	if batchSize <= 0 {
+		batchSize = 30
+	}
+
+	out := make([]TopicBacklog, 0, len(topics))
+	earliest := ""
+	least := -1
 	for _, t := range topics {
 		if t.NeedsSetup() {
 			continue
 		}
-		ready = append(ready, t)
-		lead = store.LaterWatermark(lead, t.ClassifiedThrough)
-	}
-
-	out := make([]TopicBacklog, 0, len(ready))
-	earliest := ""
-	for _, t := range ready {
 		start := store.LaterWatermark(t.ClassifiedThrough, floor)
 		n, err := db.CountItemsSince(start)
 		if err != nil {
 			return nil, 0, err
 		}
-		out = append(out, TopicBacklog{
-			TopicID: t.ID, Title: t.Title, Pending: n,
-			CatchingUp: n > 0 && t.ClassifiedThrough != lead,
-		})
+		out = append(out, TopicBacklog{TopicID: t.ID, Title: t.Title, Pending: n})
+		if least < 0 || n < least {
+			least = n
+		}
 		if earliest == "" || store.LaterWatermark(earliest, start) == earliest {
 			earliest = start
 		}
+	}
+
+	// Behind by more than one batch, never by any amount. A budget-limited pass
+	// hands out batches one per topic per round and cuts the queue mid-round, so
+	// it routinely leaves the topics up to one batch apart -- six topics with two
+	// batches done and two with one, all equally current. Comparing cursors
+	// called those two "catching up", and the Schedule screen then explained them
+	// as newly added. A topic genuinely behind is behind by its whole gap.
+	for i := range out {
+		out[i].CatchingUp = out[i].Pending-least > batchSize
 	}
 	if earliest == "" {
 		return out, 0, nil

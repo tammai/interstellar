@@ -34,6 +34,9 @@ func TestNewTopicBackfillsWithoutReclassifyingTheOthers(t *testing.T) {
 
 	model := newFakeModel(t, scoreAllHigh)
 	cfg := testConfig()
+	// Small batches, so five items are a gap of more than one batch -- the bar
+	// for "catching up" rather than one round of the queue behind.
+	cfg.ClassifyBatchSize = 2
 	if _, err := Classify(context.Background(), db, clientFor(t, db, model), cfg, testRunDate, quietLogger()); err != nil {
 		t.Fatalf("first Classify: %v", err)
 	}
@@ -159,5 +162,47 @@ func TestItemsFromANewSourceAreClassifiedForEveryTopic(t *testing.T) {
 		if n := countRows(t, db, "SELECT count(*) FROM matches WHERE topic_id = ? AND item_id = ?", topic, item); n != 1 {
 			t.Errorf("topic %d never judged the new source's item", topic)
 		}
+	}
+}
+
+// A budget-limited pass hands out batches one per topic per round and stops
+// mid-round, so it leaves topics up to one batch apart. That is not a backlog: on
+// a real instance it showed two of eight topics as "catching up" after a first run,
+// explained on screen as newly added.
+func TestOneRoundApartIsNotCatchingUp(t *testing.T) {
+	db := testDB(t)
+	src := seedSource(t, db, "Blog")
+	for _, name := range []string{"Agents", "Weights", "Voice"} {
+		seedTopic(t, db, name, name+" news.")
+	}
+	for i := range 12 {
+		seedItem(t, db, src, fmt.Sprintf("https://x.test/%d", i), fmt.Sprintf("Post %d", i))
+	}
+
+	cfg := testConfig()
+	cfg.ClassifyBatchSize = 2
+	// Three topics, six ranges each. A cap of 8 leaves 8-2*3=2 batches after
+	// compose's share -- round 0 cut after two topics, so one topic is a batch behind.
+	res, err := Classify(context.Background(), db, clientForCapped(t, db, newFakeModel(t, scoreAllHigh), 8), cfg, testRunDate, quietLogger())
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if !res.BudgetLimited {
+		t.Fatal("the pass was not budget-limited; the test is not exercising the case")
+	}
+
+	backlog, _, err := ClassifyBacklog(db, cfg)
+	if err != nil {
+		t.Fatalf("ClassifyBacklog: %v", err)
+	}
+	spread := map[int]bool{}
+	for _, b := range backlog {
+		spread[b.Pending] = true
+		if b.CatchingUp {
+			t.Errorf("topic %q (%d pending) marked catching up after an ordinary budget-limited run", b.Title, b.Pending)
+		}
+	}
+	if len(spread) < 2 {
+		t.Error("every topic has the same backlog; the test is not exercising the uneven round")
 	}
 }
