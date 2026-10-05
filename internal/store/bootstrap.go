@@ -69,8 +69,9 @@ const (
 	KeyHotThreshold      = "hot_threshold"
 	KeyClassifyBatchSize = "classify_batch_size"
 
-	// Watermark: only items fetched after this are classified, so a second
-	// refresh in the same day costs nothing.
+	// The instance-wide classify watermark, retired by migration 011 in favour of
+	// a cursor per topic (topics.classified_through). Nothing reads it any more
+	// except that migration, which seeds the cursors from it.
 	KeyClassifyWatermark = "last_classified_fetched_at"
 
 	// Claim extraction (migration 009). Its own watermark, deliberately separate
@@ -182,8 +183,6 @@ func defaultSettings() map[string]string {
 		KeyMatchThreshold:    "4",  // §5.2
 		KeyHotThreshold:      "3",  // §6, gold + pulse
 		KeyClassifyBatchSize: "30", // §5.2
-
-		KeyClassifyWatermark: "",
 
 		// Seeded EMPTY on purpose, including on an instance that already holds a
 		// month of items -- unlike the classify watermark, where an empty mark on a

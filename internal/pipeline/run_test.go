@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -166,10 +167,13 @@ func TestRunnerSurfacesCapBannerWithGuidance(t *testing.T) {
 	if _, err := db.Exec(`UPDATE sources SET active = 0`); err != nil {
 		t.Fatal(err)
 	}
-	// A key so readiness passes, and a fake provider so nothing real is called.
+	// A key so readiness passes, and a fake provider so nothing real is called. It
+	// answers with prose, so every batch needs a repair: classify sizes itself to
+	// one call per batch, and the repair is the call that reaches the cap.
 	t.Setenv("FAKE_KEY", "sk-fake")
+	model := newFakeModel(t, func(string) string { return "Sure, here you go." })
 	if err := db.SetSettings(map[string]string{
-		store.KeyProviders:        `[{"name":"fake","base_url":"http://127.0.0.1:1/v1","api_key_env":"FAKE_KEY"}]`,
+		store.KeyProviders:        fmt.Sprintf(`[{"name":"fake","base_url":%q,"api_key_env":"FAKE_KEY"}]`, model.URL),
 		store.KeyClassifierModel:  "fake/m",
 		store.KeySynthesizerModel: "fake/m",
 		store.KeyMaxCallsPerDay:   "0",

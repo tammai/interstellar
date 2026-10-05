@@ -275,6 +275,17 @@ func (c *Client) CompleteAs(ctx context.Context, chainRole, logRole Role, req Re
 	return Response{}, fmt.Errorf("all %d model(s) for role %s failed: %w", len(refs), role, lastErr)
 }
 
+// RunBudgetLeft reports how many more calls a run may make -- see
+// Guard.RunBudgetLeft. The day's spend is read fresh, as reserve reads it.
+func (c *Client) RunBudgetLeft() (left int, limited bool, err error) {
+	spentToday, err := c.recorder.LLMCallsOn(c.runDate)
+	if err != nil {
+		return 0, false, fmt.Errorf("spend guard: %w", err)
+	}
+	left, limited = c.guard.RunBudgetLeft(spentToday)
+	return left, limited, nil
+}
+
 // reserve asks the guard for permission before spending anything.
 func (c *Client) reserve(role Role) error {
 	spentToday, err := c.recorder.LLMCallsOn(c.runDate)

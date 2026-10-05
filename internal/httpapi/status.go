@@ -38,9 +38,17 @@ type statusResponse struct {
 	TopicsCount  int `json:"topics_count"`
 	SourcesCount int `json:"sources_count"`
 
-	CallsToday int              `json:"calls_today"`
-	CallCapDay int              `json:"call_cap_day"`
-	Usage      []store.LLMUsage `json:"usage,omitempty"`
+	CallsToday int `json:"calls_today"`
+	CallCapDay int `json:"call_cap_day"`
+	CallCapRun int `json:"call_cap_run"`
+
+	// Backlog is, per ready topic, how many items the classifier has yet to judge
+	// -- the same cursors and floor the next run reads -- and ItemsPending how many
+	// distinct items wait on at least one topic. A topic marked catching_up was
+	// added, resumed or defined since the others last ran.
+	Backlog      []pipeline.TopicBacklog `json:"backlog,omitempty"`
+	ItemsPending int                     `json:"items_pending"`
+	Usage        []store.LLMUsage        `json:"usage,omitempty"`
 
 	// Transcripts by status, so a caption path that has quietly stopped working is
 	// visible rather than showing up only as videos that never match anything.
@@ -71,6 +79,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	out := statusResponse{
 		Run:        s.Runner.State(),
 		CallCapDay: cfg.MaxCallsPerDay,
+		CallCapRun: cfg.MaxCallsPerRun,
 	}
 
 	// A malformed registry is itself a readiness problem, not a 500: the owner
@@ -100,6 +109,9 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	if usage, err := s.DB.LLMUsageOn(runDate); err == nil {
 		out.Usage = usage
+	}
+	if backlog, pending, err := pipeline.ClassifyBacklog(s.DB, cfg); err == nil {
+		out.Backlog, out.ItemsPending = backlog, pending
 	}
 	if counts, err := s.DB.TranscriptCounts(); err == nil && len(counts) > 0 {
 		out.Transcripts = counts

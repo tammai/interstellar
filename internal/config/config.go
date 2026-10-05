@@ -89,8 +89,6 @@ type Runtime struct {
 	MatchThreshold    float64
 	HotThreshold      int
 
-	ClassifyWatermark string
-
 	ExtractEnabled   bool
 	ExtractBatchSize int
 	ExtractWatermark string
@@ -144,8 +142,6 @@ func Load(db *store.DB) (Runtime, error) {
 		ClassifyBatchSize: integer(s, store.KeyClassifyBatchSize, 30),
 		MatchThreshold:    float(s, store.KeyMatchThreshold, 4),
 		HotThreshold:      integer(s, store.KeyHotThreshold, 3),
-
-		ClassifyWatermark: str(s, store.KeyClassifyWatermark, ""),
 
 		ExtractEnabled:   integer(s, store.KeyExtractEnabled, 1) == 1,
 		ExtractBatchSize: integer(s, store.KeyExtractBatchSize, 30),

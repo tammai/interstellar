@@ -146,7 +146,10 @@ func Ingest(ctx context.Context, db *store.DB, cfg config.Runtime, log *slog.Log
 
 	// Every write happens here, on one goroutine. The pool is a single
 	// connection anyway; funnelling deliberately keeps that explicit.
+	finished := 0
 	for out := range outcomes {
+		finished++
+		reportProgress(ctx, finished, len(srcs), "sources")
 		if out.err != nil {
 			log.Warn("source failed", "source", out.source.Name, "id", out.source.ID, "err", out.err)
 			result.Failures = append(result.Failures, SourceFailure{

@@ -57,16 +57,18 @@ type ExtractableItem struct {
 	FetchedAt  string
 }
 
-// ItemsForExtraction returns items fetched after the watermark, oldest first.
+// ItemsForExtraction returns items after the watermark, oldest first. The
+// watermark is a cursor -- see FormatWatermark.
 func (db *DB) ItemsForExtraction(watermark string, limit int) ([]ExtractableItem, error) {
+	at, id := ParseWatermark(watermark)
 	rows, err := db.Query(
 		`SELECT i.id, i.title, COALESCE(i.summary, ''), i.canonical_url, i.source_id,
 		        COALESCE(s.name, ''), COALESCE(s.kind, ''), i.fetched_at
 		   FROM items i
 		   LEFT JOIN sources s ON s.id = i.source_id
-		  WHERE i.fetched_at > ?
+		  WHERE (i.fetched_at, i.id) > (?, ?)
 		  ORDER BY i.fetched_at, i.id
-		  LIMIT ?`, watermark, limit)
+		  LIMIT ?`, at, id, limit)
 	if err != nil {
 		return nil, fmt.Errorf("items for extraction since %q: %w", watermark, err)
 	}

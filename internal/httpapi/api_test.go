@@ -586,7 +586,7 @@ func TestTopicStatsReportsHitRatePerTopic(t *testing.T) {
 	day := store.RunDate(time.Now())
 	if err := db.CommitClassifyPass(day, []store.TopicStat{
 		{TopicID: topics[0].ID, ItemsConsidered: 40, MatchesKept: 10, Batches: 2},
-	}, ""); err != nil {
+	}, nil); err != nil {
 		t.Fatalf("CommitClassifyPass: %v", err)
 	}
 
@@ -656,7 +656,7 @@ func TestTopicStatsWindowIsSelectableAndValidated(t *testing.T) {
 	old := store.RunDate(time.Now().AddDate(0, 0, -20))
 	if err := db.CommitClassifyPass(old, []store.TopicStat{
 		{TopicID: topics[0].ID, ItemsConsidered: 100, MatchesKept: 50, Batches: 4},
-	}, ""); err != nil {
+	}, nil); err != nil {
 		t.Fatalf("CommitClassifyPass: %v", err)
 	}
 

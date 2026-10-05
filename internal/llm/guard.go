@@ -86,6 +86,30 @@ func (g *Guard) Reserve(role Role, spentToday, roleSpentToday int) error {
 	return nil
 }
 
+// RunBudgetLeft reports how many more run calls the guard would allow, given the
+// day's spend so far -- the smaller of what the per-run and per-day caps leave.
+// limited is false when neither cap is set.
+//
+// It exists so a stage can size its work to fit rather than discover the cap by
+// hitting it. Classify on a fresh instance is the case: its whole window costs more
+// than one run's budget, so finding out by hitting the cap meant every first run
+// aborted before the sky was composed.
+func (g *Guard) RunBudgetLeft(spentToday int) (left int, limited bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	left = -1
+	if g.maxPerRun > 0 {
+		left = max(g.maxPerRun-g.usedThisRun, 0)
+	}
+	if g.maxPerDay > 0 {
+		day := max(g.maxPerDay-spentToday, 0)
+		if left < 0 || day < left {
+			left = day
+		}
+	}
+	return left, left >= 0
+}
+
 // UsedThisRun reports calls reserved so far.
 func (g *Guard) UsedThisRun() int {
 	g.mu.Lock()

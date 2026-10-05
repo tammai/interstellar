@@ -472,6 +472,90 @@ select.field { appearance: none }
 /* Recurring stories are three columns, not five. */
 .qt-row.recurring { grid-template-columns: minmax(0, 1fr) 40px 96px }
 
+/* The funnel's share line sits under the label: a percentage of the step before,
+   so the drop between tiles reads as where items went. */
+.stat-share { display: block; font-size: 11px; color: var(--ink-dim); margin-top: 3px; font-variant-numeric: tabular-nums }
+.qt-n.warn { color: var(--hot-gold) }
+
+/* ---------- schedule: run progress ---------- */
+
+.progress { margin-top: 0 }
+.pg-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px }
+.pg-pill {
+  font-size: 11px; letter-spacing: .1em; text-transform: uppercase;
+  padding: 3px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--ink-dim);
+}
+.pg-pill.run { color: var(--accent); border-color: rgba(143,184,255,.45) }
+.pg-pill.bad { color: var(--hot-gold); border-color: rgba(255,201,107,.4) }
+.pg-line { font-size: 12.5px; color: var(--ink) }
+.pg-dim { color: var(--ink-dim) }
+.progress .pg-head + .note { margin: -4px 0 12px }
+
+.pg-stages {
+  list-style: none; border: 1px solid var(--grid); border-radius: 10px; overflow: hidden;
+  background: rgba(6,10,24,.4);
+}
+.pg-stage {
+  display: grid; grid-template-columns: 20px 96px 96px minmax(0, 1fr);
+  gap: 10px; align-items: center; padding: 9px 13px; font-size: 12.5px;
+  border-top: 1px solid var(--grid);
+}
+.pg-stage:first-child { border-top: 0 }
+.pg-mark { text-align: center; color: var(--ink-faint); font-size: 12px }
+.pg-name { color: var(--ink) }
+.pg-state { font-size: 11px; letter-spacing: .07em; text-transform: uppercase; color: var(--ink-faint); white-space: nowrap }
+.pg-body { color: var(--ink-dim); font-size: 12px; overflow-wrap: anywhere; display: flex; align-items: center; gap: 10px; min-width: 0 }
+.pg-stage.done .pg-mark { color: #9BE6B4 }
+.pg-stage.running { background: rgba(143,184,255,.06) }
+.pg-stage.running .pg-name, .pg-stage.running .pg-state { color: var(--accent) }
+/* The running stage's mark is a ring, not a glyph: there is no "in progress"
+   character in the bundled font subset, and a spinner would move. */
+.pg-stage.running .pg-mark::before {
+  content: ''; display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+  border: 2px solid var(--accent);
+}
+.pg-stage.pending .pg-mark::before {
+  content: ''; display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+  border: 1px solid var(--line);
+}
+.pg-stage.stopped .pg-mark, .pg-stage.stopped .pg-state { color: var(--hot-gold) }
+.pg-stage.skipped .pg-name, .pg-stage.pending .pg-name { color: var(--ink-dim) }
+
+.pg-bar {
+  flex: 1 1 auto; min-width: 60px; height: 6px; border-radius: 999px;
+  background: var(--space-2); overflow: hidden;
+}
+.pg-bar > span { display: block; height: 100%; background: var(--accent); border-radius: inherit; transition: width .4s ease }
+.pg-bar.full > span { background: var(--hot-gold) }
+.pg-body .pg-dim { white-space: nowrap; font-variant-numeric: tabular-nums }
+
+.pg-meters { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 20px; margin-top: 16px }
+.pg-meter .field-label { margin-bottom: 4px }
+.pg-meter-value { display: block; font-size: 13px; color: var(--star-white); font-variant-numeric: tabular-nums; margin-bottom: 6px }
+.pg-meter .pg-bar { width: 100% }
+
+.pg-backlog { margin-top: 16px }
+.pg-backlog-line { font-size: 12.5px; color: var(--ink); line-height: 1.6 }
+.pg-catching { list-style: none; margin-top: 8px }
+.pg-catching li {
+  display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  font-size: 12.5px; padding: 6px 0; border-top: 1px solid var(--grid); color: var(--ink);
+}
+.pg-catching li:first-child { border-top: 0 }
+.progress-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 14px }
+.progress-actions .test-result { margin-top: 0 }
+
+@media (prefers-reduced-motion: reduce) {
+  .pg-bar > span { transition: none }
+}
+
+@media (max-width: 560px) {
+  /* The detail line drops under the name; the state word stays beside it. */
+  .pg-stage { grid-template-columns: 20px minmax(0, 1fr) auto }
+  .pg-body { grid-column: 2 / -1 }
+  .pg-meters { grid-template-columns: minmax(0, 1fr) }
+}
+
 /* ---------- move this list (source export/import) ---------- */
 
 .transfer { margin-top: 26px; padding-top: 20px; border-top: 1px solid var(--grid) }
