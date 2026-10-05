@@ -63,6 +63,9 @@ type settingsResponse struct {
 	MaxCallsPerRun     int `json:"max_calls_per_run"`
 	MaxCallsPerDay     int `json:"max_calls_per_day"`
 	MaxChatCallsPerDay int `json:"max_chat_calls_per_day"`
+	// CatchupEnabled: a budget-limited run starts another a minute later, until
+	// the backlog is caught up or the day's budget is spent.
+	CatchupEnabled bool `json:"catchup_enabled"`
 
 	TranscriptsPerRun int     `json:"transcripts_per_run"`
 	TranscriptLang    string  `json:"transcript_lang"`
@@ -108,9 +111,10 @@ type settingsRequest struct {
 	PingEnabled     *bool   `json:"ping_enabled"`
 	PingURL         *string `json:"ping_url"`
 
-	MaxCallsPerRun     *int `json:"max_calls_per_run"`
-	MaxCallsPerDay     *int `json:"max_calls_per_day"`
-	MaxChatCallsPerDay *int `json:"max_chat_calls_per_day"`
+	MaxCallsPerRun     *int  `json:"max_calls_per_run"`
+	MaxCallsPerDay     *int  `json:"max_calls_per_day"`
+	MaxChatCallsPerDay *int  `json:"max_chat_calls_per_day"`
+	CatchupEnabled     *bool `json:"catchup_enabled"`
 
 	TranscriptsPerRun *int     `json:"transcripts_per_run"`
 	TranscriptLang    *string  `json:"transcript_lang"`
@@ -155,13 +159,15 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		MaxCallsPerRun:     intOf(settings[store.KeyMaxCallsPerRun], 200),
 		MaxCallsPerDay:     intOf(settings[store.KeyMaxCallsPerDay], 500),
 		MaxChatCallsPerDay: intOf(settings[store.KeyMaxChatCallsPerDay], 100),
-		TranscriptsPerRun:  intOf(settings[store.KeyTranscriptsPerRun], 6),
-		TranscriptLang:     settings[store.KeyTranscriptLang],
-		HNMinPoints:        intOf(settings[store.KeyHNMinPoints], 25),
-		SkyDays:            intOf(settings[store.KeySkyDays], 7),
-		ClassifyBatchSize:  intOf(settings[store.KeyClassifyBatchSize], 30),
-		HotThreshold:       intOf(settings[store.KeyHotThreshold], 3),
-		MatchThreshold:     floatOf(settings[store.KeyMatchThreshold], 4),
+		// Absent means on, as config.Load reads it.
+		CatchupEnabled:    settings[store.KeyCatchupEnabled] != "0",
+		TranscriptsPerRun: intOf(settings[store.KeyTranscriptsPerRun], 6),
+		TranscriptLang:    settings[store.KeyTranscriptLang],
+		HNMinPoints:       intOf(settings[store.KeyHNMinPoints], 25),
+		SkyDays:           intOf(settings[store.KeySkyDays], 7),
+		ClassifyBatchSize: intOf(settings[store.KeyClassifyBatchSize], 30),
+		HotThreshold:      intOf(settings[store.KeyHotThreshold], 3),
+		MatchThreshold:    floatOf(settings[store.KeyMatchThreshold], 4),
 	}
 
 	// A malformed registry still has to render, or the owner cannot fix it in the
@@ -248,6 +254,7 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	setInt(store.KeySMTPPort, req.SMTPPort)
 	setBool(store.KeyDigestEnabled, req.DigestEnabled)
 	setBool(store.KeyPingEnabled, req.PingEnabled)
+	setBool(store.KeyCatchupEnabled, req.CatchupEnabled)
 
 	if req.ClassifierFallback != nil {
 		updates[store.KeyClassifierFallback] = mustJSON(*req.ClassifierFallback)

@@ -27,7 +27,19 @@ type Guard struct {
 	maxChatPerDay int
 	usedThisRun   int
 	stoppedFor    string
+	stoppedBy     StopKind
 }
+
+// StopKind is which cap stopped a run. It exists so a caller deciding what to do
+// next -- carry on after a per-run cap, wait for tomorrow after a daily one --
+// never has to parse the banner's wording to find out.
+type StopKind string
+
+const (
+	StopNone   StopKind = ""
+	StopRunCap StopKind = "run_cap"
+	StopDayCap StopKind = "day_cap"
+)
 
 // NewGuard builds a guard. A cap of zero or less means unlimited, which is what
 // an owner who clears the field is asking for.
@@ -59,6 +71,7 @@ func (g *Guard) Reserve(role Role, spentToday, roleSpentToday int) error {
 
 	if g.maxPerDay > 0 && spentToday >= g.maxPerDay {
 		g.stoppedFor = fmt.Sprintf("daily cap of %d LLM calls reached", g.maxPerDay)
+		g.stoppedBy = StopDayCap
 		return fmt.Errorf("%w: %s", ErrCapReached, g.stoppedFor)
 	}
 
@@ -77,6 +90,7 @@ func (g *Guard) Reserve(role Role, spentToday, roleSpentToday int) error {
 	// still apply, so neither can spend without limit.
 	if !offRunBudget(role) && g.maxPerRun > 0 && g.usedThisRun >= g.maxPerRun {
 		g.stoppedFor = fmt.Sprintf("per-run cap of %d LLM calls reached", g.maxPerRun)
+		g.stoppedBy = StopRunCap
 		return fmt.Errorf("%w: %s", ErrCapReached, g.stoppedFor)
 	}
 
@@ -115,6 +129,14 @@ func (g *Guard) UsedThisRun() int {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.usedThisRun
+}
+
+// StoppedBy reports which cap halted the run, or StopNone. A chat cap is never a
+// run's stop -- chat is not a run -- so it is not one of the kinds.
+func (g *Guard) StoppedBy() StopKind {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.stoppedBy
 }
 
 // StoppedFor returns the human-readable reason the guard halted a run, or "" if

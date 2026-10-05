@@ -56,6 +56,9 @@ func testServer(t *testing.T) (*Server, http.Handler, *store.DB) {
 	env := config.Env{Port: "8422", DBPath: db.Path, Location: time.UTC}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	runner := pipeline.NewRunner(db, env, log)
+	// A run a test starts may schedule a catch-up; it must not outlive the test's
+	// database.
+	t.Cleanup(runner.Stop)
 	web := fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("<html>sky</html>")}}
 
 	srv := New(db, env, web, runner, nil, log)
@@ -1800,6 +1803,7 @@ func TestSavingTheWeeklyScheduleReloadsTheScheduler(t *testing.T) {
 	env := config.Env{Port: "8422", DBPath: db.Path, Location: time.UTC}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	runner := pipeline.NewRunner(db, env, log)
+	t.Cleanup(runner.Stop)
 	sched := pipeline.NewScheduler(db, env, runner, log)
 	if err := sched.Start(); err != nil {
 		t.Fatalf("scheduler Start: %v", err)

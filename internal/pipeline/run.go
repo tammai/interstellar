@@ -57,7 +57,33 @@ type State struct {
 	// CallCapRun is the per-run cap this run is spending against, fixed when the
 	// run's client is built.
 	CallCapRun int `json:"call_cap_run,omitempty"`
+	// StoppedBy is which cap stopped the run, when one did ("run_cap", "day_cap").
+	StoppedBy llm.StopKind `json:"stopped_by,omitempty"`
+
+	// Catchup is this run's place in a chain of catch-up runs: nil for a run
+	// nothing chained to or from. See Runner.afterRun.
+	Catchup *Catchup `json:"catchup,omitempty"`
 }
+
+// Catchup describes the catch-up chain a run belongs to.
+type Catchup struct {
+	// Round is 0 for the scheduled or manual run that started the chain, and n for
+	// the nth catch-up run after it.
+	Round int `json:"round"`
+	// NextAt is when the next catch-up run starts, while one is waiting.
+	NextAt *time.Time `json:"next_at,omitempty"`
+	// Ended says why the chain stopped short of caught up -- the daily cap, a run
+	// that made no progress. Empty when it simply finished, or never needed to run.
+	Ended string `json:"ended,omitempty"`
+	// LastStop is the cap the previous run stopped at, kept because a chain that
+	// carries on clears the banner: the run did not fail, it paused.
+	LastStop string `json:"last_stop,omitempty"`
+}
+
+// defaultCatchupDelay is the pause between catch-up runs: long enough for a
+// provider's rate limit to recover, short enough that a first-run backlog drains
+// in minutes rather than across the next several mornings.
+const defaultCatchupDelay = time.Minute
 
 // Running reports whether a run is in flight.
 func (s State) Running() bool { return s.Stage != StageIdle }
@@ -84,11 +110,17 @@ type Runner struct {
 	guard *llm.Guard
 	// cancel stops an in-flight run on shutdown.
 	cancel context.CancelFunc
+	// timer is the pending catch-up run, if one is waiting.
+	timer *time.Timer
+	// catchupDelay is the pause before a catch-up run; a field so tests need not
+	// wait a minute.
+	catchupDelay time.Duration
 }
 
 // NewRunner builds a runner in the idle state.
 func NewRunner(db *store.DB, env config.Env, log *slog.Logger) *Runner {
-	return &Runner{db: db, env: env, log: log, state: State{Stage: StageIdle}}
+	return &Runner{db: db, env: env, log: log, state: State{Stage: StageIdle},
+		catchupDelay: defaultCatchupDelay}
 }
 
 // State returns a snapshot.
@@ -100,55 +132,178 @@ func (r *Runner) State() State {
 
 // Start launches a run in the background, refusing if one is already going.
 func (r *Runner) Start(reason string) error {
-	r.mu.Lock()
-	if r.state.Running() {
-		r.mu.Unlock()
-		return ErrAlreadyRunning
+	ctx, cancel, err := r.begin(context.Background(), 0)
+	if err != nil {
+		return err
 	}
-
-	now := time.Now()
-	ctx, cancel := context.WithCancel(context.Background())
-	r.cancel = cancel
-	r.state = State{Stage: StageIngesting, StartedAt: &now, StageStartedAt: &now}
-	r.mu.Unlock()
-
 	r.log.Info("run started", "reason", reason)
 
 	go func() {
 		defer cancel()
-		r.execute(ctx)
+		r.execute(ctx, false)
+		r.afterRun(ctx, 0)
 	}()
 	return nil
 }
 
-// Stop cancels an in-flight run and waits briefly for it to notice.
+// Stop cancels an in-flight run and any catch-up run waiting to start. It does
+// not disable the runner: the next scheduled or manual run starts as usual.
 func (r *Runner) Stop() {
 	r.mu.Lock()
-	cancel := r.cancel
-	r.mu.Unlock()
-	if cancel != nil {
-		cancel()
+	defer r.mu.Unlock()
+	r.stopTimerLocked()
+	if r.state.Catchup != nil {
+		r.state.Catchup.NextAt = nil // no countdown to a run that will not happen
+	}
+	// Under the lock, so a run finishing at this moment sees its context
+	// cancelled in afterRun and does not schedule a catch-up behind our back.
+	if r.cancel != nil {
+		r.cancel()
 	}
 }
 
 // RunNow executes a run synchronously. Used by the scheduler, which already has
 // its own goroutine, and by tests.
 func (r *Runner) RunNow(ctx context.Context, reason string) error {
-	r.mu.Lock()
-	if r.state.Running() {
-		r.mu.Unlock()
-		return ErrAlreadyRunning
+	runCtx, cancel, err := r.begin(ctx, 0)
+	if err != nil {
+		return err
 	}
-	now := time.Now()
-	runCtx, cancel := context.WithCancel(ctx)
-	r.cancel = cancel
-	r.state = State{Stage: StageIngesting, StartedAt: &now, StageStartedAt: &now}
-	r.mu.Unlock()
-
 	defer cancel()
 	r.log.Info("run started", "reason", reason)
-	r.execute(runCtx)
+	r.execute(runCtx, false)
+	r.afterRun(runCtx, 0)
 	return nil
+}
+
+// begin claims the runner for a run. round > 0 marks a catch-up run, which skips
+// ingest; any catch-up still waiting is cancelled, because the run starting now
+// does its work and decides afresh whether another is needed.
+func (r *Runner) begin(parent context.Context, round int) (context.Context, context.CancelFunc, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.state.Running() {
+		return nil, nil, ErrAlreadyRunning
+	}
+	r.stopTimerLocked()
+
+	now := time.Now()
+	ctx, cancel := context.WithCancel(parent)
+	r.cancel = cancel
+	stage := StageIngesting
+	if round > 0 {
+		stage = StageClassifying
+	}
+	r.state = State{Stage: stage, StartedAt: &now, StageStartedAt: &now}
+	if round > 0 {
+		r.state.Catchup = &Catchup{Round: round}
+	}
+	return ctx, cancel, nil
+}
+
+func (r *Runner) stopTimerLocked() {
+	if r.timer != nil {
+		r.timer.Stop()
+		r.timer = nil
+	}
+}
+
+// startCatchup runs catch-up round n. A run already in progress -- a scheduled
+// one, a click -- wins, and decides for itself whether another is needed.
+func (r *Runner) startCatchup(round int) {
+	ctx, cancel, err := r.begin(context.Background(), round)
+	if err != nil {
+		r.log.Info("catch-up run skipped", "round", round, "err", err)
+		return
+	}
+	defer cancel()
+	r.log.Info("catch-up run started", "round", round)
+	r.execute(ctx, true)
+	r.afterRun(ctx, round)
+}
+
+// afterRun decides whether the run just finished should be followed by a
+// catch-up run, and schedules it.
+//
+// A run whose classify pass was cut short by its call budget leaves a backlog
+// that would otherwise wait for the next scheduled run -- twice a day, so a first
+// run over many sources took days to reach the sky. This carries on instead, a
+// minute at a time, until the backlog is empty or the day's budget is spent.
+//
+// It stops on its own whenever another run could not help: the daily cap is
+// nearly spent, the last run made no progress (a topic failing on every batch
+// would otherwise loop on the same items), or the run stopped on something other
+// than its per-run cap -- a dead provider is not fixed by asking again. The daily
+// cap is what bounds the spend, and it already survives restarts.
+func (r *Runner) afterRun(ctx context.Context, round int) {
+	carryOn, ended := r.shouldCatchUp()
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if ctx.Err() != nil {
+		return // stopped or shutting down; never chain behind a Stop
+	}
+	if !carryOn {
+		if ended != "" {
+			if r.state.Catchup == nil {
+				r.state.Catchup = &Catchup{Round: round}
+			}
+			r.state.Catchup.Ended = ended
+		}
+		return
+	}
+
+	next := time.Now().Add(r.catchupDelay)
+	if r.state.Catchup == nil {
+		r.state.Catchup = &Catchup{Round: round}
+	}
+	r.state.Catchup.NextAt = &next
+	// A per-run cap that stopped this run is a pause, not a failure, once a
+	// catch-up is on its way: the banner would tell the owner to raise the cap
+	// for a problem that resolves itself in a minute.
+	if r.state.StoppedBy == llm.StopRunCap {
+		r.state.Catchup.LastStop = r.state.Banner
+		r.state.Banner = ""
+	}
+	r.log.Info("catch-up run scheduled", "round", round+1, "at", next.Format(time.TimeOnly))
+	r.timer = time.AfterFunc(r.catchupDelay, func() { r.startCatchup(round + 1) })
+}
+
+// shouldCatchUp reads the finished run and the day's spend. ended is the reason
+// to show when the chain stops short of caught up; empty when there is nothing
+// worth saying -- caught up, switched off, or a banner already explaining why.
+func (r *Runner) shouldCatchUp() (carryOn bool, ended string) {
+	st := r.State()
+	c := st.Classify
+	if c == nil || c.ItemsPending == 0 {
+		return false, ""
+	}
+	cfg, err := config.Load(r.db)
+	if err != nil || !cfg.CatchupEnabled {
+		return false, ""
+	}
+
+	switch {
+	case st.StoppedBy == llm.StopDayCap:
+		return false, "Paused: the daily cap is spent. The next scheduled run carries on."
+	case st.Banner != "" && st.StoppedBy != llm.StopRunCap:
+		return false, "" // a real failure; its banner says what to fix
+	case c.RangesCommitted == 0:
+		return false, "Stopped: the last run could not finish any batch, so another would repeat it. See Classify's problems."
+	}
+
+	if cfg.MaxCallsPerDay > 0 {
+		used, err := r.db.LLMCallsOn(store.RunDate(time.Now().In(r.env.Location)))
+		if err != nil {
+			return false, ""
+		}
+		// Not enough left to classify anything and still compose: another run
+		// would spend the remainder producing nothing on the sky.
+		if cfg.MaxCallsPerDay-used <= composeCallsPerTopic*c.TopicsRun {
+			return false, "Paused: the daily cap is nearly spent. The next scheduled run carries on."
+		}
+	}
+	return true, ""
 }
 
 // execute is the pipeline: ingest, classify, compose.
@@ -156,7 +311,7 @@ func (r *Runner) RunNow(ctx context.Context, reason string) error {
 // Ingest runs even with no model configured -- items accumulate and the sky shows
 // empty constellations, which is a more useful first-run state than nothing at
 // all. Only the LLM stages need readiness.
-func (r *Runner) execute(ctx context.Context) {
+func (r *Runner) execute(ctx context.Context, catchup bool) {
 	defer func() {
 		r.mu.Lock()
 		ended := time.Now()
@@ -184,14 +339,20 @@ func (r *Runner) execute(ctx context.Context) {
 	}
 
 	// --- ingest ---
-	r.setStage(StageIngesting)
-	ingest, err := Ingest(ctx, r.db, cfg, r.log)
-	r.mu.Lock()
-	r.state.Ingest = &ingest
-	r.mu.Unlock()
-	if err != nil {
-		r.fail("ingest stopped", err)
-		return
+	//
+	// A catch-up run skips it: the run before it fetched every feed a minute ago,
+	// and the work left is the classifier backlog, not new items.
+	var ingest IngestResult
+	if !catchup {
+		r.setStage(StageIngesting)
+		ingest, err = Ingest(ctx, r.db, cfg, r.log)
+		r.mu.Lock()
+		r.state.Ingest = &ingest
+		r.mu.Unlock()
+		if err != nil {
+			r.fail("ingest stopped", err)
+			return
+		}
 	}
 
 	// --- the LLM stages ---
@@ -230,12 +391,19 @@ func (r *Runner) execute(ctx context.Context) {
 	// A failure here is never fatal. The caption path is undocumented and will break
 	// eventually; when it does, this degrades to contributing nothing, the same way a
 	// dead feed does in ingest.
-	r.setStage(StageTranscribing)
-	transcribe, transcribeErr := Transcribe(ctx, r.db, client, cfg, r.log)
-	r.mu.Lock()
-	r.state.Transcribe = &transcribe
-	r.state.LLMCalls = client.Guard().UsedThisRun()
-	r.mu.Unlock()
+	//
+	// A catch-up run skips it too: transcripts belong to newly ingested videos,
+	// and a catch-up ingested nothing.
+	var transcribe TranscribeResult
+	var transcribeErr error
+	if !catchup {
+		r.setStage(StageTranscribing)
+		transcribe, transcribeErr = Transcribe(ctx, r.db, client, cfg, r.log)
+		r.mu.Lock()
+		r.state.Transcribe = &transcribe
+		r.state.LLMCalls = client.Guard().UsedThisRun()
+		r.mu.Unlock()
+	}
 	if transcribeErr != nil {
 		if errors.Is(transcribeErr, llm.ErrCapReached) || errors.Is(transcribeErr, context.Canceled) {
 			r.stopReason(client, "transcripts stopped", transcribeErr)
@@ -341,6 +509,9 @@ func (r *Runner) stopReason(client *llm.Client, what string, err error) {
 	if errors.Is(err, llm.ErrCapReached) {
 		if reason := client.Guard().StoppedFor(); reason != "" {
 			r.finishWithBanner("Run stopped: " + reason + ". Raise the cap in Settings to continue.")
+			r.mu.Lock()
+			r.state.StoppedBy = client.Guard().StoppedBy()
+			r.mu.Unlock()
 			return
 		}
 	}

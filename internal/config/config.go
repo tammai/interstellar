@@ -91,7 +91,10 @@ type Runtime struct {
 	MatchThreshold    float64
 	HotThreshold      int
 
-	ExtractEnabled   bool
+	ExtractEnabled bool
+	// CatchupEnabled lets a budget-limited run start another to keep working
+	// through the backlog. On when the key is absent, as the seed sets it.
+	CatchupEnabled   bool
 	ExtractBatchSize int
 	ExtractWatermark string
 }
@@ -146,6 +149,7 @@ func Load(db *store.DB) (Runtime, error) {
 		HotThreshold:      integer(s, store.KeyHotThreshold, 3),
 
 		ExtractEnabled:   integer(s, store.KeyExtractEnabled, 1) == 1,
+		CatchupEnabled:   integer(s, store.KeyCatchupEnabled, 1) == 1,
 		ExtractBatchSize: integer(s, store.KeyExtractBatchSize, 30),
 		// Read through str() like the classify mark: an empty value here and an
 		// absent row mean the same thing -- start from the beginning -- so there is

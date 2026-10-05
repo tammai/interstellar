@@ -336,7 +336,8 @@ class Settings {
     return card;
   }
 
-  switchControl(initial, label, onFlip) {
+  switchControl(initial, label, onFlip, words = ['Active', 'Paused']) {
+    const [onWord, offWord] = words;
     // Mutable, and deliberately so: the switch is not re-rendered after a flip,
     // so its own idea of the current state is the only one there is.
     let on = initial;
@@ -355,7 +356,7 @@ class Settings {
 
     const text = document.createElement('span');
     text.className = 'lbl';
-    text.textContent = on ? 'Active' : 'Paused';
+    text.textContent = on ? onWord : offWord;
 
     btn.append(track, text);
     btn.onclick = async () => {
@@ -363,7 +364,7 @@ class Settings {
       // network round-trip before any movement makes the UI feel broken.
       const next = !on;
       btn.setAttribute('aria-checked', String(next));
-      text.textContent = next ? 'Active' : 'Paused';
+      text.textContent = next ? onWord : offWord;
       btn.disabled = true;
       const ok = await onFlip(next);
       btn.disabled = false;
@@ -375,7 +376,7 @@ class Settings {
         // looks like a UI bug rather than a failed request.
         btn.setAttribute('aria-checked', String(on));
         text.textContent = 'Failed';
-        setTimeout(() => { text.textContent = on ? 'Active' : 'Paused' }, 1600);
+        setTimeout(() => { text.textContent = on ? onWord : offWord }, 1600);
       }
     };
     return btn;
@@ -1411,7 +1412,7 @@ class Settings {
     const progress = section(body, 'Progress');
     progress.classList.add('progress');
     this.progressEl = document.createElement('div');
-    progress.append(this.progressEl, this.runNowControl());
+    progress.append(this.progressEl, this.runNowControl(), this.catchupControl(s.catchup_enabled));
     this.renderProgress();
 
     // Two groups of four columns. The split is not cosmetic: the first group is
@@ -1555,6 +1556,34 @@ class Settings {
     return wrap;
   }
 
+  // Catch-up runs, switched from beside the panel that shows them. Saved on the
+  // flip, like topics and sources, rather than with the schedule fields' Save:
+  // it is a switch, and a switch that does nothing until another button is
+  // pressed reads as broken.
+  catchupControl(enabled) {
+    const row = document.createElement('div');
+    row.className = 'switch-row catchup-switch';
+    const label = document.createElement('span');
+    label.className = 'switch-label';
+    label.textContent = 'Keep running until caught up';
+    const help = document.createElement('span');
+    help.className = 'field-help';
+    help.textContent = 'When a run stops short of its backlog, start another a minute later, until the classifier is caught up or the daily cap is nearly spent.';
+    const toggle = this.switchControl(enabled !== false, 'Keep running until caught up', async (next) => {
+      const res = await fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ catchup_enabled: next }),
+      }).catch(() => null);
+      if (res?.ok) this.changed();
+      return !!res?.ok;
+    }, ['On', 'Off']);
+    const text = document.createElement('div');
+    text.append(label, help);
+    row.append(toggle, text);
+    return row;
+  }
+
   // The progress panel: where the current run is, or where the last one ended,
   // stage by stage, with the call budget and the classifier backlog beside it.
   //
@@ -1583,10 +1612,18 @@ class Settings {
     const line = document.createElement('span');
     line.className = 'pg-line';
 
+    const catchup = run.catchup || null;
+    const waiting = !running && catchup?.next_at;
     if (running) {
-      pill.textContent = 'Running';
+      pill.textContent = catchup?.round ? `Catch-up ${catchup.round}` : 'Running';
       line.textContent = `${stageLabel(run.stage)} · started ${clock(run.started_at)} · ` +
         `${duration(now - Date.parse(run.started_at))} so far`;
+    } else if (waiting) {
+      pill.className = 'pg-pill run';
+      pill.textContent = 'Catching up';
+      const left = Math.max(0, Date.parse(catchup.next_at) - now);
+      line.textContent = (catchup.round ? `Catch-up run ${catchup.round} finished` : 'Run finished') +
+        ` · next run in ${left < 1000 ? 'a moment' : duration(left)}`;
     } else if (run.started_at) {
       pill.textContent = stopped ? 'Stopped' : 'Idle';
       const took = run.ended_at ? duration(Date.parse(run.ended_at) - Date.parse(run.started_at)) : '';
@@ -1603,6 +1640,19 @@ class Settings {
       const why = document.createElement('p');
       why.className = 'note bad';
       why.textContent = run.banner;
+      parts.push(why);
+    }
+    // A cap the chain is already working past: said, but quietly -- nothing to fix.
+    if (waiting && catchup.last_stop) {
+      const why = document.createElement('p');
+      why.className = 'note';
+      why.textContent = `${catchup.last_stop.replace(/ Raise the cap in Settings to continue\.$/, '')} Finished work was saved; the next run carries on from there.`;
+      parts.push(why);
+    }
+    if (!running && catchup?.ended) {
+      const why = document.createElement('p');
+      why.className = 'note';
+      why.textContent = catchup.ended;
       parts.push(why);
     }
 
@@ -1623,7 +1673,11 @@ class Settings {
         else if (stopped && stoppedAt >= 0 && i > stoppedAt) state = 'skipped';
         else state = result ? 'done' : 'skipped';
       }
-      list.append(stageRow(label, state, stageDetail(key, result),
+      let detail = stageDetail(key, result);
+      if (catchup?.round && (key === 'ingest' || key === 'transcribe') && !result) {
+        detail = 'Skipped: a catch-up run reuses the last run\'s feeds.';
+      }
+      list.append(stageRow(label, state, detail,
         state === 'running' ? run.progress : null,
         state === 'running' && run.stage_started_at ? now - Date.parse(run.stage_started_at) : null));
     });
@@ -2993,7 +3047,10 @@ async function loadStatus() {
     const status = await res.json();
     settings.setStatus(status);
     const running = status.run?.stage && status.run.stage !== 'idle';
-    scheduleStatus(running ? 1500 : 20000);
+    // A waiting catch-up is about to become a run, and the Schedule screen is
+    // counting down to it: poll as if one were already going.
+    const waiting = !!status.run?.catchup?.next_at;
+    scheduleStatus(running || waiting ? 1500 : 20000);
   } catch {
     scheduleStatus(20000);
   }

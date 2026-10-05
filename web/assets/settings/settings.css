@@ -544,6 +544,9 @@ select.field { appearance: none }
 .pg-catching li:first-child { border-top: 0 }
 .progress-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 14px }
 .progress-actions .test-result { margin-top: 0 }
+.catchup-switch { align-items: flex-start; margin-top: 14px }
+.catchup-switch .switch-label { display: block; margin-top: 2px }
+.catchup-switch .field-help { margin: 3px 0 0; max-width: 62ch }
 
 @media (prefers-reduced-motion: reduce) {
   .pg-bar > span { transition: none }

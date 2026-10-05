@@ -91,6 +91,11 @@ const (
 	// does. The stage is new and reads nothing downstream yet, so an owner who
 	// wants their morning exactly as it was can have it.
 	KeyExtractEnabled = "extract_enabled"
+
+	// Catch-up runs: when a run ends with the classifier backlog cut short by its
+	// call budget, start another a minute later, and keep going until it is caught
+	// up or the day's budget is spent. "1" or "0".
+	KeyCatchupEnabled = "catchup_enabled"
 )
 
 // defaultProviders ships the presets §3.1 names. Keys are referenced by env var
@@ -226,6 +231,7 @@ func defaultSettings() map[string]string {
 		// holds the "none" line and the watchlist has first-party sources; the stage,
 		// its tests and its endpoints are all here and it is a one-key change.
 		KeyExtractEnabled: "0",
+		KeyCatchupEnabled: "1",
 	}
 }
 
