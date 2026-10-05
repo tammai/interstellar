@@ -17,6 +17,7 @@ import (
 	"github.com/tammai/interstellar/internal/config"
 	"github.com/tammai/interstellar/internal/pipeline"
 	"github.com/tammai/interstellar/internal/store"
+	"github.com/tammai/interstellar/seed"
 )
 
 // providerKeyEnvs is every environment variable the shipped presets reference.
@@ -247,8 +248,16 @@ func TestSkyReturnsTopicsAndSetupState(t *testing.T) {
 	}
 	got := decode[skyResponse](t, w)
 
-	if len(got.Topics) != 7 {
-		t.Errorf("got %d topics, want the 7 seeded", len(got.Topics))
+	want, err := store.ParseSeed(seed.Default())
+	if err != nil {
+		t.Fatalf("default seed: %v", err)
+	}
+	if len(got.Topics) != len(want.Topics) {
+		t.Errorf("got %d topics, want the %d seeded", len(got.Topics), len(want.Topics))
+	}
+	undefined := map[string]bool{}
+	for _, st := range want.Topics {
+		undefined[st.Title] = strings.TrimSpace(st.Definition) == ""
 	}
 	if got.Signals == nil {
 		t.Error("signals should be an empty array, not null -- the UI iterates it")
@@ -256,14 +265,14 @@ func TestSkyReturnsTopicsAndSetupState(t *testing.T) {
 	if got.HotThreshold != 3 {
 		t.Errorf("hot_threshold = %d, want 3", got.HotThreshold)
 	}
-	// Seeded topics carry the prototype's coordinates, so the sky renders as the
-	// approved mock promised.
+	// Every seeded topic has a place on the sky, and needs_setup says exactly
+	// whether the seed gave it a definition.
 	for _, tp := range got.Topics {
 		if tp.PosX == 0 && tp.PosY == 0 {
 			t.Errorf("topic %q has no constellation position", tp.Title)
 		}
-		if !tp.NeedsSetup {
-			t.Errorf("seeded topic %q should report needs_setup", tp.Title)
+		if tp.NeedsSetup != undefined[tp.Title] {
+			t.Errorf("topic %q needs_setup = %v, want %v", tp.Title, tp.NeedsSetup, undefined[tp.Title])
 		}
 	}
 }
@@ -346,8 +355,13 @@ func TestStatusCountsFollowTopicChanges(t *testing.T) {
 // With the key set, the remaining blocker is topic definitions -- and the hint
 // should move on to that rather than repeat itself.
 func TestStatusHintAdvancesToTopics(t *testing.T) {
-	_, h, _ := testServer(t)
+	_, h, db := testServer(t)
 	t.Setenv("OPENROUTER_API_KEY", "sk-present") // after testServer; see above
+	// One topic without a definition, whatever the seed ships, so the hint has
+	// something to advance to.
+	if _, err := db.Exec(`UPDATE topics SET definition = '' WHERE id = (SELECT min(id) FROM topics)`); err != nil {
+		t.Fatal(err)
+	}
 
 	got := decode[statusResponse](t, do(t, h, "GET", "/api/status", ""))
 	if !got.Ready {

@@ -260,22 +260,23 @@ func TestSeededHackerNewsConfigParses(t *testing.T) {
 	if err := json.Unmarshal([]byte(cfg), &c); err != nil {
 		t.Fatalf("seeded hn config does not parse: %v", err)
 	}
-	if n := len(c.Normalized()); n != 22 {
-		t.Errorf("seeded keywords = %d, want 22", n)
+	queries := c.Normalized()
+	if len(queries) == 0 {
+		t.Fatal("the seeded Hacker News source watches no keywords")
 	}
 	// The two bars are opposite on purpose and the pairing is the design: a low
 	// keyword floor catches model releases that never trend, a high firehose bar
-	// keeps the keyword-less pass affordable. Seeding them the same way round
-	// would quietly undo both halves.
-	if c.MinPoints != 10 {
-		t.Errorf("seeded keyword floor = %d, want 10", c.MinPoints)
+	// keeps the keyword-less pass affordable. Every keyword must sit below the
+	// firehose, or seeding them the wrong way round quietly undoes both halves.
+	if c.FirehoseMinPoints == 0 {
+		t.Error("the seed switches the firehose off")
 	}
-	if c.FirehoseMinPoints != 100 {
-		t.Errorf("seeded firehose bar = %d, want 100", c.FirehoseMinPoints)
-	}
-	// Phrases need every word present in Algolia, so a multi-word keyword has to
-	// be a real phrase people write, not a description of a concept.
-	for _, q := range c.Normalized() {
+	for _, q := range queries {
+		if q.MinPoints >= c.FirehoseMinPoints {
+			t.Errorf("keyword %q needs %d points, not below the firehose's %d", q.Query, q.MinPoints, c.FirehoseMinPoints)
+		}
+		// Phrases need every word present in Algolia, so a multi-word keyword has
+		// to be a real phrase people write, not a description of a concept.
 		if len(strings.Fields(q.Query)) > 2 {
 			t.Errorf("keyword %q is a description, not a search term", q.Query)
 		}

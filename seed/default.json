@@ -2,159 +2,71 @@
   "version": 1,
   "topics": [
     {
-      "title": "Agents & Harness Engineering",
-      "definition": "",
+      "title": "Agent Engineering",
+      "definition": "Building LLM agents as software: harness design, context engineering, tool calling, memory, planning and verification loops, multi-agent orchestration, and agent frameworks (LangGraph, OpenAI Agents SDK, Claude Agent SDK, MCP servers as agent tooling). Lessons from running agents in production count. Not: using a coding agent to write your own code (that is Coding Agents in Practice), agents that operate a screen or browser (Computer-Use & Browser Agents), model launches with no agent-building angle, general chatbot news.",
+      "priority": 8,
+      "active": true,
+      "pos_x": 0.3,
+      "pos_y": 0.38
+    },
+    {
+      "title": "Coding Agents in Practice",
+      "definition": "Hands-on use of Claude Code, Cursor, Codex, Copilot agent mode and similar tools: workflows, prompting, CLAUDE.md and rules files, hooks, MCP setups, subagents, reviewing agent-written code, and how teams roll these tools out. Release notes count when they change how the tool is used day to day. Not: building your own agent product (Agent Engineering), funding or valuation news about these companies.",
       "priority": 7,
       "active": true,
-      "pos_x": 0.21,
-      "pos_y": 0.34
-    },
-    {
-      "title": "Evolving Software Roles",
-      "definition": "",
-      "priority": 6,
-      "active": true,
-      "pos_x": 0.11,
-      "pos_y": 0.72
-    },
-    {
-      "title": "Open-weight & On-prem",
-      "definition": "",
-      "priority": 5,
-      "active": true,
-      "pos_x": 0.46,
+      "pos_x": 0.52,
       "pos_y": 0.22
     },
     {
-      "title": "Voice AI",
-      "definition": "",
+      "title": "Evals & LLM Observability",
+      "definition": "Measuring and operating LLM systems: eval design, LLM-as-judge, regression testing for prompts and models, tracing, monitoring, cost and latency tracking per request, and tools such as Langfuse, Phoenix, Braintrust and promptfoo. Not: benchmark leaderboards for a new model release (Open Models & Self-Hosted Inference), traditional application monitoring with no LLM angle.",
+      "priority": 6,
+      "active": true,
+      "pos_x": 0.22,
+      "pos_y": 0.66
+    },
+    {
+      "title": "Open Models & Self-Hosted Inference",
+      "definition": "Open-weight model releases (Qwen, DeepSeek, Llama, Mistral, GLM, Kimi, Gemma), their benchmarks and licences, and running them yourself: vLLM, SGLang, llama.cpp, Ollama, quantisation, GPU sizing, inference cost and on-prem deployment. Deployments in banking and other regulated industries are especially relevant. Not: closed-model launches (GPT, Claude, Gemini) unless compared directly with open models, hosted API pricing (LLM Cost & Model Routing).",
+      "priority": 5,
+      "active": true,
+      "pos_x": 0.78,
+      "pos_y": 0.28
+    },
+    {
+      "title": "AI Security & Governance",
+      "definition": "Securing and governing AI systems: prompt injection, agent permissions and sandboxing, data leakage, model and package supply-chain risk, red-teaming, and AI regulation and compliance (EU AI Act, financial regulators, model-risk management in banking). Not: general cybersecurity news with no AI angle, AI-safety philosophy with nothing practical.",
       "priority": 4,
       "active": true,
-      "pos_x": 0.74,
-      "pos_y": 0.15
+      "pos_x": 0.1,
+      "pos_y": 0.42
     },
     {
-      "title": "Claude Code & Coding Agents",
-      "definition": "",
+      "title": "LLM Cost & Model Routing",
+      "definition": "The cost and routing of hosted LLM APIs: price changes, rate limits, prompt caching, batching, model routing and fallback, gateways (OpenRouter, LiteLLM, Portkey), token-efficiency techniques, and cost-versus-quality comparisons for choosing a model per task. Not: self-hosting and GPU sizing (Open Models & Self-Hosted Inference), model launches that only announce a price with no comparison.",
       "priority": 3,
       "active": true,
-      "pos_x": 0.63,
-      "pos_y": 0.5
+      "pos_x": 0.84,
+      "pos_y": 0.62
     },
     {
-      "title": "LLM Ops",
-      "definition": "",
+      "title": "AI Product UX",
+      "definition": "Designing the product side of AI features: generative UI, chat and agent interaction patterns, streaming and latency in the interface, showing sources and uncertainty, human-in-the-loop approval flows, onboarding and trust, and case studies of how a shipped AI feature was designed. Not: visual design trends with no AI angle, model capability news with nothing about the experience built on it.",
       "priority": 2,
       "active": true,
-      "pos_x": 0.85,
-      "pos_y": 0.68
+      "pos_x": 0.54,
+      "pos_y": 0.76
     },
     {
-      "title": "Small-team AI Product",
-      "definition": "",
+      "title": "Computer-Use & Browser Agents",
+      "definition": "Agents that operate a computer or a browser on a user's behalf: computer-use models (Claude computer use, OpenAI Operator and similar), browser automation agents (Browser Use, Playwright-driven agents, Stagehand), screen understanding, reliability and safety of agents taking real UI actions, and benchmarks such as OSWorld and WebArena. Not: ordinary test automation or scraping with no model in the loop, general agent frameworks (Agent Engineering).",
       "priority": 1,
       "active": true,
-      "pos_x": 0.33,
-      "pos_y": 0.78
+      "pos_x": 0.16,
+      "pos_y": 0.16
     }
   ],
   "sources": [
-    {
-      "kind": "rss",
-      "name": "Simon Willison",
-      "config": {
-        "url": "https://simonwillison.net/atom/everything/"
-      },
-      "active": true
-    },
-    {
-      "kind": "rss",
-      "name": "Latent Space",
-      "config": {
-        "url": "https://www.latent.space/feed"
-      },
-      "active": true
-    },
-    {
-      "kind": "rss",
-      "name": "Pragmatic Engineer",
-      "config": {
-        "url": "https://blog.pragmaticengineer.com/rss/"
-      },
-      "active": true
-    },
-    {
-      "kind": "rss",
-      "name": "Eugene Yan",
-      "config": {
-        "url": "https://eugeneyan.com/rss/"
-      },
-      "active": true
-    },
-    {
-      "kind": "rss",
-      "name": "Hamel Husain",
-      "config": {
-        "url": "https://hamel.dev/index.xml"
-      },
-      "active": true
-    },
-    {
-      "kind": "rss",
-      "name": "Interconnects",
-      "config": {
-        "url": "https://www.interconnects.ai/feed"
-      },
-      "active": true
-    },
-    {
-      "kind": "rss",
-      "name": "Ahead of AI",
-      "config": {
-        "url": "https://magazine.sebastianraschka.com/feed"
-      },
-      "active": true
-    },
-    {
-      "kind": "rss",
-      "name": "Lilian Weng",
-      "config": {
-        "url": "https://lilianweng.github.io/index.xml"
-      },
-      "active": true
-    },
-    {
-      "kind": "rss",
-      "name": "Chip Huyen",
-      "config": {
-        "url": "https://huyenchip.com/feed.xml"
-      },
-      "active": true
-    },
-    {
-      "kind": "rss",
-      "name": "Phil Schmid",
-      "config": {
-        "url": "https://www.philschmid.de/rss"
-      },
-      "active": true
-    },
-    {
-      "kind": "rss",
-      "name": "Answer.AI",
-      "config": {
-        "url": "https://www.answer.ai/index.xml"
-      },
-      "active": true
-    },
-    {
-      "kind": "rss",
-      "name": "Vicki Boykis",
-      "config": {
-        "url": "https://vickiboykis.com/index.xml"
-      },
-      "active": true
-    },
     {
       "kind": "rss",
       "name": "TechCrunch · AI",
@@ -181,25 +93,25 @@
     },
     {
       "kind": "rss",
-      "name": "VentureBeat · AI",
+      "name": "OpenAI · News",
       "config": {
-        "url": "https://venturebeat.com/category/ai/feed/"
+        "url": "https://openai.com/news/rss.xml"
       },
       "active": true
     },
     {
       "kind": "rss",
-      "name": "Martin Fowler",
+      "name": "Google · AI",
       "config": {
-        "url": "https://martinfowler.com/feed.atom"
+        "url": "https://blog.google/technology/ai/rss/"
       },
       "active": true
     },
     {
       "kind": "rss",
-      "name": "ByteByteGo",
+      "name": "Google DeepMind · Blog",
       "config": {
-        "url": "https://blog.bytebytego.com/feed"
+        "url": "https://deepmind.google/blog/rss.xml"
       },
       "active": true
     },
@@ -221,7 +133,7 @@
     },
     {
       "kind": "rss",
-      "name": "Hugging Face",
+      "name": "Hugging Face · Blog",
       "config": {
         "url": "https://huggingface.co/blog/feed.xml"
       },
@@ -229,71 +141,55 @@
     },
     {
       "kind": "rss",
-      "name": "OpenAI",
+      "name": "Simon Willison",
       "config": {
-        "url": "https://openai.com/news/rss.xml"
+        "url": "https://simonwillison.net/atom/everything/"
       },
       "active": true
     },
     {
       "kind": "rss",
-      "name": "Google AI",
+      "name": "Latent Space",
       "config": {
-        "url": "https://blog.google/technology/ai/rss/"
+        "url": "https://www.latent.space/feed"
       },
       "active": true
     },
     {
       "kind": "rss",
-      "name": "DeepMind",
+      "name": "Interconnects",
       "config": {
-        "url": "https://deepmind.google/blog/rss.xml"
+        "url": "https://www.interconnects.ai/feed"
       },
       "active": true
     },
     {
       "kind": "rss",
-      "name": "Qwen",
+      "name": "The Pragmatic Engineer",
       "config": {
-        "url": "https://qwenlm.github.io/blog/index.xml"
+        "url": "https://newsletter.pragmaticengineer.com/feed"
       },
       "active": true
     },
     {
       "kind": "rss",
-      "name": "Together AI",
+      "name": "Hamel Husain",
       "config": {
-        "url": "https://www.together.ai/blog/rss.xml"
+        "url": "https://hamel.dev/index.xml"
       },
       "active": true
     },
     {
       "kind": "rss",
-      "name": "Replicate",
+      "name": "Eugene Yan",
       "config": {
-        "url": "https://replicate.com/blog/rss"
+        "url": "https://eugeneyan.com/rss/"
       },
       "active": true
     },
     {
       "kind": "rss",
-      "name": "Ollama",
-      "config": {
-        "url": "https://ollama.com/blog/rss.xml"
-      },
-      "active": true
-    },
-    {
-      "kind": "rss",
-      "name": "Mozilla AI",
-      "config": {
-        "url": "https://blog.mozilla.ai/rss/"
-      },
-      "active": true
-    },
-    {
-      "kind": "rss",
-      "name": "LangChain",
+      "name": "LangChain · Blog",
       "config": {
         "url": "https://www.langchain.com/blog/rss.xml"
       },
@@ -301,57 +197,9 @@
     },
     {
       "kind": "rss",
-      "name": "GitHub · anthropics/claude-code",
+      "name": "GitHub · langchain-ai/langgraph",
       "config": {
-        "url": "https://github.com/anthropics/claude-code/releases.atom"
-      },
-      "active": true
-    },
-    {
-      "kind": "rss",
-      "name": "GitHub · sst/opencode",
-      "config": {
-        "url": "https://github.com/sst/opencode/releases.atom"
-      },
-      "active": true
-    },
-    {
-      "kind": "rss",
-      "name": "GitHub · All-Hands-AI/OpenHands",
-      "config": {
-        "url": "https://github.com/All-Hands-AI/OpenHands/releases.atom"
-      },
-      "active": true
-    },
-    {
-      "kind": "rss",
-      "name": "GitHub · continuedev/continue",
-      "config": {
-        "url": "https://github.com/continuedev/continue/releases.atom"
-      },
-      "active": true
-    },
-    {
-      "kind": "rss",
-      "name": "GitHub · browser-use/browser-use",
-      "config": {
-        "url": "https://github.com/browser-use/browser-use/releases.atom"
-      },
-      "active": true
-    },
-    {
-      "kind": "rss",
-      "name": "GitHub · modelcontextprotocol/servers",
-      "config": {
-        "url": "https://github.com/modelcontextprotocol/servers/releases.atom"
-      },
-      "active": true
-    },
-    {
-      "kind": "rss",
-      "name": "GitHub · modelcontextprotocol/python-sdk",
-      "config": {
-        "url": "https://github.com/modelcontextprotocol/python-sdk/releases.atom"
+        "url": "https://github.com/langchain-ai/langgraph/releases.atom"
       },
       "active": true
     },
@@ -365,17 +213,57 @@
     },
     {
       "kind": "rss",
-      "name": "GitHub · crewAIInc/crewAI",
+      "name": "GitHub · anthropics/claude-agent-sdk-python",
       "config": {
-        "url": "https://github.com/crewAIInc/crewAI/releases.atom"
+        "url": "https://github.com/anthropics/claude-agent-sdk-python/releases.atom"
       },
       "active": true
     },
     {
       "kind": "rss",
-      "name": "GitHub · ollama/ollama",
+      "name": "GitHub · modelcontextprotocol/modelcontextprotocol",
       "config": {
-        "url": "https://github.com/ollama/ollama/releases.atom"
+        "url": "https://github.com/modelcontextprotocol/modelcontextprotocol/releases.atom"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "GitHub · anthropics/claude-code",
+      "config": {
+        "url": "https://github.com/anthropics/claude-code/releases.atom"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "Cursor · Changelog",
+      "config": {
+        "url": "https://cursor.com/changelog/rss.xml"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "GitHub Blog · Copilot",
+      "config": {
+        "url": "https://github.blog/ai-and-ml/github-copilot/feed/"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "GitHub · promptfoo/promptfoo",
+      "config": {
+        "url": "https://github.com/promptfoo/promptfoo/releases.atom"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "GitHub · langfuse/langfuse (high volume)",
+      "config": {
+        "url": "https://github.com/langfuse/langfuse/releases.atom"
       },
       "active": true
     },
@@ -389,47 +277,79 @@
     },
     {
       "kind": "rss",
-      "name": "GitHub · huggingface/transformers",
+      "name": "GitHub · ollama/ollama",
       "config": {
-        "url": "https://github.com/huggingface/transformers/releases.atom"
+        "url": "https://github.com/ollama/ollama/releases.atom"
       },
       "active": true
     },
     {
       "kind": "rss",
-      "name": "GitHub · ggml-org/whisper.cpp",
+      "name": "GitHub · sgl-project/sglang",
       "config": {
-        "url": "https://github.com/ggml-org/whisper.cpp/releases.atom"
+        "url": "https://github.com/sgl-project/sglang/releases.atom"
       },
       "active": true
     },
     {
       "kind": "rss",
-      "name": "GitHub · k2-fsa/sherpa-onnx",
+      "name": "Qwen · Blog",
       "config": {
-        "url": "https://github.com/k2-fsa/sherpa-onnx/releases.atom"
+        "url": "https://qwenlm.github.io/blog/index.xml"
       },
       "active": true
     },
     {
       "kind": "rss",
-      "name": "GitHub · pipecat-ai/pipecat",
+      "name": "r/LocalLLaMA · Top of the day",
       "config": {
-        "url": "https://github.com/pipecat-ai/pipecat/releases.atom"
+        "url": "https://www.reddit.com/r/LocalLLaMA/top/.rss?t=day"
       },
       "active": true
     },
     {
       "kind": "rss",
-      "name": "GitHub · livekit/agents",
+      "name": "Embrace The Red",
       "config": {
-        "url": "https://github.com/livekit/agents/releases.atom"
+        "url": "https://embracethered.com/blog/index.xml"
       },
       "active": true
     },
     {
       "kind": "rss",
-      "name": "GitHub · BerriAI/litellm",
+      "name": "Trail of Bits · Blog",
+      "config": {
+        "url": "https://blog.trailofbits.com/feed/"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "EU AI Act Newsletter",
+      "config": {
+        "url": "https://artificialintelligenceact.substack.com/feed"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "OWASP GenAI Security Project",
+      "config": {
+        "url": "https://genai.owasp.org/feed/"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "Portkey · Blog",
+      "config": {
+        "url": "https://portkey.ai/blog/rss/"
+      },
+      "active": true
+    },
+    {
+      "kind": "rss",
+      "name": "GitHub · BerriAI/litellm (high volume)",
       "config": {
         "url": "https://github.com/BerriAI/litellm/releases.atom"
       },
@@ -437,142 +357,65 @@
     },
     {
       "kind": "rss",
-      "name": "GitHub · langchain-ai/langchain",
+      "name": "Nielsen Norman Group",
       "config": {
-        "url": "https://github.com/langchain-ai/langchain/releases.atom"
+        "url": "https://www.nngroup.com/feed/rss/"
       },
       "active": true
     },
     {
       "kind": "rss",
-      "name": "GitHub · run-llama/llama_index",
+      "name": "Jakob Nielsen",
       "config": {
-        "url": "https://github.com/run-llama/llama_index/releases.atom"
+        "url": "https://jakobnielsenphd.substack.com/feed"
       },
       "active": true
     },
     {
       "kind": "rss",
-      "name": "GitHub · ggml-org/llama.cpp (high volume)",
+      "name": "Google PAIR",
       "config": {
-        "url": "https://github.com/ggml-org/llama.cpp/releases.atom"
+        "url": "https://medium.com/feed/people-ai-research"
       },
-      "active": false
+      "active": true
     },
     {
       "kind": "rss",
-      "name": "GitHub · cline/cline (high volume)",
+      "name": "Linus Lee",
       "config": {
-        "url": "https://github.com/cline/cline/releases.atom"
+        "url": "https://thesephist.com/index.xml"
       },
-      "active": false
+      "active": true
     },
     {
       "kind": "rss",
-      "name": "GitHub · unslothai/unsloth (high volume)",
+      "name": "Lenny's Newsletter",
       "config": {
-        "url": "https://github.com/unslothai/unsloth/releases.atom"
+        "url": "https://www.lennysnewsletter.com/feed"
       },
-      "active": false
+      "active": true
     },
     {
       "kind": "rss",
-      "name": "GitHub · google-gemini/gemini-cli (high volume)",
+      "name": "One Useful Thing",
       "config": {
-        "url": "https://github.com/google-gemini/gemini-cli/releases.atom"
+        "url": "https://www.oneusefulthing.org/feed"
       },
-      "active": false
+      "active": true
     },
     {
       "kind": "rss",
-      "name": "GitHub · Arize-ai/phoenix (high volume)",
+      "name": "GitHub · browser-use/browser-use",
       "config": {
-        "url": "https://github.com/Arize-ai/phoenix/releases.atom"
+        "url": "https://github.com/browser-use/browser-use/releases.atom"
       },
-      "active": false
+      "active": true
     },
     {
       "kind": "rss",
-      "name": "GitHub · langfuse/langfuse (high volume)",
+      "name": "GitHub · microsoft/playwright-mcp",
       "config": {
-        "url": "https://github.com/langfuse/langfuse/releases.atom"
-      },
-      "active": false
-    },
-    {
-      "kind": "hn_search",
-      "name": "Hacker News",
-      "config": {
-        "min_points": 10,
-        "firehose_min_points": 100,
-        "queries": [
-          {
-            "query": "agent"
-          },
-          {
-            "query": "coding agent"
-          },
-          {
-            "query": "MCP"
-          },
-          {
-            "query": "Claude"
-          },
-          {
-            "query": "Cursor"
-          },
-          {
-            "query": "Copilot"
-          },
-          {
-            "query": "eval"
-          },
-          {
-            "query": "observability"
-          },
-          {
-            "query": "LLM"
-          },
-          {
-            "query": "local LLM"
-          },
-          {
-            "query": "open-weight"
-          },
-          {
-            "query": "inference"
-          },
-          {
-            "query": "Qwen"
-          },
-          {
-            "query": "DeepSeek"
-          },
-          {
-            "query": "Kimi"
-          },
-          {
-            "query": "GLM"
-          },
-          {
-            "query": "Mistral"
-          },
-          {
-            "query": "Llama"
-          },
-          {
-            "query": "vLLM"
-          },
-          {
-            "query": "Hugging Face"
-          },
-          {
-            "query": "voice agent"
-          },
-          {
-            "query": "AI startup"
-          }
-        ]
+        "url": "https://github.com/microsoft/playwright-mcp/releases.atom"
       },
       "active": true
     },
@@ -594,30 +437,6 @@
     },
     {
       "kind": "youtube_rss",
-      "name": "YouTube · Andrej Karpathy",
-      "config": {
-        "channel_id": "UCXUPKJO5MZQN11PqgIvyuvQ"
-      },
-      "active": true
-    },
-    {
-      "kind": "youtube_rss",
-      "name": "YouTube · Yannic Kilcher",
-      "config": {
-        "channel_id": "UCZHmQk67mSJgfCCTn7xBfew"
-      },
-      "active": true
-    },
-    {
-      "kind": "youtube_rss",
-      "name": "YouTube · Two Minute Papers",
-      "config": {
-        "channel_id": "UCbfYPyITQ-7l4upoX8nvctg"
-      },
-      "active": true
-    },
-    {
-      "kind": "youtube_rss",
       "name": "YouTube · IndyDevDan",
       "config": {
         "channel_id": "UC_x36zCEGilGpB1m-V4gmjg"
@@ -626,17 +445,9 @@
     },
     {
       "kind": "youtube_rss",
-      "name": "YouTube · ThePrimeagen",
+      "name": "YouTube · Andrej Karpathy",
       "config": {
-        "channel_id": "UC8ENHE5xdFSwx71u3fDH5Xw"
-      },
-      "active": true
-    },
-    {
-      "kind": "youtube_rss",
-      "name": "YouTube · Lex Fridman",
-      "config": {
-        "channel_id": "UCSHZKyawb77ixDdsGog4iWA"
+        "channel_id": "UCXUPKJO5MZQN11PqgIvyuvQ"
       },
       "active": true
     },
@@ -649,28 +460,106 @@
       "active": true
     },
     {
-      "kind": "youtube_rss",
-      "name": "YouTube · Matt Wolfe",
+      "kind": "hn_search",
+      "name": "Hacker News",
+      "active": true,
       "config": {
-        "channel_id": "UChpleBmo18P08aKCIgti38g"
-      },
-      "active": true
-    },
-    {
-      "kind": "youtube_rss",
-      "name": "YouTube · Fireship",
-      "config": {
-        "channel_id": "UCsBjURrPoezykLs9EqgamOA"
-      },
-      "active": true
-    },
-    {
-      "kind": "youtube_rss",
-      "name": "YouTube · add your channel ID",
-      "config": {
-        "channel_id": ""
-      },
-      "active": false
+        "queries": [
+          {
+            "query": "agent",
+            "min_points": 20
+          },
+          {
+            "query": "MCP",
+            "min_points": 5
+          },
+          {
+            "query": "Claude Code",
+            "min_points": 5
+          },
+          {
+            "query": "Cursor",
+            "min_points": 5
+          },
+          {
+            "query": "Codex",
+            "min_points": 5
+          },
+          {
+            "query": "evals",
+            "min_points": 5
+          },
+          {
+            "query": "Langfuse",
+            "min_points": 5
+          },
+          {
+            "query": "open-weight",
+            "min_points": 5
+          },
+          {
+            "query": "vLLM",
+            "min_points": 5
+          },
+          {
+            "query": "llama.cpp",
+            "min_points": 5
+          },
+          {
+            "query": "Ollama",
+            "min_points": 5
+          },
+          {
+            "query": "Qwen",
+            "min_points": 5
+          },
+          {
+            "query": "DeepSeek",
+            "min_points": 5
+          },
+          {
+            "query": "local LLM",
+            "min_points": 5
+          },
+          {
+            "query": "prompt injection",
+            "min_points": 5
+          },
+          {
+            "query": "AI security",
+            "min_points": 5
+          },
+          {
+            "query": "AI Act",
+            "min_points": 5
+          },
+          {
+            "query": "OpenRouter",
+            "min_points": 5
+          },
+          {
+            "query": "LiteLLM",
+            "min_points": 5
+          },
+          {
+            "query": "prompt caching",
+            "min_points": 5
+          },
+          {
+            "query": "generative UI",
+            "min_points": 5
+          },
+          {
+            "query": "computer use",
+            "min_points": 5
+          },
+          {
+            "query": "browser agent",
+            "min_points": 5
+          }
+        ],
+        "firehose_min_points": 150
+      }
     }
   ]
 }
