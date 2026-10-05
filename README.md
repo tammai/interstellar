@@ -27,10 +27,49 @@ image. Each instance is one person's container built from this repo, and a
 registry would add a release step and a stale-tag problem to a project whose whole
 deployment story is "one command on your own machine."
 
-Three things happen on first run: the database is created, seed sources and seven
-placeholder topics are added, and the gear icon gets a dot. Follow it — the sky
-stays empty until you write topic definitions, because a definition is the only
-thing the classifier has to judge against.
+On first run the database is created and seeded once from
+[`seed/default.json`](seed/README.md): eight topics with definitions and fifty
+sources, every one checked against the real fetchers. Drop a `seed.json` into the
+data volume before the first start to begin from your own list instead. The seed is
+read only for a new database, so deleting every topic later does not bring the
+defaults back.
+
+The first run usually has more to classify than one run's call budget covers. It
+classifies what fits, draws the sky, and starts a catch-up run a minute later,
+repeating until it is caught up — watch it under Settings → Schedule.
+
+## Upgrade
+
+Pull, rebuild, and start a new container **on the same volume**. The data lives in
+the volume, so nothing is lost:
+
+```sh
+git pull
+docker build -t interstellar .
+
+docker stop interstellar && docker rm interstellar   # or the name `docker ps` shows
+
+docker run -d --name interstellar -p 8422:8422 -v interstellar-data:/data \
+  -e TZ=Asia/Bangkok \
+  -e OPENROUTER_API_KEY \
+  interstellar
+```
+
+Two things to get right:
+
+- **Pass every key again.** A new container does not inherit the old one's
+  environment, so list each `-e` you use — `YOUTUBE_API_KEY` for video sources, and
+  any other provider key your registry references. A missing one shows up as
+  failing sources or a "not ready" banner. `-e NAME` with no value passes it
+  through from your shell.
+- **Use the same volume name.** A different one is a new, empty database, which is
+  seeded from scratch.
+
+Nothing else is manual. Schema changes run on start; your topics, sources, models
+and settings are kept; new settings arrive with their defaults. Optionally take a
+[backup](#backup) first.
+
+Running from source instead? `git pull` and `make dev` — it rebuilds as it starts.
 
 ## Configuration
 

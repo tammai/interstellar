@@ -128,8 +128,11 @@ Press **Refresh** on the sky, or:
 curl -X POST localhost:8422/api/refresh
 ```
 
-It runs the whole pipeline now. A first run over a fresh source list takes a few
-minutes and costs a few dozen model calls.
+It runs the whole pipeline now. A first run over a fresh source list usually has
+more to classify than one run's call budget, so it classifies what fits, draws the
+sky, and carries on with catch-up runs a minute apart until it is caught up — a few
+of them, and a few hundred model calls, well inside the daily cap. Settings →
+Schedule shows each run as it goes.
 
 Then read the sky:
 
